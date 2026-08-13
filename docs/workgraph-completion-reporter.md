@@ -29,8 +29,9 @@ The reporter owns these destinations and values; callers cannot override them:
 | Actor type | `Agent` |
 | Actor ID / agent profile | `issue-validator` |
 
-The only externally configured trust value is the launcher login that writes
-the active `workgraph.execution/v1` comment.
+The externally configured trust values are the launcher login that writes the
+active `workgraph.execution/v1` comment and the reporter login that owns the
+write PAT.
 
 ## Tool contract
 
@@ -74,7 +75,8 @@ For each call, the reporter:
 
 1. Rejects malformed or additional input and verifies the deterministic
    `expectedEventId` and `issue-validator@<40-character-blob-SHA>` profile.
-2. Resolves the PAT identity from GitHub.
+2. Resolves the PAT identity from GitHub and requires its login to equal the
+   configured reporter login.
 3. Reads the fixed-repository Issue and verifies its number and node ID.
 4. Resolves organization `drasi-project` Project number `3`, requires its node
    ID to be `PVT_kwDOCX0YF84BgNE3`, and verifies that the supplied Project Item
@@ -111,10 +113,12 @@ In the repository, open **Settings > Secrets and variables > Agents** and add:
 | --- | --- | --- |
 | Secret | `COPILOT_MCP_WORKGRAPH_TOKEN` | Write-capable PAT; never commit it |
 | Variable | `COPILOT_MCP_WORKGRAPH_LAUNCHER_LOGIN` | Exact trusted login that authors execution comments |
+| Variable | `COPILOT_MCP_WORKGRAPH_REPORTER_LOGIN` | Exact trusted login that owns the write PAT |
 
 Names use the required `COPILOT_MCP_` prefix, so the values are available only
 to MCP configuration. The agent profile maps them to the local server as
-`WORKGRAPH_TOKEN` and `WORKGRAPH_LAUNCHER_LOGIN`.
+`WORKGRAPH_TOKEN`, `WORKGRAPH_LAUNCHER_LOGIN`, and
+`WORKGRAPH_REPORTER_LOGIN`.
 
 The PAT must:
 
@@ -128,6 +132,15 @@ Do not use an Actions secret, the Actions `GITHUB_TOKEN`, an installation token,
 or the default cloud-agent GitHub MCP token. The PAT owner becomes the observed
 completion-comment author and must be allowlisted by the router for the active
 agent execution.
+
+The currently verified token identity is `agentofreality`, but it is not
+hardcoded. If both launcher and reporter variables are set to
+`agentofreality`, one user authors both the trusted execution record and the
+completion event. That same-user authorship weakens separation of duties and is
+a prototype trust limitation: compromise or misuse of that identity can forge
+both sides of the trust check. Verify both observed authors live and use
+separate least-privilege identities before treating this as a production
+boundary.
 
 After merging the profile, obtain its blob SHA for launcher prompts and
 execution records:

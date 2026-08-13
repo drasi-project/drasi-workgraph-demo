@@ -18,6 +18,7 @@ mcp-servers:
     env:
       WORKGRAPH_TOKEN: ${{ secrets.COPILOT_MCP_WORKGRAPH_TOKEN }}
       WORKGRAPH_LAUNCHER_LOGIN: ${{ vars.COPILOT_MCP_WORKGRAPH_LAUNCHER_LOGIN }}
+      WORKGRAPH_REPORTER_LOGIN: ${{ vars.COPILOT_MCP_WORKGRAPH_REPORTER_LOGIN }}
 ---
 
 # WorkGraph issue validator

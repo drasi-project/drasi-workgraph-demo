@@ -251,15 +251,18 @@ function apiBaseUrl() {
 function loadConfig() {
   const token = process.env.WORKGRAPH_TOKEN ?? "";
   const launcherLogin = process.env.WORKGRAPH_LAUNCHER_LOGIN ?? "";
+  const reporterLogin = process.env.WORKGRAPH_REPORTER_LOGIN ?? "";
   if (!token) {
     throw new ReporterError(
       "WORKGRAPH_TOKEN is not configured from the COPILOT_MCP_WORKGRAPH_TOKEN Agents secret",
     );
   }
   validateLogin(launcherLogin, "WORKGRAPH_LAUNCHER_LOGIN");
+  validateLogin(reporterLogin, "WORKGRAPH_REPORTER_LOGIN");
   return {
     token,
     launcherLogin,
+    reporterLogin,
     apiUrl: apiBaseUrl(),
   };
 }
@@ -596,6 +599,14 @@ class CompletionReporter {
   async reportCompletion(input) {
     validateInput(input);
     const identity = await this.client.getIdentity();
+    if (
+      identity.login.toLowerCase() !==
+      this.config.reporterLogin.toLowerCase()
+    ) {
+      throw new ReporterError(
+        "GitHub PAT identity does not match WORKGRAPH_REPORTER_LOGIN",
+      );
+    }
     const issue = await this.client.getIssue(input.subjectNumber);
     validateIssue(issue, input);
     const item = await this.client.getProjectItem(input.projectItemNodeId);

@@ -269,7 +269,11 @@ async function startFakeGitHub({
   };
 }
 
-async function runMcp(messages, apiUrl) {
+async function runMcp(
+  messages,
+  apiUrl,
+  { reporterLogin = "workgraph-reporter" } = {},
+) {
   const child = spawn(process.execPath, [REPORTER], {
     cwd: ROOT,
     env: {
@@ -278,6 +282,7 @@ async function runMcp(messages, apiUrl) {
       WORKGRAPH_TEST_GITHUB_API_URL: apiUrl,
       WORKGRAPH_TOKEN: "test-token",
       WORKGRAPH_LAUNCHER_LOGIN: "trusted-launcher",
+      WORKGRAPH_REPORTER_LOGIN: reporterLogin,
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -370,6 +375,23 @@ test("rejects additional input before any GitHub operation", async () => {
     assert.equal(responses[3].result.isError, true);
     assert.match(responses[3].result.content[0].text, /extra=.*status/);
     assert.deepEqual(fake.state.operations, []);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects a PAT identity that does not match configured reporter", async () => {
+  const fake = await startFakeGitHub();
+  try {
+    const responses = await runMcp(protocolMessages(), fake.apiUrl, {
+      reporterLogin: "different-reporter",
+    });
+    assert.equal(responses[3].result.isError, true);
+    assert.match(
+      responses[3].result.content[0].text,
+      /PAT identity does not match/,
+    );
+    assert.deepEqual(fake.state.operations, ["identity"]);
   } finally {
     await fake.close();
   }
