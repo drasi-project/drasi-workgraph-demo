@@ -7,6 +7,20 @@ disable-model-invocation: true
 tools:
   - github/issue_read
   - workgraph/report_completion
+mcp-servers:
+  workgraph:
+    type: local
+    command: python3
+    args:
+      - .github/mcp/workgraph_reporter.py
+    tools:
+      - report_completion
+    env:
+      WORKGRAPH_GITHUB_TOKEN: ${{ secrets.COPILOT_MCP_WORKGRAPH_GITHUB_TOKEN }}
+      WORKGRAPH_PROJECT_NUMBER: ${{ vars.COPILOT_MCP_WORKGRAPH_PROJECT_NUMBER }}
+      WORKGRAPH_PROFILE_REF: ${{ vars.COPILOT_MCP_WORKGRAPH_PROFILE_REF }}
+      WORKGRAPH_COMMENT_AUTHOR: ${{ vars.COPILOT_MCP_WORKGRAPH_COMMENT_AUTHOR }}
+      WORKGRAPH_EXECUTION_AUTHOR: ${{ vars.COPILOT_MCP_WORKGRAPH_EXECUTION_AUTHOR }}
 ---
 
 # WorkGraph issue validator

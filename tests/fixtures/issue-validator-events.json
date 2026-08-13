@@ -1,6 +1,6 @@
 {
   "taskPrompt": {
-    "eventId": "evt-validation-001",
+    "eventId": "event:execution:validation-001:CompletedIssueValidation",
     "projectItemNodeId": "PVTI_example",
     "projectOwner": "drasi-project",
     "projectNumber": 1,
@@ -12,9 +12,9 @@
     "actorId": "issue-validator",
     "routeId": "validate",
     "responsibilityId": "validate-issue",
-    "executionId": "exec-validation-001",
-    "contentVersion": "1",
-    "profileRef": ".github/agents/issue-validator.agent.md"
+    "executionId": "execution:validation-001",
+    "contentVersion": "2026-08-13T01:00:00Z",
+    "profileRef": "issue-validator@0123456789abcdef0123456789abcdef01234567"
   },
   "passed": {
     "body": "Context\nWorkGraph-Validation: pass\n",

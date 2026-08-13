@@ -39,6 +39,14 @@ class IssueValidatorProfileTest(unittest.TestCase):
         )
         self.assertNotIn("github/add_issue_comment", frontmatter)
         self.assertNotIn("github/projects_write", frontmatter)
+        self.assertIn("mcp-servers:\n  workgraph:", frontmatter)
+        self.assertIn("command: python3", frontmatter)
+        self.assertIn(
+            ".github/mcp/workgraph_reporter.py", frontmatter
+        )
+        self.assertIn(
+            "secrets.COPILOT_MCP_WORKGRAPH_GITHUB_TOKEN", frontmatter
+        )
 
     def test_marker_match_is_complete_and_case_sensitive(self):
         self.assertTrue(marker_present(self.fixture["passed"]["body"]))
@@ -101,7 +109,10 @@ class IssueValidatorProfileTest(unittest.TestCase):
         status = self.reporter_doc.index("Only after the comment exists")
         self.assertLess(comment, status)
         self.assertIn("fixed option `AwaitingRouting`", self.reporter_doc)
-        self.assertIn("does not contain or configure", self.reporter_doc)
+        self.assertIn(
+            ".github/mcp/workgraph_reporter.py", self.reporter_doc
+        )
+        self.assertIn("manual Agent Task", self.reporter_doc)
         self.assertNotIn("GraphQL document", self.profile.split("---", 2)[1])
 
 
