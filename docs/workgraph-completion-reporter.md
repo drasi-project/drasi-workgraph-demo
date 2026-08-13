@@ -142,14 +142,21 @@ or the default cloud-agent GitHub MCP token. The PAT owner becomes the observed
 completion-comment author and must be allowlisted by the router for the active
 agent execution.
 
-The currently verified launcher and reporter token identities both resolve to
-login `agentofreality`, numeric user ID `4021243`, but neither value is
-hardcoded. With both configured IDs set to `4021243`, one identity authors both
-the trusted execution record and completion event. That same-user authorship
-weakens separation of duties and is a prototype trust limitation: compromise
-or misuse of that identity can forge both sides of the trust check. Verify both
-observed authors live and use separate least-privilege identities before
-treating this as a production boundary.
+The current local launcher identity and an existing broad token have been
+observed as login `agentofreality`, numeric user ID `4021243`. Those observations
+do not verify either final dedicated PAT identity. A dedicated reporter PAT has
+not been supplied or live-probed, so
+`COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID` and
+`COPILOT_MCP_WORKGRAPH_REPORTER_LOGIN` remain unresolved until that probe.
+Observe and record both dedicated identities rather than copying the broad-token
+values by assumption.
+
+If both dedicated roles were configured as user ID `4021243` /
+`agentofreality`, one identity would author both the trusted execution record
+and completion event. That hypothetical same-user authorship weakens separation
+of duties and is a prototype trust limitation: compromise or misuse of that
+identity could forge both sides of the trust check. Production requires
+distinct least-privilege tokens and immutable user IDs.
 
 After merging the profile, obtain its blob SHA for launcher prompts and
 execution records:

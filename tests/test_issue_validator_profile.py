@@ -129,6 +129,11 @@ class IssueValidatorProfileTest(unittest.TestCase):
         )
         self.assertIn("There is no fallback", self.reporter_doc)
         self.assertIn("`GITHUB_AGENT_TOKEN`", self.reporter_doc)
+        self.assertIn(
+            "dedicated reporter PAT has\nnot been supplied or live-probed",
+            self.reporter_doc,
+        )
+        self.assertIn("remain unresolved until that probe", self.reporter_doc)
         self.assertIn("manual Agent Task", self.reporter_doc)
         self.assertNotIn("GraphQL document", self.profile.split("---", 2)[1])
 
