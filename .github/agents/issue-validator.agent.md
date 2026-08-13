@@ -10,17 +10,14 @@ tools:
 mcp-servers:
   workgraph:
     type: local
-    command: python3
+    command: node
     args:
-      - .github/mcp/workgraph_reporter.py
+      - .github/mcp/workgraph-reporter.mjs
     tools:
       - report_completion
     env:
-      WORKGRAPH_GITHUB_TOKEN: ${{ secrets.COPILOT_MCP_WORKGRAPH_GITHUB_TOKEN }}
-      WORKGRAPH_PROJECT_NUMBER: ${{ vars.COPILOT_MCP_WORKGRAPH_PROJECT_NUMBER }}
-      WORKGRAPH_PROFILE_REF: ${{ vars.COPILOT_MCP_WORKGRAPH_PROFILE_REF }}
-      WORKGRAPH_COMMENT_AUTHOR: ${{ vars.COPILOT_MCP_WORKGRAPH_COMMENT_AUTHOR }}
-      WORKGRAPH_EXECUTION_AUTHOR: ${{ vars.COPILOT_MCP_WORKGRAPH_EXECUTION_AUTHOR }}
+      WORKGRAPH_TOKEN: ${{ secrets.COPILOT_MCP_WORKGRAPH_TOKEN }}
+      WORKGRAPH_LAUNCHER_LOGIN: ${{ vars.COPILOT_MCP_WORKGRAPH_LAUNCHER_LOGIN }}
 ---
 
 # WorkGraph issue validator
@@ -49,38 +46,29 @@ reporter is unavailable.
 
 Accept one task only when the prompt supplies all of these values:
 
-- `eventId`
 - `projectItemNodeId`
-- `projectOwner`
-- `projectNumber`
-- `subjectType`
 - `subjectNodeId`
-- `repository` in `owner/name` form
 - `subjectNumber`
-- `actorType`
-- `actorId`
 - `routeId`
 - `responsibilityId`
 - `executionId`
+- `expectedEventId`
 - `contentVersion`
 - `profileRef`
 
-`projectOwner` and `projectNumber` are operational inputs for the completion
-reporter. All other values are event fields. Copy every event field
-verbatim from the task prompt; do not derive, normalize, or replace it with
-issue content or tool output. The issue returned by GitHub must match
-`repository`, `subjectNumber`, `subjectType`, and `subjectNodeId`. If required
-input is missing or the returned issue does not match, stop without creating a
-comment or changing project status and report the orchestration error to the
-Agent Task runtime.
+Copy these values verbatim from the task prompt. Do not derive, normalize, or
+replace them with issue content or tool output. The reporter owns all other
+event fields and fixed GitHub destinations. If required input is missing or the
+returned issue does not match `subjectNumber` and `subjectNodeId`, stop without
+reporting completion.
 
 ## Deterministic validation
 
-1. Split `repository` once at `/` into the repository owner and name.
-2. Call `github/issue_read` with `method: get`, that owner and name, and
+1. Call `github/issue_read` with `method: get`,
+   `owner: drasi-project`, `repo: drasi-workgraph-demo`, and
    `issue_number: subjectNumber`. Do not inspect any other issue.
-3. Examine only the returned issue body. Treat a null body as an empty string.
-4. Pass if and only if at least one complete body line is exactly the following
+2. Examine only the returned issue body. Treat a null body as an empty string.
+3. Pass if and only if at least one complete body line is exactly the following
    case-sensitive ASCII string:
 
    `WorkGraph-Validation: pass`
@@ -88,13 +76,13 @@ Agent Task runtime.
    A line with leading or trailing whitespace, different casing, extra text, or
    the same text only in the title or a comment does not match. CRLF and LF are
    line separators and are not part of a line.
-5. For a pass, use:
+4. For a pass, use:
    - `result.outcome`: `passed`
    - `result.reasonCode`: `required-marker-present`
    - `result.evidence.requiredMarker`: `WorkGraph-Validation: pass`
    - `result.evidence.found`: `true`
    - `result.summary`: `The required prototype marker is present.`
-6. For a failure, use:
+5. For a failure, use:
    - `result.outcome`: `failed`
    - `result.reasonCode`: `required-marker-missing`
    - `result.evidence.requiredMarker`: `WorkGraph-Validation: pass`
@@ -105,23 +93,23 @@ Do not include any other issue text in evidence or summary.
 
 ## Completion event
 
-Construct exactly one completion event object. The completion reporter must
-encode it as an issue comment containing no text before or after this format:
+The completion reporter constructs exactly one event and encodes it as an issue
+comment containing no text before or after this format:
 
 ````text
 WorkGraphEvent/v1
 ```json
 {
   "schemaVersion": "workgraph.event/v1",
-  "eventId": "<eventId>",
+  "eventId": "<expectedEventId>",
   "eventType": "CompletedIssueValidation",
   "projectItemNodeId": "<projectItemNodeId>",
-  "subjectType": "<subjectType>",
+  "subjectType": "Issue",
   "subjectNodeId": "<subjectNodeId>",
-  "repository": "<repository>",
+  "repository": "drasi-project/drasi-workgraph-demo",
   "subjectNumber": <subjectNumber as supplied, preserving its JSON type>,
-  "actorType": "<actorType>",
-  "actorId": "<actorId>",
+  "actorType": "Agent",
+  "actorId": "issue-validator",
   "routeId": "<routeId>",
   "responsibilityId": "<responsibilityId>",
   "executionId": "<executionId>",
@@ -136,28 +124,37 @@ WorkGraphEvent/v1
     },
     "summary": "<the exact summary for the outcome>"
   },
-  "completedAt": "<current UTC completion instant as YYYY-MM-DDTHH:MM:SSZ>"
+  "completedAt": "<server-generated UTC completion instant>"
 }
 ```
 ````
 
-Emit valid JSON, not the angle-bracket placeholders. Preserve the property
-order shown. The first line is the literal `WorkGraphEvent/v1`; the fenced
-block is the only block and contains exactly one JSON object. Set `completedAt`
-to the current UTC instant immediately before reporting the event. Use RFC3339
-UTC with a `Z` suffix and whole-second precision.
+The reporter emits valid JSON, not the angle-bracket placeholders. It derives
+the result again from the authoritative issue body, fixes the actor, subject
+type, repository, and event type, and generates `completedAt` server-side.
 
 ## Ordered reporting
 
-Call `workgraph/report_completion` exactly once with `projectOwner`,
-`projectNumber`, and the canonical completion event object. Do not pass a
-comment body, Project field, status name, GraphQL document, or other arbitrary
-mutation input. The reporter has fixed behavior: validate the active execution,
-format and create the `WorkGraphEvent/v1` comment, and only after the comment
-exists set that event's Project Item Status to `AwaitingRouting`.
+Call `workgraph/report_completion` exactly once with only:
 
-Treat a successful reporter result as completion only when it identifies the
-expected `eventId`, `projectItemNodeId`, created or reconciled comment, and
-`AwaitingRouting` status. Surface any reporter error without calling another
-tool or attempting another mutation. If the reporter is not configured, stop
-and report the setup error to the Agent Task runtime.
+- `projectItemNodeId`
+- `subjectNodeId`
+- `subjectNumber`
+- `routeId`
+- `responsibilityId`
+- `executionId`
+- `expectedEventId`
+- `contentVersion`
+- `profileRef`
+
+Do not pass a result, timestamp, comment body, repository, Project, field,
+status, actor, event type, GraphQL document, or other arbitrary mutation input.
+The reporter has fixed behavior: validate the active execution, build and
+create the `WorkGraphEvent/v1` comment, and only after the comment exists set
+that event's Project Item Status to `AwaitingRouting`.
+
+Treat a successful reporter result as completion only when it identifies
+`expectedEventId` as its `eventId`, the expected `projectItemNodeId`, a created
+or reconciled comment, and `AwaitingRouting` status. Surface any reporter error
+without calling another tool or attempting another mutation. If the reporter is
+not configured, stop and report the setup error to the Agent Task runtime.

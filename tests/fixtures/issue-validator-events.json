@@ -1,15 +1,9 @@
 {
   "taskPrompt": {
-    "eventId": "event:execution:validation-001:CompletedIssueValidation",
+    "expectedEventId": "event:execution:validation-001:CompletedIssueValidation",
     "projectItemNodeId": "PVTI_example",
-    "projectOwner": "drasi-project",
-    "projectNumber": 1,
-    "subjectType": "Issue",
     "subjectNodeId": "I_example",
-    "repository": "drasi-project/drasi-workgraph-demo",
     "subjectNumber": 7,
-    "actorType": "Agent",
-    "actorId": "issue-validator",
     "routeId": "validate",
     "responsibilityId": "validate-issue",
     "executionId": "execution:validation-001",

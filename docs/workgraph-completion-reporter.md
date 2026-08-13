@@ -1,60 +1,60 @@
 # WorkGraph completion reporter
 
-The issue-validator agent requires one repository-configured MCP capability:
-`workgraph/report_completion`. GitHub's built-in cloud-agent GitHub MCP token is
-read-only by default, so the existence of separate
-`github/add_issue_comment` and `github/projects_write` tools does not prove that
-an Agent Task can use them. The profile intentionally does not expose those
-broad mutation tools.
+The issue-validator agent exposes only:
 
-This repository ships a local stdio MCP server at
-`.github/mcp/workgraph_reporter.py` and configures it in the agent profile. The
-server uses only Python's standard library and exposes only
-`report_completion`.
+- `github/issue_read`, using the cloud agent's repository-scoped read token;
+- `workgraph/report_completion`, provided by the dependency-free local Node
+  stdio server at `.github/mcp/workgraph-reporter.mjs`.
+
+The built-in GitHub MCP token is read-only by default. The scoped reporter uses
+a separate write-capable PAT supplied only through a Copilot Agents secret. It
+does not expose `github/add_issue_comment`, `github/projects_write`, a generic
+GitHub request, or arbitrary GraphQL.
+
+## Fixed authority boundary
+
+The reporter owns these destinations and values; callers cannot override them:
+
+| Setting | Fixed value |
+| --- | --- |
+| Repository | `drasi-project/drasi-workgraph-demo` |
+| ProjectV2 node ID | `PVT_kwDOCX0YF84BgNE3` |
+| Status field node ID | `PVTSSF_lADOCX0YF84BgNE3zhaadbw` |
+| `AwaitingRouting` option ID | `3407e5fe` |
+| Event schema | `workgraph.event/v1` |
+| Event type | `CompletedIssueValidation` |
+| Subject type | `Issue` |
+| Actor type | `Agent` |
+| Actor ID / agent profile | `issue-validator` |
+
+The only externally configured trust value is the launcher login that writes
+the active `workgraph.execution/v1` comment.
 
 ## Tool contract
 
-`workgraph/report_completion` accepts only:
+`workgraph/report_completion` rejects unknown and additional properties. Its
+complete input is:
 
 ```json
 {
-  "projectOwner": "organization-login",
-  "projectNumber": 1,
-  "event": {
-    "schemaVersion": "workgraph.event/v1",
-    "eventId": "event:execution:...:CompletedIssueValidation",
-    "eventType": "CompletedIssueValidation",
-    "projectItemNodeId": "PVTI_...",
-    "subjectType": "Issue",
-    "subjectNodeId": "I_...",
-    "repository": "owner/repository",
-    "subjectNumber": 1,
-    "actorType": "Agent",
-    "actorId": "issue-validator",
-    "routeId": "validation:...",
-    "responsibilityId": "validation:...:issue-validator",
-    "executionId": "execution:...",
-    "contentVersion": "2026-08-13T01:00:00Z",
-    "profileRef": "issue-validator@AGENT_PROFILE_BLOB_SHA",
-    "result": {
-      "outcome": "passed",
-      "reasonCode": "required-marker-present",
-      "evidence": {
-        "requiredMarker": "WorkGraph-Validation: pass",
-        "found": true
-      },
-      "summary": "The required prototype marker is present."
-    },
-    "completedAt": "2026-08-13T01:00:20Z"
-  }
+  "projectItemNodeId": "PVTI_...",
+  "subjectNodeId": "I_...",
+  "subjectNumber": 2,
+  "routeId": "validation:PVTI_...:2026-08-13T01:00:00Z",
+  "responsibilityId": "validation:PVTI_...:2026-08-13T01:00:00Z:issue-validator",
+  "executionId": "execution:...",
+  "expectedEventId": "event:execution:...:CompletedIssueValidation",
+  "contentVersion": "2026-08-13T01:00:00Z",
+  "profileRef": "issue-validator@AGENT_PROFILE_BLOB_SHA"
 }
 ```
 
-The tool must reject additional properties. It must not accept a comment body,
-status value, field selector, GraphQL document, repository mutation, or generic
-GitHub API request.
+The tool does not accept repository, Project, field, option, status, actor,
+event type, result, timestamp, comment body, REST operation, or GraphQL input.
+It derives the validation result from the authoritative issue body and
+generates `completedAt` on the server.
 
-The result contains only the verified completion identifiers:
+Success returns only verified completion identifiers:
 
 ```json
 {
@@ -66,88 +66,92 @@ The result contains only the verified completion identifiers:
 }
 ```
 
-## Required behavior
+## Ordered behavior
 
-The reporter must:
+For each call, the reporter:
 
-1. Require the configured repository, Project owner and number, deployed
-   profile blob SHA, logical agent ID, and PAT owner login.
-2. Validate the deterministic `eventId`, `executionId`, `responsibilityId`,
-   `actorId`, `profileRef`, repository, subject, and Project Item claims.
-3. Read the authoritative issue and independently reproduce the exact-line
-   marker decision before accepting `result`.
-4. Validate the complete `workgraph.event/v1` schema and allow only
-   `CompletedIssueValidation`.
-5. Require the Project Item to belong to the configured Project and contain the
-   validated Issue.
-6. Format exactly one comment beginning with `WorkGraphEvent/v1`, followed by
-   one fenced `json` object and no unrelated text.
-7. Create the comment using its authenticated identity.
-8. Only after the comment exists, update the specified organization ProjectV2
-   Item's `Status` field to the fixed option `AwaitingRouting`.
-9. Read the Item back and return success only after `AwaitingRouting` is
-   observed.
+1. Rejects malformed or additional input and verifies the deterministic
+   `expectedEventId` and `issue-validator@<40-character-blob-SHA>` profile.
+2. Resolves the PAT identity from GitHub.
+3. Reads the fixed-repository Issue and verifies its number and node ID.
+4. Reads the supplied Project Item and verifies that it belongs to the fixed
+   Project and contains that exact fixed-repository Issue.
+5. Reads issue comments and requires exactly one pure-JSON
+   `workgraph.execution/v1` comment from the configured trusted launcher. The
+   record must be `started` and match the route, responsibility, execution,
+   expected event, event type, agent profile, and profile reference.
+6. Re-evaluates the case-sensitive complete-line marker
+   `WorkGraph-Validation: pass`.
+7. Builds the canonical `WorkGraphEvent/v1` payload with fixed actor, subject,
+   repository, and event type, the derived result, and a server-generated UTC
+   `completedAt`.
+8. Searches for the deterministic event ID. It adopts only one schema-valid,
+   canonically formatted matching comment whose author ID equals the current
+   PAT identity. Spoofed or conflicting comments cannot satisfy reconciliation.
+9. Creates the canonical comment when none exists. If the POST result is
+   ambiguous, it searches again and adopts only the authenticated canonical
+   comment; otherwise it fails without changing Project status.
+10. Only after the comment exists, sends one fixed
+    `updateProjectV2ItemFieldValue` mutation using the literal Project, field,
+    and option IDs above.
+11. Reads the Item back and returns success only when its `Status` value is
+    observed as `AwaitingRouting`.
 
-If comment creation has an ambiguous result, the reporter must search the
-target issue for the deterministic `eventId`. It may adopt only a schema-valid
-comment written by its own authenticated identity for the active execution.
-Untrusted issue content or a matching comment from another author cannot
-satisfy reconciliation. Once the comment exists, a status retry must not create
-a second comment.
+An explicit comment failure never produces a status mutation. A retry after a
+status failure adopts the existing comment instead of creating a duplicate.
 
-## Repository setup
+## Agents configuration
 
-Configure these Copilot **Agents** settings before starting the validator:
+In the repository, open **Settings > Secrets and variables > Agents** and add:
 
 | Kind | Name | Value |
 | --- | --- | --- |
-| Secret | `COPILOT_MCP_WORKGRAPH_GITHUB_TOKEN` | Write-capable PAT; never commit it |
-| Variable | `COPILOT_MCP_WORKGRAPH_PROJECT_NUMBER` | Organization ProjectV2 number |
-| Variable | `COPILOT_MCP_WORKGRAPH_PROFILE_REF` | `issue-validator@` plus the deployed 40-character profile blob SHA |
-| Variable | `COPILOT_MCP_WORKGRAPH_COMMENT_AUTHOR` | Exact GitHub login that owns the PAT |
-| Variable | `COPILOT_MCP_WORKGRAPH_EXECUTION_AUTHOR` | Exact trusted launcher login that writes `workgraph.execution/v1` comments |
+| Secret | `COPILOT_MCP_WORKGRAPH_TOKEN` | Write-capable PAT; never commit it |
+| Variable | `COPILOT_MCP_WORKGRAPH_LAUNCHER_LOGIN` | Exact trusted login that authors execution comments |
 
-The PAT must be restricted to `drasi-project/drasi-workgraph-demo`, allow Issue
-metadata read and Issue comment write, and allow organization ProjectV2 read
-and write for the configured Project. Authorize organization SSO when required.
-Do not use the Actions `GITHUB_TOKEN`, an installation token, or the default
-read-only cloud-agent GitHub MCP token.
+Names use the required `COPILOT_MCP_` prefix, so the values are available only
+to MCP configuration. The agent profile maps them to the local server as
+`WORKGRAPH_TOKEN` and `WORKGRAPH_LAUNCHER_LOGIN`.
 
-The launcher login must be independently controlled and allowlisted. The
-reporter accepts an event only when exactly one pure-JSON
-`workgraph.execution/v1` comment from that login has `state=started` and matches
-the event's route, responsibility, execution, expected event, agent profile,
-and deployed profile reference.
+The PAT must:
 
-After the profile is merged, derive its blob SHA and set the profile variable:
+- be restricted to `drasi-project/drasi-workgraph-demo`;
+- read repository and Issue metadata and write Issue comments;
+- read and write organization ProjectV2 data for Project
+  `PVT_kwDOCX0YF84BgNE3`;
+- be authorized for organization SSO when required.
+
+Do not use an Actions secret, the Actions `GITHUB_TOKEN`, an installation token,
+or the default cloud-agent GitHub MCP token. The PAT owner becomes the observed
+completion-comment author and must be allowlisted by the router for the active
+agent execution.
+
+After merging the profile, obtain its blob SHA for launcher prompts and
+execution records:
 
 ```bash
-blob_sha="$(git rev-parse HEAD:.github/agents/issue-validator.agent.md)"
-printf 'issue-validator@%s\n' "${blob_sha}"
+git rev-parse HEAD:.github/agents/issue-validator.agent.md
 ```
 
-In the repository, open **Settings > Secrets and variables > Agents**. Create
-the secret on the **Secrets** tab and the four variables on the **Variables**
-tab. Paste the printed profile reference as the profile variable. Do not use
-Actions, Codespaces, or Dependabot secrets, pass the PAT on a command line, or
-store it in a variable.
+## Tests and activation gate
 
-## Activation probe
-
-Run the local protocol tests without a token:
+Node is preinstalled on GitHub-hosted cloud runners; the server has no package
+dependencies. Run:
 
 ```bash
+node --check .github/mcp/workgraph-reporter.mjs
+node --test tests/workgraph-reporter.test.mjs
 python3 -m unittest discover -s tests -v
 ```
 
-Then run a manual Agent Task against a disposable issue with
-`create_pull_request=false`. This live probe is an activation blocker because
-unit tests cannot prove cloud-agent MCP startup, PAT policy, SSO authorization,
-Project field configuration, or the observed GitHub comment identity.
+The Node suite spawns the actual stdio process and uses a local fake GitHub HTTP
+server. It covers protocol negotiation, the single tool surface, additional
+input rejection, fixed mutation IDs, comment-before-status ordering, duplicate
+adoption, spoof rejection, ambiguous-create reconciliation, and no status write
+after comment failure.
 
-The probe must prove that the reporter creates the canonical comment, that the
-observed author equals `COPILOT_MCP_WORKGRAPH_COMMENT_AUTHOR` and is allowlisted
-for the active agent execution, and that it writes `AwaitingRouting` only after
-the comment exists. Repeat with an intentionally interrupted comment response
-to prove authenticated reconciliation does not create a duplicate. Do not
-enable automated routing until these probes pass.
+Before automated routing, run a manual Agent Task against a disposable Issue
+with `create_pull_request=false`. This remains an activation blocker because
+local tests cannot prove cloud MCP startup, PAT/SSO policy, live Project
+configuration, or observed author allowlisting. Prove both the normal path and
+an interrupted comment response before enabling the router.

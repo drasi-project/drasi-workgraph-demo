@@ -40,12 +40,12 @@ class IssueValidatorProfileTest(unittest.TestCase):
         self.assertNotIn("github/add_issue_comment", frontmatter)
         self.assertNotIn("github/projects_write", frontmatter)
         self.assertIn("mcp-servers:\n  workgraph:", frontmatter)
-        self.assertIn("command: python3", frontmatter)
+        self.assertIn("command: node", frontmatter)
         self.assertIn(
-            ".github/mcp/workgraph_reporter.py", frontmatter
+            ".github/mcp/workgraph-reporter.mjs", frontmatter
         )
         self.assertIn(
-            "secrets.COPILOT_MCP_WORKGRAPH_GITHUB_TOKEN", frontmatter
+            "secrets.COPILOT_MCP_WORKGRAPH_TOKEN", frontmatter
         )
 
     def test_marker_match_is_complete_and_case_sensitive(self):
@@ -90,12 +90,11 @@ class IssueValidatorProfileTest(unittest.TestCase):
         self.assertIn('"eventType": "CompletedIssueValidation"', self.profile)
         self.assertIn('"subjectNumber": <subjectNumber', self.profile)
         self.assertIn(
-            '"completedAt": "<current UTC completion instant as '
-            'YYYY-MM-DDTHH:MM:SSZ>"',
+            '"completedAt": "<server-generated UTC completion instant>"',
             self.profile,
         )
         self.assertNotIn('"number":', self.profile)
-        event_id = self.profile.index('"eventId": "<eventId>"')
+        event_id = self.profile.index('"eventId": "<expectedEventId>"')
         event_type = self.profile.index(
             '"eventType": "CompletedIssueValidation"'
         )
@@ -105,12 +104,12 @@ class IssueValidatorProfileTest(unittest.TestCase):
         self.assertIn(
             "Call `workgraph/report_completion` exactly once", self.profile
         )
-        comment = self.reporter_doc.index("Create the comment")
+        comment = self.reporter_doc.index("Creates the canonical comment")
         status = self.reporter_doc.index("Only after the comment exists")
         self.assertLess(comment, status)
-        self.assertIn("fixed option `AwaitingRouting`", self.reporter_doc)
+        self.assertIn("`AwaitingRouting` option ID", self.reporter_doc)
         self.assertIn(
-            ".github/mcp/workgraph_reporter.py", self.reporter_doc
+            ".github/mcp/workgraph-reporter.mjs", self.reporter_doc
         )
         self.assertIn("manual Agent Task", self.reporter_doc)
         self.assertNotIn("GraphQL document", self.profile.split("---", 2)[1])
