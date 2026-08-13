@@ -1,0 +1,39 @@
+{
+  "taskPrompt": {
+    "eventId": "evt-validation-001",
+    "projectItemNodeId": "PVTI_example",
+    "projectOwner": "drasi-project",
+    "projectNumber": 1,
+    "subjectType": "Issue",
+    "subjectNodeId": "I_example",
+    "repository": "drasi-project/drasi-workgraph-demo",
+    "number": 7,
+    "actorType": "Agent",
+    "actorId": "issue-validator",
+    "routeId": "validate",
+    "responsibilityId": "validate-issue",
+    "executionId": "exec-validation-001",
+    "contentVersion": "1",
+    "profileRef": ".github/agents/issue-validator.agent.md"
+  },
+  "passed": {
+    "body": "Context\nWorkGraph-Validation: pass\n",
+    "result": "passed",
+    "reason": "required-marker-present",
+    "evidence": {
+      "requiredMarker": "WorkGraph-Validation: pass",
+      "present": true
+    },
+    "summary": "Required validation marker is present."
+  },
+  "failed": {
+    "body": "Context\nworkgraph-validation: pass\n",
+    "result": "failed",
+    "reason": "required-marker-missing",
+    "evidence": {
+      "requiredMarker": "WorkGraph-Validation: pass",
+      "present": false
+    },
+    "summary": "Required validation marker is missing."
+  }
+}
