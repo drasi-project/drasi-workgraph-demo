@@ -251,6 +251,7 @@ function apiBaseUrl() {
 function loadConfig() {
   const token = process.env.WORKGRAPH_TOKEN ?? "";
   const launcherLogin = process.env.WORKGRAPH_LAUNCHER_LOGIN ?? "";
+  const launcherUserIdText = process.env.WORKGRAPH_LAUNCHER_USER_ID ?? "";
   const reporterLogin = process.env.WORKGRAPH_REPORTER_LOGIN ?? "";
   if (!token) {
     throw new ReporterError(
@@ -258,10 +259,17 @@ function loadConfig() {
     );
   }
   validateLogin(launcherLogin, "WORKGRAPH_LAUNCHER_LOGIN");
+  const launcherUserId = Number(launcherUserIdText);
+  if (!Number.isSafeInteger(launcherUserId) || launcherUserId <= 0) {
+    throw new ReporterError(
+      "WORKGRAPH_LAUNCHER_USER_ID must be a positive integer",
+    );
+  }
   validateLogin(reporterLogin, "WORKGRAPH_REPORTER_LOGIN");
   return {
     token,
     launcherLogin,
+    launcherUserId,
     reporterLogin,
     apiUrl: apiBaseUrl(),
   };
@@ -498,12 +506,12 @@ function validateProjectItem(projectLookup, input) {
   }
 }
 
-function validateActiveExecution(comments, input, launcherLogin) {
+function validateActiveExecution(comments, input, config) {
   const matches = [];
   for (const comment of comments) {
     if (
       !isObject(comment) ||
-      comment.user?.login?.toLowerCase() !== launcherLogin.toLowerCase() ||
+      comment.user?.id !== config.launcherUserId ||
       typeof comment.body !== "string"
     ) {
       continue;
@@ -550,7 +558,9 @@ function validateActiveExecution(comments, input, launcherLogin) {
   }
   if (matches.length !== 1) {
     throw new ReporterError(
-      "exactly one trusted started execution must match the completion",
+      "exactly one trusted started execution must match the completion; " +
+        `expected launcher user ID ${config.launcherUserId} ` +
+        `(${config.launcherLogin})`,
     );
   }
 }
@@ -612,7 +622,7 @@ class CompletionReporter {
     const item = await this.client.getProjectItem(input.projectItemNodeId);
     validateProjectItem(item, input);
     let comments = await this.client.listComments(input.subjectNumber);
-    validateActiveExecution(comments, input, this.config.launcherLogin);
+    validateActiveExecution(comments, input, this.config);
 
     let completion = findOwnedCompletion(
       comments,
@@ -632,7 +642,7 @@ class CompletionReporter {
           throw error;
         }
         comments = await this.client.listComments(input.subjectNumber);
-        validateActiveExecution(comments, input, this.config.launcherLogin);
+        validateActiveExecution(comments, input, this.config);
         completion = findOwnedCompletion(
           comments,
           input,

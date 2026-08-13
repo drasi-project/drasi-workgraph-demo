@@ -272,7 +272,11 @@ async function startFakeGitHub({
 async function runMcp(
   messages,
   apiUrl,
-  { reporterLogin = "workgraph-reporter" } = {},
+  {
+    launcherLogin = "trusted-launcher",
+    launcherUserId = "7",
+    reporterLogin = "workgraph-reporter",
+  } = {},
 ) {
   const child = spawn(process.execPath, [REPORTER], {
     cwd: ROOT,
@@ -281,7 +285,8 @@ async function runMcp(
       NODE_ENV: "test",
       WORKGRAPH_TEST_GITHUB_API_URL: apiUrl,
       WORKGRAPH_TOKEN: "test-token",
-      WORKGRAPH_LAUNCHER_LOGIN: "trusted-launcher",
+      WORKGRAPH_LAUNCHER_LOGIN: launcherLogin,
+      WORKGRAPH_LAUNCHER_USER_ID: launcherUserId,
       WORKGRAPH_REPORTER_LOGIN: reporterLogin,
     },
     stdio: ["pipe", "pipe", "pipe"],
@@ -392,6 +397,59 @@ test("rejects a PAT identity that does not match configured reporter", async () 
       /PAT identity does not match/,
     );
     assert.deepEqual(fake.state.operations, ["identity"]);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects reused launcher login when immutable user ID differs", async () => {
+  const fake = await startFakeGitHub();
+  try {
+    const responses = await runMcp(protocolMessages(), fake.apiUrl, {
+      launcherLogin: "trusted-launcher",
+      launcherUserId: "99",
+    });
+    assert.equal(responses[3].result.isError, true);
+    assert.match(
+      responses[3].result.content[0].text,
+      /expected launcher user ID 99/,
+    );
+    assert.equal(fake.state.postAttempts, 0);
+    assert.equal(fake.state.operations.includes("status"), false);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects a non-integer launcher user ID before GitHub access", async () => {
+  const fake = await startFakeGitHub();
+  try {
+    const responses = await runMcp(protocolMessages(), fake.apiUrl, {
+      launcherUserId: "not-an-integer",
+    });
+    assert.equal(responses[3].result.isError, true);
+    assert.match(
+      responses[3].result.content[0].text,
+      /LAUNCHER_USER_ID must be a positive integer/,
+    );
+    assert.deepEqual(fake.state.operations, []);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("accepts launcher rename when immutable user ID matches", async () => {
+  const fake = await startFakeGitHub();
+  try {
+    const responses = await runMcp(protocolMessages(), fake.apiUrl, {
+      launcherLogin: "renamed-launcher",
+      launcherUserId: "7",
+    });
+    assert.equal(responses[3].result.isError, false);
+    assert.equal(
+      responses[3].result.structuredContent.projectStatus,
+      "AwaitingRouting",
+    );
   } finally {
     await fake.close();
   }
