@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE = ROOT / ".github" / "agents" / "issue-validator.agent.md"
 FIXTURE = ROOT / "tests" / "fixtures" / "issue-validator-events.json"
+REPORTER_DOC = ROOT / "docs" / "workgraph-completion-reporter.md"
 MARKER = "WorkGraph-Validation: pass"
 
 
@@ -20,6 +21,7 @@ class IssueValidatorProfileTest(unittest.TestCase):
     def setUpClass(cls):
         cls.profile = PROFILE.read_text(encoding="utf-8")
         cls.fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
+        cls.reporter_doc = REPORTER_DOC.read_text(encoding="utf-8")
 
     def test_frontmatter_is_non_user_invocable_and_least_privileged(self):
         frontmatter = self.profile.split("---", 2)[1]
@@ -27,15 +29,16 @@ class IssueValidatorProfileTest(unittest.TestCase):
         self.assertRegex(frontmatter, r"(?m)^target: github-copilot$")
         self.assertRegex(frontmatter, r"(?m)^user-invocable: false$")
         self.assertRegex(frontmatter, r"(?m)^disable-model-invocation: true$")
-        tools = re.findall(r"(?m)^  - (github/\S+)$", frontmatter)
+        tools = re.findall(r"(?m)^  - (\S+/\S+)$", frontmatter)
         self.assertEqual(
             tools,
             [
                 "github/issue_read",
-                "github/add_issue_comment",
-                "github/projects_write",
+                "workgraph/report_completion",
             ],
         )
+        self.assertNotIn("github/add_issue_comment", frontmatter)
+        self.assertNotIn("github/projects_write", frontmatter)
 
     def test_marker_match_is_complete_and_case_sensitive(self):
         self.assertTrue(marker_present(self.fixture["passed"]["body"]))
@@ -90,11 +93,16 @@ class IssueValidatorProfileTest(unittest.TestCase):
         )
         self.assertLess(event_id, event_type)
 
-    def test_comment_precedes_status_update(self):
-        comment = self.profile.index("Call `github/add_issue_comment` once")
-        status = self.profile.index("call `github/projects_write` once")
+    def test_scoped_reporter_owns_ordered_completion(self):
+        self.assertIn(
+            "Call `workgraph/report_completion` exactly once", self.profile
+        )
+        comment = self.reporter_doc.index("Create the comment")
+        status = self.reporter_doc.index("Only after the comment exists")
         self.assertLess(comment, status)
-        self.assertIn('"value": "AwaitingRouting"', self.profile)
+        self.assertIn("fixed option `AwaitingRouting`", self.reporter_doc)
+        self.assertIn("does not contain or configure", self.reporter_doc)
+        self.assertNotIn("GraphQL document", self.profile.split("---", 2)[1])
 
 
 if __name__ == "__main__":
