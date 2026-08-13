@@ -18,6 +18,8 @@ The reporter owns these destinations and values; callers cannot override them:
 | Setting | Fixed value |
 | --- | --- |
 | Repository | `drasi-project/drasi-workgraph-demo` |
+| Project owner | `drasi-project` |
+| Project number | `3` |
 | ProjectV2 node ID | `PVT_kwDOCX0YF84BgNE3` |
 | Status field node ID | `PVTSSF_lADOCX0YF84BgNE3zhaadbw` |
 | `AwaitingRouting` option ID | `3407e5fe` |
@@ -74,8 +76,9 @@ For each call, the reporter:
    `expectedEventId` and `issue-validator@<40-character-blob-SHA>` profile.
 2. Resolves the PAT identity from GitHub.
 3. Reads the fixed-repository Issue and verifies its number and node ID.
-4. Reads the supplied Project Item and verifies that it belongs to the fixed
-   Project and contains that exact fixed-repository Issue.
+4. Resolves organization `drasi-project` Project number `3`, requires its node
+   ID to be `PVT_kwDOCX0YF84BgNE3`, and verifies that the supplied Project Item
+   belongs to it and contains that exact fixed-repository Issue.
 5. Reads issue comments and requires exactly one pure-JSON
    `workgraph.execution/v1` comment from the configured trusted launcher. The
    record must be `started` and match the route, responsibility, execution,

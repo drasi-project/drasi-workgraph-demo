@@ -8,6 +8,8 @@ const GITHUB_API_URL = "https://api.github.com";
 const REPOSITORY = "drasi-project/drasi-workgraph-demo";
 const REPOSITORY_OWNER = "drasi-project";
 const REPOSITORY_NAME = "drasi-workgraph-demo";
+const PROJECT_OWNER = "drasi-project";
+const PROJECT_NUMBER = 3;
 const PROJECT_ID = "PVT_kwDOCX0YF84BgNE3";
 const STATUS_FIELD_ID = "PVTSSF_lADOCX0YF84BgNE3zhaadbw";
 const AWAITING_ROUTING_OPTION_ID = "3407e5fe";
@@ -396,6 +398,9 @@ class GitHubClient {
   async getProjectItem(projectItemNodeId) {
     const query = `
 query WorkGraphProjectItem($item: ID!) {
+  organization(login: "${PROJECT_OWNER}") {
+    projectV2(number: ${PROJECT_NUMBER}) { id }
+  }
   node(id: $item) {
     ... on ProjectV2Item {
       id
@@ -411,7 +416,10 @@ query WorkGraphProjectItem($item: ID!) {
   }
 }`;
     const data = await this.graphql(query, { item: projectItemNodeId });
-    return data.node;
+    return {
+      item: data.node,
+      configuredProjectId: data.organization?.projectV2?.id,
+    };
   }
 
   async setAwaitingRouting(projectItemNodeId) {
@@ -463,7 +471,13 @@ function validateIssue(issue, input) {
   }
 }
 
-function validateProjectItem(item, input) {
+function validateProjectItem(projectLookup, input) {
+  if (projectLookup.configuredProjectId !== PROJECT_ID) {
+    throw new ReporterError(
+      "drasi-project Project number 3 does not match the fixed Project node ID",
+    );
+  }
+  const item = projectLookup.item;
   if (!isObject(item) || item.id !== input.projectItemNodeId) {
     throw new ReporterError("Project Item was not found");
   }

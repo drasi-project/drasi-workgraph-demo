@@ -104,6 +104,10 @@ class IssueValidatorProfileTest(unittest.TestCase):
         self.assertIn(
             "Call `workgraph/report_completion` exactly once", self.profile
         )
+        self.assertIn(
+            "organization `drasi-project`, Project number `3`", self.profile
+        )
+        self.assertIn("`PVT_kwDOCX0YF84BgNE3`", self.profile)
         comment = self.reporter_doc.index("Creates the canonical comment")
         status = self.reporter_doc.index("Only after the comment exists")
         self.assertLess(comment, status)

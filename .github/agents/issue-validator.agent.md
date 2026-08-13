@@ -131,7 +131,9 @@ WorkGraphEvent/v1
 
 The reporter emits valid JSON, not the angle-bracket placeholders. It derives
 the result again from the authoritative issue body, fixes the actor, subject
-type, repository, and event type, and generates `completedAt` server-side.
+type, repository, and event type, and generates `completedAt` server-side. Its
+only Project destination is organization `drasi-project`, Project number `3`,
+node `PVT_kwDOCX0YF84BgNE3`.
 
 ## Ordered reporting
 

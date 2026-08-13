@@ -133,6 +133,7 @@ async function startFakeGitHub({
     comments: [executionComment(INPUT), ...existingComments],
     operations: [],
     mutation: null,
+    projectQuery: null,
     postAttempts: 0,
   };
   const server = createServer(async (request, response) => {
@@ -202,8 +203,14 @@ async function startFakeGitHub({
       const payload = await requestBody(request);
       if (payload.query.includes("query WorkGraphProjectItem")) {
         state.operations.push("project-item");
+        state.projectQuery = payload.query;
         sendJson(response, 200, {
           data: {
+            organization: {
+              projectV2: {
+                id: projectItem.configuredProjectId ?? PROJECT_ID,
+              },
+            },
             node: {
               id: projectItem.id ?? INPUT.projectItemNodeId,
               project: {
@@ -392,6 +399,13 @@ test("creates a server-owned canonical event before fixed status mutation", asyn
     assert.equal(payload.result.outcome, "passed");
     assert.match(payload.completedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
     assert.equal(fake.state.mutation.variables.item, INPUT.projectItemNodeId);
+    const projectRead = fake.state.operations.indexOf("project-item");
+    assert.ok(projectRead >= 0);
+    assert.match(
+      fake.state.projectQuery,
+      /organization\(login: "drasi-project"\)/,
+    );
+    assert.match(fake.state.projectQuery, /projectV2\(number: 3\)/);
     assert.match(fake.state.mutation.query, new RegExp(PROJECT_ID));
     assert.match(fake.state.mutation.query, new RegExp(STATUS_FIELD_ID));
     assert.match(fake.state.mutation.query, new RegExp(STATUS_OPTION_ID));
@@ -399,6 +413,24 @@ test("creates a server-owned canonical event before fixed status mutation", asyn
       fake.state.operations.indexOf("status") <
         fake.state.operations.indexOf("status-verify"),
     );
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects a mismatched fixed Project owner/number lookup", async () => {
+  const fake = await startFakeGitHub({
+    projectItem: { configuredProjectId: "PVT_wrong" },
+  });
+  try {
+    const responses = await runMcp(protocolMessages(), fake.apiUrl);
+    assert.equal(responses[3].result.isError, true);
+    assert.match(
+      responses[3].result.content[0].text,
+      /Project number 3 does not match/,
+    );
+    assert.equal(fake.state.postAttempts, 0);
+    assert.equal(fake.state.operations.includes("status"), false);
   } finally {
     await fake.close();
   }
