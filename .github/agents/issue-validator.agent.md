@@ -41,7 +41,7 @@ Accept one task only when the prompt supplies all of these values:
 - `subjectType`
 - `subjectNodeId`
 - `repository` in `owner/name` form
-- `number`
+- `subjectNumber`
 - `actorType`
 - `actorId`
 - `routeId`
@@ -54,16 +54,16 @@ Accept one task only when the prompt supplies all of these values:
 Projects tool. All other values are event fields. Copy every event field
 verbatim from the task prompt; do not derive, normalize, or replace it with
 issue content or tool output. The issue returned by GitHub must match
-`repository`, `number`, `subjectType`, and `subjectNodeId`. If required input is
-missing or the returned issue does not match, stop without creating a comment
-or changing project status and report the orchestration error to the Agent Task
-runtime.
+`repository`, `subjectNumber`, `subjectType`, and `subjectNodeId`. If required
+input is missing or the returned issue does not match, stop without creating a
+comment or changing project status and report the orchestration error to the
+Agent Task runtime.
 
 ## Deterministic validation
 
 1. Split `repository` once at `/` into the repository owner and name.
 2. Call `github/issue_read` with `method: get`, that owner and name, and
-   `issue_number: number`. Do not inspect any other issue.
+   `issue_number: subjectNumber`. Do not inspect any other issue.
 3. Examine only the returned issue body. Treat a null body as an empty string.
 4. Pass if and only if at least one complete body line is exactly the following
    case-sensitive ASCII string:
@@ -74,17 +74,17 @@ runtime.
    the same text only in the title or a comment does not match. CRLF and LF are
    line separators and are not part of a line.
 5. For a pass, use:
-   - `result`: `passed`
-   - `reason`: `required-marker-present`
-   - `evidence.requiredMarker`: `WorkGraph-Validation: pass`
-   - `evidence.present`: `true`
-   - `summary`: `Required validation marker is present.`
+   - `result.outcome`: `passed`
+   - `result.reasonCode`: `required-marker-present`
+   - `result.evidence.requiredMarker`: `WorkGraph-Validation: pass`
+   - `result.evidence.found`: `true`
+   - `result.summary`: `The required prototype marker is present.`
 6. For a failure, use:
-   - `result`: `failed`
-   - `reason`: `required-marker-missing`
-   - `evidence.requiredMarker`: `WorkGraph-Validation: pass`
-   - `evidence.present`: `false`
-   - `summary`: `Required validation marker is missing.`
+   - `result.outcome`: `failed`
+   - `result.reasonCode`: `required-marker-missing`
+   - `result.evidence.requiredMarker`: `WorkGraph-Validation: pass`
+   - `result.evidence.found`: `false`
+   - `result.summary`: `The required prototype marker is missing.`
 
 Do not include any other issue text in evidence or summary.
 
@@ -98,13 +98,13 @@ WorkGraphEvent/v1
 ```json
 {
   "schemaVersion": "workgraph.event/v1",
-  "eventType": "CompletedIssueValidation",
   "eventId": "<eventId>",
+  "eventType": "CompletedIssueValidation",
   "projectItemNodeId": "<projectItemNodeId>",
   "subjectType": "<subjectType>",
   "subjectNodeId": "<subjectNodeId>",
   "repository": "<repository>",
-  "number": <number as supplied, preserving its JSON type>,
+  "subjectNumber": <subjectNumber as supplied, preserving its JSON type>,
   "actorType": "<actorType>",
   "actorId": "<actorId>",
   "routeId": "<routeId>",
@@ -112,20 +112,25 @@ WorkGraphEvent/v1
   "executionId": "<executionId>",
   "contentVersion": "<contentVersion>",
   "profileRef": "<profileRef>",
-  "result": "<passed or failed>",
-  "reason": "<required-marker-present or required-marker-missing>",
-  "evidence": {
-    "requiredMarker": "WorkGraph-Validation: pass",
-    "present": "<true or false as a JSON boolean>"
+  "result": {
+    "outcome": "<passed or failed>",
+    "reasonCode": "<required-marker-present or required-marker-missing>",
+    "evidence": {
+      "requiredMarker": "WorkGraph-Validation: pass",
+      "found": "<true or false as a JSON boolean>"
+    },
+    "summary": "<the exact summary for the outcome>"
   },
-  "summary": "<the exact summary for the result>"
+  "completedAt": "<current UTC completion instant as YYYY-MM-DDTHH:MM:SSZ>"
 }
 ```
 ````
 
 Emit valid JSON, not the angle-bracket placeholders. Preserve the property
 order shown. The first line is the literal `WorkGraphEvent/v1`; the fenced
-block is the only block and contains exactly one JSON object.
+block is the only block and contains exactly one JSON object. Set `completedAt`
+to the current UTC instant immediately before reporting the event. Use RFC3339
+UTC with a `Z` suffix and whole-second precision.
 
 ## Ordered reporting
 

@@ -7,7 +7,7 @@
     "subjectType": "Issue",
     "subjectNodeId": "I_example",
     "repository": "drasi-project/drasi-workgraph-demo",
-    "number": 7,
+    "subjectNumber": 7,
     "actorType": "Agent",
     "actorId": "issue-validator",
     "routeId": "validate",
@@ -18,22 +18,28 @@
   },
   "passed": {
     "body": "Context\nWorkGraph-Validation: pass\n",
-    "result": "passed",
-    "reason": "required-marker-present",
-    "evidence": {
-      "requiredMarker": "WorkGraph-Validation: pass",
-      "present": true
+    "result": {
+      "outcome": "passed",
+      "reasonCode": "required-marker-present",
+      "evidence": {
+        "requiredMarker": "WorkGraph-Validation: pass",
+        "found": true
+      },
+      "summary": "The required prototype marker is present."
     },
-    "summary": "Required validation marker is present."
+    "completedAt": "2026-08-13T01:00:20Z"
   },
   "failed": {
     "body": "Context\nworkgraph-validation: pass\n",
-    "result": "failed",
-    "reason": "required-marker-missing",
-    "evidence": {
-      "requiredMarker": "WorkGraph-Validation: pass",
-      "present": false
+    "result": {
+      "outcome": "failed",
+      "reasonCode": "required-marker-missing",
+      "evidence": {
+        "requiredMarker": "WorkGraph-Validation: pass",
+        "found": false
+      },
+      "summary": "The required prototype marker is missing."
     },
-    "summary": "Required validation marker is missing."
+    "completedAt": "2026-08-13T01:00:20Z"
   }
 }

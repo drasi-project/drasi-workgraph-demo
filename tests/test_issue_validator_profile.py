@@ -47,16 +47,48 @@ class IssueValidatorProfileTest(unittest.TestCase):
 
     def test_result_contract_is_deterministic(self):
         self.assertEqual(
-            (self.fixture["passed"]["result"], self.fixture["passed"]["reason"]),
+            (
+                self.fixture["passed"]["result"]["outcome"],
+                self.fixture["passed"]["result"]["reasonCode"],
+            ),
             ("passed", "required-marker-present"),
         )
         self.assertEqual(
-            (self.fixture["failed"]["result"], self.fixture["failed"]["reason"]),
+            (
+                self.fixture["failed"]["result"]["outcome"],
+                self.fixture["failed"]["result"]["reasonCode"],
+            ),
             ("failed", "required-marker-missing"),
+        )
+        self.assertTrue(self.fixture["passed"]["result"]["evidence"]["found"])
+        self.assertFalse(self.fixture["failed"]["result"]["evidence"]["found"])
+        self.assertEqual(
+            self.fixture["passed"]["result"]["summary"],
+            "The required prototype marker is present.",
+        )
+        self.assertEqual(
+            self.fixture["failed"]["result"]["summary"],
+            "The required prototype marker is missing.",
+        )
+        self.assertRegex(
+            self.fixture["passed"]["completedAt"],
+            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$",
         )
         self.assertIn("WorkGraphEvent/v1", self.profile)
         self.assertIn('"schemaVersion": "workgraph.event/v1"', self.profile)
         self.assertIn('"eventType": "CompletedIssueValidation"', self.profile)
+        self.assertIn('"subjectNumber": <subjectNumber', self.profile)
+        self.assertIn(
+            '"completedAt": "<current UTC completion instant as '
+            'YYYY-MM-DDTHH:MM:SSZ>"',
+            self.profile,
+        )
+        self.assertNotIn('"number":', self.profile)
+        event_id = self.profile.index('"eventId": "<eventId>"')
+        event_type = self.profile.index(
+            '"eventType": "CompletedIssueValidation"'
+        )
+        self.assertLess(event_id, event_type)
 
     def test_comment_precedes_status_update(self):
         comment = self.profile.index("Call `github/add_issue_comment` once")
