@@ -130,6 +130,12 @@ The PAT must:
   `PVT_kwDOCX0YF84BgNE3`;
 - be authorized for organization SSO when required.
 
+`COPILOT_MCP_WORKGRAPH_TOKEN` must be a separate least-privilege credential
+from the local launcher's `GITHUB_AGENT_TOKEN`. There is no fallback between
+them, and neither token may be reused for the other role. Do not copy
+`GITHUB_AGENT_TOKEN` into the reporter's Agents secret or expose the reporter
+PAT to the launcher process.
+
 Do not use an Actions secret, the Actions `GITHUB_TOKEN`, an installation token,
 or the default cloud-agent GitHub MCP token. The PAT owner becomes the observed
 completion-comment author and must be allowlisted by the router for the active

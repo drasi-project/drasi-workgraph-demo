@@ -121,6 +121,11 @@ class IssueValidatorProfileTest(unittest.TestCase):
         self.assertIn(
             ".github/mcp/workgraph-reporter.mjs", self.reporter_doc
         )
+        self.assertIn(
+            "separate least-privilege credential", self.reporter_doc
+        )
+        self.assertIn("There is no fallback", self.reporter_doc)
+        self.assertIn("`GITHUB_AGENT_TOKEN`", self.reporter_doc)
         self.assertIn("manual Agent Task", self.reporter_doc)
         self.assertNotIn("GraphQL document", self.profile.split("---", 2)[1])
 
