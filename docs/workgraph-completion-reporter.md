@@ -142,21 +142,19 @@ or the default cloud-agent GitHub MCP token. The PAT owner becomes the observed
 completion-comment author and must be allowlisted by the router for the active
 agent execution.
 
-The current local launcher identity and an existing broad token have been
-observed as login `agentofreality`, numeric user ID `4021243`. Those observations
-do not verify either final dedicated PAT identity. A dedicated reporter PAT has
-not been supplied or live-probed, so
-`COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID` and
-`COPILOT_MCP_WORKGRAPH_REPORTER_LOGIN` remain unresolved until that probe.
-Observe and record both dedicated identities rather than copying the broad-token
-values by assumption.
+The separate launcher and reporter PATs and all four variables are configured.
+The current configuration identifies both credential owners as login
+`agentofreality`, numeric user ID `4021243`. The launcher's Agent Tasks and
+Project reads have been verified. The reporter identity is not activation
+evidence until a live `workgraph/report_completion` call independently resolves
+the reporter PAT through GitHub's `/user` endpoint and matches that numeric ID.
 
-If both dedicated roles were configured as user ID `4021243` /
-`agentofreality`, one identity would author both the trusted execution record
-and completion event. That hypothetical same-user authorship weakens separation
-of duties and is a prototype trust limitation: compromise or misuse of that
-identity could forge both sides of the trust check. Production requires
-distinct least-privilege tokens and immutable user IDs.
+If the live reporter probe confirms the configured identity, one GitHub identity
+will author both the trusted execution record and completion event even though
+the credentials are separate. This same-user authorship weakens separation of
+duties and is an explicit prototype trust limitation: compromise or misuse of
+that identity could forge both sides of the trust check. Production requires
+separate least-privilege tokens owned by distinct immutable GitHub user IDs.
 
 After merging the profile, obtain its blob SHA for launcher prompts and
 execution records:

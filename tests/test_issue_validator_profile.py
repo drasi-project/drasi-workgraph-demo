@@ -130,10 +130,15 @@ class IssueValidatorProfileTest(unittest.TestCase):
         self.assertIn("There is no fallback", self.reporter_doc)
         self.assertIn("`GITHUB_AGENT_TOKEN`", self.reporter_doc)
         self.assertIn(
-            "dedicated reporter PAT has\nnot been supplied or live-probed",
+            "separate launcher and reporter PATs and all four variables are configured",
             self.reporter_doc,
         )
-        self.assertIn("remain unresolved until that probe", self.reporter_doc)
+        self.assertIn(
+            "not activation\nevidence until a live `workgraph/report_completion` call",
+            self.reporter_doc,
+        )
+        self.assertIn("same-user authorship", self.reporter_doc)
+        self.assertIn("distinct immutable GitHub user IDs", self.reporter_doc)
         self.assertIn("manual Agent Task", self.reporter_doc)
         self.assertNotIn("GraphQL document", self.profile.split("---", 2)[1])
 
