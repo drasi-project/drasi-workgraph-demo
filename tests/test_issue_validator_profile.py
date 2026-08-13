@@ -53,6 +53,9 @@ class IssueValidatorProfileTest(unittest.TestCase):
         self.assertIn(
             "vars.COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID", frontmatter
         )
+        self.assertIn(
+            "vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID", frontmatter
+        )
 
     def test_marker_match_is_complete_and_case_sensitive(self):
         self.assertTrue(marker_present(self.fixture["passed"]["body"]))

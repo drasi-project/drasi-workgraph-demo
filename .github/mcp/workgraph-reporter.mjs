@@ -97,6 +97,14 @@ function validateLogin(value, label) {
   }
 }
 
+function parseUserId(value, label) {
+  const userId = Number(value);
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    throw new ReporterError(`${label} must be a positive integer`);
+  }
+  return userId;
+}
+
 function validateInput(input) {
   requireExactKeys(input, INPUT_KEYS, "arguments");
   for (const key of INPUT_KEYS) {
@@ -253,24 +261,28 @@ function loadConfig() {
   const launcherLogin = process.env.WORKGRAPH_LAUNCHER_LOGIN ?? "";
   const launcherUserIdText = process.env.WORKGRAPH_LAUNCHER_USER_ID ?? "";
   const reporterLogin = process.env.WORKGRAPH_REPORTER_LOGIN ?? "";
+  const reporterUserIdText = process.env.WORKGRAPH_REPORTER_USER_ID ?? "";
   if (!token) {
     throw new ReporterError(
       "WORKGRAPH_TOKEN is not configured from the COPILOT_MCP_WORKGRAPH_TOKEN Agents secret",
     );
   }
   validateLogin(launcherLogin, "WORKGRAPH_LAUNCHER_LOGIN");
-  const launcherUserId = Number(launcherUserIdText);
-  if (!Number.isSafeInteger(launcherUserId) || launcherUserId <= 0) {
-    throw new ReporterError(
-      "WORKGRAPH_LAUNCHER_USER_ID must be a positive integer",
-    );
-  }
+  const launcherUserId = parseUserId(
+    launcherUserIdText,
+    "WORKGRAPH_LAUNCHER_USER_ID",
+  );
   validateLogin(reporterLogin, "WORKGRAPH_REPORTER_LOGIN");
+  const reporterUserId = parseUserId(
+    reporterUserIdText,
+    "WORKGRAPH_REPORTER_USER_ID",
+  );
   return {
     token,
     launcherLogin,
     launcherUserId,
     reporterLogin,
+    reporterUserId,
     apiUrl: apiBaseUrl(),
   };
 }
@@ -609,12 +621,11 @@ class CompletionReporter {
   async reportCompletion(input) {
     validateInput(input);
     const identity = await this.client.getIdentity();
-    if (
-      identity.login.toLowerCase() !==
-      this.config.reporterLogin.toLowerCase()
-    ) {
+    if (identity.id !== this.config.reporterUserId) {
       throw new ReporterError(
-        "GitHub PAT identity does not match WORKGRAPH_REPORTER_LOGIN",
+        "GitHub PAT identity does not match WORKGRAPH_REPORTER_USER_ID; " +
+          `expected ${this.config.reporterUserId} ` +
+          `(${this.config.reporterLogin})`,
       );
     }
     const issue = await this.client.getIssue(input.subjectNumber);

@@ -29,9 +29,8 @@ The reporter owns these destinations and values; callers cannot override them:
 | Actor type | `Agent` |
 | Actor ID / agent profile | `issue-validator` |
 
-The externally configured trust values are the launcher's immutable numeric
-GitHub user ID, its diagnostic login, and the reporter login that owns the write
-PAT.
+The externally configured trust values are the immutable numeric GitHub user
+IDs for the launcher and reporter plus their diagnostic logins.
 
 ## Tool contract
 
@@ -75,8 +74,8 @@ For each call, the reporter:
 
 1. Rejects malformed or additional input and verifies the deterministic
    `expectedEventId` and `issue-validator@<40-character-blob-SHA>` profile.
-2. Resolves the PAT identity from GitHub and requires its login to equal the
-   configured reporter login.
+2. Resolves the PAT identity from GitHub and requires its immutable numeric ID
+   to equal the configured reporter user ID. Reporter login is diagnostic only.
 3. Reads the fixed-repository Issue and verifies its number and node ID.
 4. Resolves organization `drasi-project` Project number `3`, requires its node
    ID to be `PVT_kwDOCX0YF84BgNE3`, and verifies that the supplied Project Item
@@ -115,12 +114,14 @@ In the repository, open **Settings > Secrets and variables > Agents** and add:
 | Secret | `COPILOT_MCP_WORKGRAPH_TOKEN` | Write-capable PAT; never commit it |
 | Variable | `COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID` | Immutable numeric ID of the trusted execution-comment author |
 | Variable | `COPILOT_MCP_WORKGRAPH_LAUNCHER_LOGIN` | Diagnostic login for that launcher ID |
-| Variable | `COPILOT_MCP_WORKGRAPH_REPORTER_LOGIN` | Exact trusted login that owns the write PAT |
+| Variable | `COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID` | Immutable numeric ID of the trusted write-PAT owner |
+| Variable | `COPILOT_MCP_WORKGRAPH_REPORTER_LOGIN` | Diagnostic login for that reporter ID |
 
 Names use the required `COPILOT_MCP_` prefix, so the values are available only
 to MCP configuration. The agent profile maps them to the local server as
 `WORKGRAPH_TOKEN`, `WORKGRAPH_LAUNCHER_USER_ID`,
-`WORKGRAPH_LAUNCHER_LOGIN`, and `WORKGRAPH_REPORTER_LOGIN`.
+`WORKGRAPH_LAUNCHER_LOGIN`, `WORKGRAPH_REPORTER_USER_ID`, and
+`WORKGRAPH_REPORTER_LOGIN`.
 
 The PAT must:
 
@@ -141,10 +142,10 @@ or the default cloud-agent GitHub MCP token. The PAT owner becomes the observed
 completion-comment author and must be allowlisted by the router for the active
 agent execution.
 
-The currently verified token identity is login `agentofreality`, numeric user
-ID `4021243`, but neither is hardcoded. If launcher ID `4021243` and reporter
-login `agentofreality` identify the same user, one identity authors both the
-trusted execution record and completion event. That same-user authorship
+The currently verified launcher and reporter token identities both resolve to
+login `agentofreality`, numeric user ID `4021243`, but neither value is
+hardcoded. With both configured IDs set to `4021243`, one identity authors both
+the trusted execution record and completion event. That same-user authorship
 weakens separation of duties and is a prototype trust limitation: compromise
 or misuse of that identity can forge both sides of the trust check. Verify both
 observed authors live and use separate least-privilege identities before

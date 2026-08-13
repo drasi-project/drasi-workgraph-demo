@@ -276,6 +276,7 @@ async function runMcp(
     launcherLogin = "trusted-launcher",
     launcherUserId = "7",
     reporterLogin = "workgraph-reporter",
+    reporterUserId = "42",
   } = {},
 ) {
   const child = spawn(process.execPath, [REPORTER], {
@@ -288,6 +289,7 @@ async function runMcp(
       WORKGRAPH_LAUNCHER_LOGIN: launcherLogin,
       WORKGRAPH_LAUNCHER_USER_ID: launcherUserId,
       WORKGRAPH_REPORTER_LOGIN: reporterLogin,
+      WORKGRAPH_REPORTER_USER_ID: reporterUserId,
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -385,18 +387,53 @@ test("rejects additional input before any GitHub operation", async () => {
   }
 });
 
-test("rejects a PAT identity that does not match configured reporter", async () => {
+test("rejects reused reporter login when immutable user ID differs", async () => {
   const fake = await startFakeGitHub();
   try {
     const responses = await runMcp(protocolMessages(), fake.apiUrl, {
-      reporterLogin: "different-reporter",
+      reporterLogin: "workgraph-reporter",
+      reporterUserId: "99",
     });
     assert.equal(responses[3].result.isError, true);
     assert.match(
       responses[3].result.content[0].text,
-      /PAT identity does not match/,
+      /expected 99/,
     );
     assert.deepEqual(fake.state.operations, ["identity"]);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects a non-integer reporter user ID before GitHub access", async () => {
+  const fake = await startFakeGitHub();
+  try {
+    const responses = await runMcp(protocolMessages(), fake.apiUrl, {
+      reporterUserId: "not-an-integer",
+    });
+    assert.equal(responses[3].result.isError, true);
+    assert.match(
+      responses[3].result.content[0].text,
+      /REPORTER_USER_ID must be a positive integer/,
+    );
+    assert.deepEqual(fake.state.operations, []);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("accepts reporter rename when immutable user ID matches", async () => {
+  const fake = await startFakeGitHub();
+  try {
+    const responses = await runMcp(protocolMessages(), fake.apiUrl, {
+      reporterLogin: "renamed-reporter",
+      reporterUserId: "42",
+    });
+    assert.equal(responses[3].result.isError, false);
+    assert.equal(
+      responses[3].result.structuredContent.projectStatus,
+      "AwaitingRouting",
+    );
   } finally {
     await fake.close();
   }
