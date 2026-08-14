@@ -1,16 +1,14 @@
 import assert from "node:assert/strict";
-import { once } from "node:events";
 import { spawn } from "node:child_process";
-import { createServer } from "node:http";
+import { createHash } from "node:crypto";
+import { once } from "node:events";
 import { readFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import test from "node:test";
 
-const ROOT = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "..",
-);
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const REPORTER = path.join(
   ROOT,
   ".github",
@@ -25,89 +23,134 @@ const FIXTURE = JSON.parse(
 );
 
 const PROJECT_ID = "PVT_kwDOCX0YF84BgNE3";
-const STATUS_FIELD_ID = "PVTSSF_lADOCX0YF84BgNE3zhaadbw";
-const STATUS_OPTION_ID = "3407e5fe";
 const REPOSITORY = "drasi-project/drasi-workgraph-demo";
-const INPUT = FIXTURE.taskPrompt;
+const INPUT = FIXTURE.input;
+const IDENTITY = FIXTURE.identity;
+const TIMESTAMP = "2026-08-14T12:00:00Z";
 
-function resultForBody(body) {
-  const found = (body ?? "")
-    .replaceAll("\r\n", "\n")
-    .split("\n")
-    .some((line) => line === "WorkGraph-Validation: pass");
-  return found
-    ? {
-        outcome: "passed",
-        reasonCode: "required-marker-present",
-        evidence: {
-          requiredMarker: "WorkGraph-Validation: pass",
-          found: true,
-        },
-        summary: "The required prototype marker is present.",
-      }
-    : {
-        outcome: "failed",
-        reasonCode: "required-marker-missing",
-        evidence: {
-          requiredMarker: "WorkGraph-Validation: pass",
-          found: false,
-        },
-        summary: "The required prototype marker is missing.",
-      };
+function sha256(value) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
-function canonicalEvent(
-  input,
-  issueBody,
-  completedAt = "2026-08-13T01:00:20Z",
-) {
+function digestForBody(body) {
+  return `sha256:${sha256(body ?? "")}`;
+}
+
+function runIdFor(contentDigest) {
+  const material =
+    `workgraph.run/v1\n${IDENTITY.projectItemNodeId}\n` +
+    `${IDENTITY.subjectNodeId}\n${contentDigest}`;
+  return `run:sha256:${sha256(material)}`;
+}
+
+function eventIdFor(runId, eventType) {
+  return `event:sha256:${sha256(
+    `workgraph.event/v1\n${runId}\n${eventType}`,
+  )}`;
+}
+
+function envelope(eventType, runId, payload) {
   return {
     schemaVersion: "workgraph.event/v1",
-    eventId: input.expectedEventId,
-    eventType: "CompletedIssueValidation",
-    projectItemNodeId: input.projectItemNodeId,
-    subjectType: "Issue",
-    subjectNodeId: input.subjectNodeId,
-    repository: REPOSITORY,
-    subjectNumber: input.subjectNumber,
-    actorType: "Agent",
-    actorId: "issue-validator",
-    routeId: input.routeId,
-    responsibilityId: input.responsibilityId,
-    executionId: input.executionId,
-    contentVersion: input.contentVersion,
-    profileRef: input.profileRef,
-    result: resultForBody(issueBody),
-    completedAt,
+    eventId: eventIdFor(runId, eventType),
+    eventType,
+    runId,
+    projectItemNodeId: IDENTITY.projectItemNodeId,
+    subjectNodeId: IDENTITY.subjectNodeId,
+    payload,
   };
 }
 
-function eventComment(event) {
-  return `WorkGraphEvent/v1\n\`\`\`json\n${JSON.stringify(event, null, 2)}\n\`\`\``;
+function assignmentEvent(body) {
+  const contentDigest = digestForBody(body);
+  const runId = runIdFor(contentDigest);
+  return envelope("ResponsibilityAssigned", runId, {
+    responsibilityType: "issue-validation",
+    profileRef: IDENTITY.profileRef,
+    contentDigest,
+  });
 }
 
-function executionComment(input, startedAt = "2026-08-13T01:00:05Z") {
+function executionEvent(body) {
+  const runId = runIdFor(digestForBody(body));
+  return envelope("ExecutionStarted", runId, {
+    executionId: INPUT.executionId,
+    taskId: IDENTITY.taskId,
+  });
+}
+
+function completionEvent(body) {
+  const passed = (body ?? "")
+    .replaceAll("\r\n", "\n")
+    .split("\n")
+    .includes("WorkGraph-Validation: pass");
+  return envelope(
+    "CompletedIssueValidation",
+    runIdFor(digestForBody(body)),
+    {
+      executionId: INPUT.executionId,
+      outcome: passed ? "passed" : "failed",
+      reasonCode: passed
+        ? "required-marker-present"
+        : "required-marker-missing",
+    },
+  );
+}
+
+function summaryFor(event) {
+  switch (event.eventType) {
+    case "ResponsibilityAssigned":
+      return "Issue validation responsibility assigned.";
+    case "ExecutionStarted":
+      return "Issue validation execution started.";
+    case "CompletedIssueValidation":
+      return event.payload.outcome === "passed"
+        ? "Issue validation passed."
+        : "Issue validation failed.";
+    default:
+      throw new Error("unsupported fixture event");
+  }
+}
+
+function eventBody(event, summary = summaryFor(event)) {
+  return (
+    `WorkGraphEvent/v1\n\n${summary}\n\n` +
+    JSON.stringify(event, null, 2)
+  );
+}
+
+function comment(
+  event,
+  {
+    nodeId = `IC_${event.eventType}`,
+    userId = 7,
+    login = "trusted-launcher",
+    body = eventBody(event),
+    createdAt = TIMESTAMP,
+    updatedAt = createdAt,
+  } = {},
+) {
   return {
-    node_id: "IC_execution",
-    user: { id: 7, login: "trusted-launcher" },
-    body: JSON.stringify({
-      schemaVersion: "workgraph.execution/v1",
-      messageType: "execution",
-      routeId: input.routeId,
-      responsibilityId: input.responsibilityId,
-      executionId: input.executionId,
-      expectedEventId: input.expectedEventId,
-      requiredEventType: "CompletedIssueValidation",
-      taskId: "task-1",
-      taskUrl: "https://github.com/github/copilot/tasks/task-1",
-      agentProfile: "issue-validator",
-      profileRef: input.profileRef,
-      requestedModel: "gpt-5.6-sol",
-      actualModel: "gpt-5.4",
-      state: "started",
-      startedAt,
-    }),
+    node_id: nodeId,
+    user: { id: userId, login },
+    body,
+    created_at: createdAt,
+    updated_at: updatedAt,
   };
+}
+
+function trustedComments(body) {
+  return [
+    comment(assignmentEvent(body)),
+    comment(executionEvent(body)),
+  ];
+}
+
+function parseEventBody(body) {
+  const match =
+    /^WorkGraphEvent\/v1\n\n([^\n]+)\n\n(\{[\s\S]*\})$/.exec(body);
+  assert.ok(match, "expected strict WorkGraphEvent/v1 body");
+  return { summary: match[1], event: JSON.parse(match[2]) };
 }
 
 async function requestBody(request) {
@@ -124,18 +167,25 @@ function sendJson(response, status, body) {
 }
 
 async function startFakeGitHub({
-  issueBody = "Context\nWorkGraph-Validation: pass\n",
-  existingComments = [],
+  issueBody = FIXTURE.passed.body,
+  issueBodies,
+  assignmentBody = issueBody ?? "",
+  comments,
+  extraComments = [],
   commentMode = "success",
-  executionStartedAt,
-  projectItem = {},
+  projectId = PROJECT_ID,
+  projectItems,
+  issueNodeId = IDENTITY.subjectNodeId,
 } = {}) {
   const state = {
-    comments: [executionComment(INPUT, executionStartedAt), ...existingComments],
+    comments: [
+      ...(comments ?? trustedComments(assignmentBody)),
+      ...extraComments,
+    ],
     operations: [],
-    mutation: null,
-    projectQuery: null,
     postAttempts: 0,
+    issueReads: 0,
+    graphqlQueries: [],
   };
   const server = createServer(async (request, response) => {
     if (request.headers.authorization !== "Bearer test-token") {
@@ -155,18 +205,21 @@ async function startFakeGitHub({
         `/repos/drasi-project/drasi-workgraph-demo/issues/${INPUT.subjectNumber}`
     ) {
       state.operations.push("issue");
+      const currentBody =
+        issueBodies?.[
+          Math.min(state.issueReads, issueBodies.length - 1)
+        ] ?? issueBody;
+      state.issueReads += 1;
       sendJson(response, 200, {
-        node_id: INPUT.subjectNodeId,
+        node_id: issueNodeId,
         number: INPUT.subjectNumber,
-        body: issueBody,
+        body: currentBody,
       });
       return;
     }
     if (
       request.method === "GET" &&
-      url.pathname.endsWith(
-        `/issues/${INPUT.subjectNumber}/comments`,
-      )
+      url.pathname.endsWith(`/issues/${INPUT.subjectNumber}/comments`)
     ) {
       state.operations.push("comments");
       sendJson(response, 200, state.comments);
@@ -174,9 +227,7 @@ async function startFakeGitHub({
     }
     if (
       request.method === "POST" &&
-      url.pathname.endsWith(
-        `/issues/${INPUT.subjectNumber}/comments`,
-      )
+      url.pathname.endsWith(`/issues/${INPUT.subjectNumber}/comments`)
     ) {
       state.postAttempts += 1;
       const payload = await requestBody(request);
@@ -185,45 +236,73 @@ async function startFakeGitHub({
         sendJson(response, 422, { message: "comment rejected" });
         return;
       }
-      const comment = {
+      const created = {
         node_id: "IC_created",
         user: { id: 42, login: "workgraph-reporter" },
         body: payload.body,
+        created_at: TIMESTAMP,
+        updated_at: TIMESTAMP,
       };
-      state.comments.push(comment);
+      state.comments.push(created);
+      if (
+        commentMode === "ambiguous-changed-correlation" ||
+        commentMode === "success-changed-correlation"
+      ) {
+        state.comments = [
+          ...trustedComments(FIXTURE.failed.body),
+          created,
+        ];
+      }
+      if (commentMode === "ambiguous-changed-correlation") {
+        state.operations.push("comment-ambiguous");
+        request.socket.destroy();
+        return;
+      }
+      if (commentMode === "race") {
+        state.comments.push({
+          ...created,
+          node_id: "IC_created_race",
+        });
+      }
       if (commentMode === "ambiguous" && state.postAttempts === 1) {
         state.operations.push("comment-ambiguous");
         request.socket.destroy();
         return;
       }
+      if (commentMode === "empty-success") {
+        state.operations.push("comment-empty-success");
+        response.writeHead(201, { "Content-Type": "application/json" });
+        response.end("");
+        return;
+      }
       state.operations.push("comment");
-      sendJson(response, 201, comment);
+      sendJson(response, 201, created);
       return;
     }
     if (request.method === "POST" && url.pathname === "/graphql") {
       const payload = await requestBody(request);
-      if (payload.query.includes("query WorkGraphProjectItem")) {
-        state.operations.push("project-item");
-        state.projectQuery = payload.query;
+      state.graphqlQueries.push(payload.query);
+      if (payload.query.includes("query WorkGraphProjectItems")) {
+        state.operations.push("project-items");
         sendJson(response, 200, {
           data: {
             organization: {
               projectV2: {
-                id: projectItem.configuredProjectId ?? PROJECT_ID,
-              },
-            },
-            node: {
-              id: projectItem.id ?? INPUT.projectItemNodeId,
-              project: {
-                id: projectItem.projectId ?? PROJECT_ID,
-              },
-              content: {
-                id: projectItem.subjectNodeId ?? INPUT.subjectNodeId,
-                number:
-                  projectItem.subjectNumber ?? INPUT.subjectNumber,
-                repository: {
-                  nameWithOwner:
-                    projectItem.repository ?? REPOSITORY,
+                id: projectId,
+                items: {
+                  nodes:
+                    projectItems ??
+                    [
+                      {
+                        id: IDENTITY.projectItemNodeId,
+                        content: {
+                          id: issueNodeId,
+                          number: INPUT.subjectNumber,
+                          repository: { nameWithOwner: REPOSITORY },
+                        },
+                      },
+                    ],
+                  pageInfo: { hasNextPage: false, endCursor: null },
                 },
               },
             },
@@ -231,29 +310,7 @@ async function startFakeGitHub({
         });
         return;
       }
-      if (payload.query.includes("query WorkGraphVerifyStatus")) {
-        state.operations.push("status-verify");
-        sendJson(response, 200, {
-          data: {
-            node: {
-              fieldValueByName: { name: "AwaitingRouting" },
-            },
-          },
-        });
-        return;
-      }
-      if (payload.query.includes("mutation WorkGraphAwaitingRouting")) {
-        state.operations.push("status");
-        state.mutation = payload;
-        sendJson(response, 200, {
-          data: {
-            updateProjectV2ItemFieldValue: {
-              projectV2Item: { id: INPUT.projectItemNodeId },
-            },
-          },
-        });
-        return;
-      }
+      assert.fail(`unexpected GraphQL operation: ${payload.query}`);
     }
     sendJson(response, 404, { message: "not found" });
   });
@@ -339,7 +396,16 @@ function protocolMessages(argumentsValue = INPUT) {
   ];
 }
 
-test("exposes exactly one strict report_completion tool", async () => {
+async function callReporter(fake, options) {
+  const responses = await runMcp(
+    protocolMessages(options?.input ?? INPUT),
+    fake.apiUrl,
+    options?.config,
+  );
+  return responses[3].result;
+}
+
+test("exposes exactly one strict two-field report_completion tool", async () => {
   const fake = await startFakeGitHub();
   try {
     const responses = await runMcp(protocolMessages(), fake.apiUrl);
@@ -353,21 +419,14 @@ test("exposes exactly one strict report_completion tool", async () => {
       "report_completion",
     ]);
     assert.equal(tools[0].inputSchema.additionalProperties, false);
+    assert.deepEqual(tools[0].inputSchema.required, [
+      "subjectNumber",
+      "executionId",
+    ]);
     assert.deepEqual(
-      Object.keys(tools[0].inputSchema.properties).sort(),
-      Object.keys(INPUT).sort(),
+      Object.keys(tools[0].inputSchema.properties),
+      ["subjectNumber", "executionId"],
     );
-    const properties = tools[0].inputSchema.properties;
-    for (const forbidden of [
-      "repository",
-      "project",
-      "status",
-      "field",
-      "commentBody",
-      "graphql",
-    ]) {
-      assert.equal(Object.hasOwn(properties, forbidden), false);
-    }
   } finally {
     await fake.close();
   }
@@ -376,306 +435,633 @@ test("exposes exactly one strict report_completion tool", async () => {
 test("rejects additional input before any GitHub operation", async () => {
   const fake = await startFakeGitHub();
   try {
-    const responses = await runMcp(
-      protocolMessages({ ...INPUT, status: "Done" }),
-      fake.apiUrl,
-    );
-    assert.equal(responses[3].result.isError, true);
-    assert.match(responses[3].result.content[0].text, /extra=.*status/);
+    const result = await callReporter(fake, {
+      input: { ...INPUT, subjectNodeId: IDENTITY.subjectNodeId },
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /extra=.*subjectNodeId/);
     assert.deepEqual(fake.state.operations, []);
   } finally {
     await fake.close();
   }
 });
 
-test("rejects reused reporter login when immutable user ID differs", async () => {
+test("shared body digest, run ID, and event ID vectors are exact", () => {
+  for (const name of ["passed", "failed", "emptyBody"]) {
+    const vector = FIXTURE[name];
+    assert.equal(digestForBody(vector.body), vector.contentDigest);
+    assert.equal(runIdFor(vector.contentDigest), vector.runId);
+    for (const [eventType, expected] of Object.entries(vector.eventIds)) {
+      assert.equal(eventIdFor(vector.runId, eventType), expected);
+    }
+  }
+  assert.notEqual(
+    digestForBody(FIXTURE.passed.body.replaceAll("\n", "\r\n")),
+    FIXTURE.passed.contentDigest,
+  );
+});
+
+for (const [name, vector] of [
+  ["passed", FIXTURE.passed],
+  ["failed", FIXTURE.failed],
+]) {
+  test(`creates the exact ${name} common event without Project mutation`, async () => {
+    const fake = await startFakeGitHub({ issueBody: vector.body });
+    try {
+      const result = await callReporter(fake);
+      assert.equal(result.isError, false);
+      assert.equal(result.structuredContent.eventId, vector.eventIds.CompletedIssueValidation);
+      assert.equal(result.structuredContent.executionId, INPUT.executionId);
+      assert.equal(result.structuredContent.projectItemNodeId, IDENTITY.projectItemNodeId);
+      assert.equal(result.structuredContent.subjectNodeId, IDENTITY.subjectNodeId);
+      assert.equal(result.structuredContent.reconciled, false);
+      const created = fake.state.comments.at(-1);
+      assert.equal(created.body.includes("```"), false);
+      assert.equal(created.body.endsWith("}"), true);
+      const parsed = parseEventBody(created.body);
+      assert.equal(parsed.summary, vector.summary);
+      assert.deepEqual(Object.keys(parsed.event), [
+        "schemaVersion",
+        "eventId",
+        "eventType",
+        "runId",
+        "projectItemNodeId",
+        "subjectNodeId",
+        "payload",
+      ]);
+      assert.deepEqual(parsed.event.payload, vector.payload);
+      for (const forbidden of [
+        "actor",
+        "actorType",
+        "actorId",
+        "repository",
+        "number",
+        "subjectNumber",
+        "subjectType",
+        "timestamp",
+        "completedAt",
+        "routeId",
+        "responsibilityId",
+        "contentVersion",
+        "profileRef",
+        "expectedEventId",
+        "result",
+        "evidence",
+      ]) {
+        assert.equal(Object.hasOwn(parsed.event, forbidden), false);
+      }
+      assert.deepEqual(fake.state.operations, [
+        "identity",
+        "issue",
+        "comments",
+        "project-items",
+        "issue",
+        "comment",
+        "comments",
+        "issue",
+      ]);
+      assert.equal(
+        fake.state.graphqlQueries.some((query) =>
+          query.includes("updateProjectV2ItemFieldValue"),
+        ),
+        false,
+      );
+    } finally {
+      await fake.close();
+    }
+  });
+}
+
+test("treats a null body as exact empty UTF-8 and fails validation", async () => {
+  const fake = await startFakeGitHub({
+    issueBody: null,
+    assignmentBody: "",
+  });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, false);
+    const parsed = parseEventBody(fake.state.comments.at(-1).body);
+    assert.equal(parsed.summary, "Issue validation failed.");
+    assert.deepEqual(parsed.event.payload, {
+      executionId: INPUT.executionId,
+      outcome: "failed",
+      reasonCode: "required-marker-missing",
+    });
+    assert.equal(parsed.event.runId, FIXTURE.emptyBody.runId);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("accepts renamed launcher and reporter logins by immutable IDs", async () => {
   const fake = await startFakeGitHub();
   try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl, {
-      reporterLogin: "workgraph-reporter",
-      reporterUserId: "99",
+    const result = await callReporter(fake, {
+      config: {
+        launcherLogin: "renamed-launcher",
+        launcherUserId: "7",
+        reporterLogin: "renamed-reporter",
+        reporterUserId: "42",
+      },
     });
-    assert.equal(responses[3].result.isError, true);
-    assert.match(
-      responses[3].result.content[0].text,
-      /expected 99/,
-    );
+    assert.equal(result.isError, false);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects reporter login reuse when immutable ID differs", async () => {
+  const fake = await startFakeGitHub();
+  try {
+    const result = await callReporter(fake, {
+      config: { reporterUserId: "99" },
+    });
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /expected 99/);
     assert.deepEqual(fake.state.operations, ["identity"]);
   } finally {
     await fake.close();
   }
 });
 
-test("rejects a non-integer reporter user ID before GitHub access", async () => {
+test("rejects launcher login reuse when immutable ID differs", async () => {
   const fake = await startFakeGitHub();
   try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl, {
-      reporterUserId: "not-an-integer",
+    const result = await callReporter(fake, {
+      config: { launcherUserId: "99" },
     });
-    assert.equal(responses[3].result.isError, true);
-    assert.match(
-      responses[3].result.content[0].text,
-      /REPORTER_USER_ID must be a positive integer/,
-    );
-    assert.deepEqual(fake.state.operations, []);
-  } finally {
-    await fake.close();
-  }
-});
-
-test("accepts reporter rename when immutable user ID matches", async () => {
-  const fake = await startFakeGitHub();
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl, {
-      reporterLogin: "renamed-reporter",
-      reporterUserId: "42",
-    });
-    assert.equal(responses[3].result.isError, false);
-    assert.equal(
-      responses[3].result.structuredContent.projectStatus,
-      "AwaitingRouting",
-    );
-  } finally {
-    await fake.close();
-  }
-});
-
-test("rejects reused launcher login when immutable user ID differs", async () => {
-  const fake = await startFakeGitHub();
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl, {
-      launcherLogin: "trusted-launcher",
-      launcherUserId: "99",
-    });
-    assert.equal(responses[3].result.isError, true);
-    assert.match(
-      responses[3].result.content[0].text,
-      /expected launcher user ID 99/,
-    );
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /expected launcher user ID 99/);
     assert.equal(fake.state.postAttempts, 0);
-    assert.equal(fake.state.operations.includes("status"), false);
   } finally {
     await fake.close();
   }
 });
 
-test("rejects a non-integer launcher user ID before GitHub access", async () => {
-  const fake = await startFakeGitHub();
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl, {
-      launcherUserId: "not-an-integer",
-    });
-    assert.equal(responses[3].result.isError, true);
-    assert.match(
-      responses[3].result.content[0].text,
-      /LAUNCHER_USER_ID must be a positive integer/,
-    );
-    assert.deepEqual(fake.state.operations, []);
-  } finally {
-    await fake.close();
-  }
-});
-
-test("accepts launcher rename when immutable user ID matches", async () => {
-  const fake = await startFakeGitHub();
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl, {
-      launcherLogin: "renamed-launcher",
-      launcherUserId: "7",
-    });
-    assert.equal(responses[3].result.isError, false);
-    assert.equal(
-      responses[3].result.structuredContent.projectStatus,
-      "AwaitingRouting",
-    );
-  } finally {
-    await fake.close();
-  }
-});
-
-test("creates a canonical event for an explicit zero-offset execution", async () => {
-  const fake = await startFakeGitHub({
-    executionStartedAt: "2026-08-14T05:35:13.662852+00:00",
-  });
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl);
-    const result = responses[3].result.structuredContent;
-    assert.equal(result.reconciled, false);
-    assert.equal(result.projectStatus, "AwaitingRouting");
-    assert.ok(
-      fake.state.operations.indexOf("comment") <
-        fake.state.operations.indexOf("status"),
-    );
-    const created = fake.state.comments.at(-1);
-    assert.equal(created.user.id, 42);
-    assert.match(created.body, /^WorkGraphEvent\/v1\n```json\n/);
-    const payload = JSON.parse(
-      created.body.match(/```json\n([\s\S]+)\n```$/)[1],
-    );
-    assert.equal(payload.repository, REPOSITORY);
-    assert.equal(payload.actorType, "Agent");
-    assert.equal(payload.actorId, "issue-validator");
-    assert.equal(payload.eventType, "CompletedIssueValidation");
-    assert.equal(payload.result.outcome, "passed");
-    assert.match(payload.completedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
-    assert.equal(fake.state.mutation.variables.item, INPUT.projectItemNodeId);
-    const projectRead = fake.state.operations.indexOf("project-item");
-    assert.ok(projectRead >= 0);
-    assert.match(
-      fake.state.projectQuery,
-      /organization\(login: "drasi-project"\)/,
-    );
-    assert.match(fake.state.projectQuery, /projectV2\(number: 3\)/);
-    assert.match(fake.state.mutation.query, new RegExp(PROJECT_ID));
-    assert.match(fake.state.mutation.query, new RegExp(STATUS_FIELD_ID));
-    assert.match(fake.state.mutation.query, new RegExp(STATUS_OPTION_ID));
-    assert.ok(
-      fake.state.operations.indexOf("status") <
-        fake.state.operations.indexOf("status-verify"),
-    );
-  } finally {
-    await fake.close();
-  }
-});
-
-test("rejects a mismatched fixed Project owner/number lookup", async () => {
-  const fake = await startFakeGitHub({
-    projectItem: { configuredProjectId: "PVT_wrong" },
-  });
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl);
-    assert.equal(responses[3].result.isError, true);
-    assert.match(
-      responses[3].result.content[0].text,
-      /Project number 3 does not match/,
-    );
-    assert.equal(fake.state.postAttempts, 0);
-    assert.equal(fake.state.operations.includes("status"), false);
-  } finally {
-    await fake.close();
-  }
-});
-
-test("reconciles a duplicate for an explicit zero-offset execution", async () => {
-  const issueBody = "WorkGraph-Validation: pass\n";
-  const existing = {
-    node_id: "IC_existing",
-    user: { id: 42, login: "workgraph-reporter" },
-    body: eventComment(canonicalEvent(INPUT, issueBody)),
-  };
-  const fake = await startFakeGitHub({
-    issueBody,
-    existingComments: [existing],
-    executionStartedAt: "2026-08-14T05:35:13.662852+00:00",
-  });
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl);
-    assert.equal(responses[3].result.structuredContent.reconciled, true);
-    assert.equal(responses[3].result.structuredContent.commentNodeId, "IC_existing");
-    assert.equal(fake.state.postAttempts, 0);
-    assert.ok(fake.state.operations.includes("status"));
-  } finally {
-    await fake.close();
-  }
-});
-
-test("does not adopt a spoofed completion comment", async () => {
-  const issueBody = "WorkGraph-Validation: pass\n";
-  const spoof = {
-    node_id: "IC_spoof",
-    user: { id: 99, login: "attacker" },
-    body: eventComment(canonicalEvent(INPUT, issueBody)),
-  };
-  const fake = await startFakeGitHub({
-    issueBody,
-    existingComments: [spoof],
-  });
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl);
-    assert.equal(responses[3].result.structuredContent.reconciled, false);
-    assert.equal(fake.state.postAttempts, 1);
-    assert.ok(
-      fake.state.operations.indexOf("comment") <
-        fake.state.operations.indexOf("status"),
-    );
-  } finally {
-    await fake.close();
-  }
-});
-
-test("reconciles an ambiguous comment create before status", async () => {
-  const fake = await startFakeGitHub({ commentMode: "ambiguous" });
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl);
-    const result = responses[3].result.structuredContent;
-    assert.equal(result.reconciled, true);
-    assert.equal(result.commentNodeId, "IC_created");
-    assert.equal(fake.state.postAttempts, 1);
-    const ambiguous = fake.state.operations.indexOf("comment-ambiguous");
-    const secondCommentRead = fake.state.operations.lastIndexOf("comments");
-    const status = fake.state.operations.indexOf("status");
-    assert.ok(ambiguous < secondCommentRead);
-    assert.ok(secondCommentRead < status);
-  } finally {
-    await fake.close();
-  }
-});
-
-test("never writes status after explicit comment failure", async () => {
-  const fake = await startFakeGitHub({ commentMode: "failure" });
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl);
-    assert.equal(responses[3].result.isError, true);
-    assert.match(
-      responses[3].result.content[0].text,
-      /HTTP 422: comment rejected/,
-    );
-    assert.equal(fake.state.operations.includes("status"), false);
-  } finally {
-    await fake.close();
-  }
-});
-
-test("rejects a Project Item outside the fixed Project", async () => {
-  const fake = await startFakeGitHub({
-    projectItem: { projectId: "PVT_wrong" },
-  });
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl);
-    assert.equal(responses[3].result.isError, true);
-    assert.match(
-      responses[3].result.content[0].text,
-      /does not belong to the fixed Project/,
-    );
-    assert.equal(fake.state.postAttempts, 0);
-    assert.equal(fake.state.operations.includes("status"), false);
-  } finally {
-    await fake.close();
-  }
-});
-
-test("rejects invalid or non-UTC execution timestamps before writes", async (t) => {
-  for (const startedAt of [
-    "2026-08-14T05:35:13+01:00",
-    "2026-08-14T05:35:13-00:00",
-    "2026-08-14 05:35:13Z",
-    "2026-08-14T05:35:13+0000",
-    "2026-02-30T05:35:13Z",
+test("rejects invalid immutable IDs before GitHub access", async (t) => {
+  for (const [field, message] of [
+    ["launcherUserId", /LAUNCHER_USER_ID must be a positive integer/],
+    ["reporterUserId", /REPORTER_USER_ID must be a positive integer/],
   ]) {
-    await t.test(startedAt, async () => {
-      const fake = await startFakeGitHub({ executionStartedAt: startedAt });
+    await t.test(field, async () => {
+      const fake = await startFakeGitHub();
       try {
-        const responses = await runMcp(protocolMessages(), fake.apiUrl);
-        assert.equal(responses[3].result.isError, true);
-        assert.match(
-          responses[3].result.content[0].text,
-          /execution\.startedAt must be a valid RFC3339 UTC instant/,
-        );
-        assert.equal(fake.state.postAttempts, 0);
-        assert.equal(fake.state.operations.includes("status"), false);
+        const result = await callReporter(fake, {
+          config: { [field]: "not-an-integer" },
+        });
+        assert.equal(result.isError, true);
+        assert.match(result.content[0].text, message);
+        assert.deepEqual(fake.state.operations, []);
       } finally {
         await fake.close();
       }
     });
+  }
+});
+
+test("accepts CRLF strict launcher events after parser normalization", async () => {
+  const comments = trustedComments(FIXTURE.passed.body).map((entry) => ({
+    ...entry,
+    body: entry.body.replaceAll("\n", "\r\n"),
+  }));
+  const fake = await startFakeGitHub({ comments });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, false);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("strictly ignores legacy JSON-only and fenced event formats", async (t) => {
+  const assignment = assignmentEvent(FIXTURE.passed.body);
+  const execution = executionEvent(FIXTURE.passed.body);
+  for (const [name, comments] of [
+    [
+      "JSON-only",
+      [
+        comment(assignment, { body: JSON.stringify(assignment) }),
+        comment(execution, { body: JSON.stringify(execution) }),
+      ],
+    ],
+    [
+      "fenced",
+      [
+        comment(assignment, {
+          body: `WorkGraphEvent/v1\n\`\`\`json\n${JSON.stringify(assignment, null, 2)}\n\`\`\``,
+        }),
+        comment(execution, {
+          body: `WorkGraphEvent/v1\n\`\`\`json\n${JSON.stringify(execution, null, 2)}\n\`\`\``,
+        }),
+      ],
+    ],
+  ]) {
+    await t.test(name, async () => {
+      const fake = await startFakeGitHub({ comments });
+      try {
+        const result = await callReporter(fake);
+        assert.equal(result.isError, true);
+        assert.match(
+          result.content[0].text,
+          /exactly one trusted ExecutionStarted/,
+        );
+        assert.equal(fake.state.postAttempts, 0);
+      } finally {
+        await fake.close();
+      }
+    });
+  }
+});
+
+test("rejects an unknown-field launcher event without writing", async () => {
+  const execution = executionEvent(FIXTURE.passed.body);
+  const comments = [
+    comment(assignmentEvent(FIXTURE.passed.body)),
+    comment({ ...execution, actor: "spoof" }),
+  ];
+  const fake = await startFakeGitHub({ comments });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /not strict and canonical/);
+    assert.equal(fake.state.postAttempts, 0);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects edited trusted launcher records without writing", async () => {
+  const comments = trustedComments(FIXTURE.passed.body);
+  comments[1] = {
+    ...comments[1],
+    updated_at: "2026-08-14T12:01:00Z",
+  };
+  const fake = await startFakeGitHub({ comments });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /execution event was edited/);
+    assert.equal(fake.state.postAttempts, 0);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects ambiguous trusted execution records without writing", async () => {
+  const comments = [
+    ...trustedComments(FIXTURE.passed.body),
+    comment(executionEvent(FIXTURE.passed.body), {
+      nodeId: "IC_execution_duplicate",
+    }),
+  ];
+  const fake = await startFakeGitHub({ comments });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /exactly one trusted ExecutionStarted/);
+    assert.equal(fake.state.postAttempts, 0);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects trusted launcher reuse of the execution event ID", async () => {
+  const execution = executionEvent(FIXTURE.passed.body);
+  const conflict = {
+    ...execution,
+    eventType: "RoutingDecided",
+    payload: {
+      fromStatus: "AwaitingValidation",
+      toStatus: "AwaitingIssueRiskProfiling",
+      nextResponsibilityType: "issue-risk-profiling",
+    },
+  };
+  const comments = [
+    ...trustedComments(FIXTURE.passed.body),
+    comment(conflict, {
+      nodeId: "IC_execution_event_id_conflict",
+      body: eventBody(conflict, "Routing decided."),
+    }),
+  ];
+  const fake = await startFakeGitHub({ comments });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /eventId is conflicting/);
+    assert.equal(fake.state.postAttempts, 0);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects a trusted assignment that conflicts with execution identity", async () => {
+  const assignment = assignmentEvent(FIXTURE.passed.body);
+  const conflicting = {
+    ...assignment,
+    projectItemNodeId: "PVTI_conflict",
+  };
+  const comments = [
+    comment(conflicting),
+    comment(executionEvent(FIXTURE.passed.body)),
+  ];
+  const fake = await startFakeGitHub({ comments });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /assignment runId is invalid/);
+    assert.equal(fake.state.postAttempts, 0);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects stale authoritative body before any write", async () => {
+  const fake = await startFakeGitHub({
+    issueBody: "Changed after assignment\nWorkGraph-Validation: pass\n",
+    assignmentBody: FIXTURE.passed.body,
+  });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /body digest does not match/);
+    assert.equal(fake.state.postAttempts, 0);
+    assert.deepEqual(fake.state.operations, [
+      "identity",
+      "issue",
+      "comments",
+      "project-items",
+    ]);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rechecks the exact body digest immediately before writing", async () => {
+  const changed = "Changed during reporting\nWorkGraph-Validation: pass\n";
+  const fake = await startFakeGitHub({
+    issueBody: FIXTURE.passed.body,
+    issueBodies: [FIXTURE.passed.body, changed],
+    assignmentBody: FIXTURE.passed.body,
+  });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /body changed during/);
+    assert.equal(fake.state.postAttempts, 0);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects a mismatched fixed Project lookup without writing", async () => {
+  const fake = await startFakeGitHub({ projectId: "PVT_wrong" });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /does not match the fixed Project/);
+    assert.equal(fake.state.postAttempts, 0);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects a Project Item that does not track the exact Issue", async () => {
+  const fake = await startFakeGitHub({ projectItems: [] });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /exactly one Item tracking the Issue/);
+    assert.equal(fake.state.postAttempts, 0);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("reconciles one exact unedited reporter-authored completion", async () => {
+  const event = completionEvent(FIXTURE.passed.body);
+  const existing = comment(event, {
+    nodeId: "IC_existing",
+    userId: 42,
+    login: "workgraph-reporter",
+  });
+  const fake = await startFakeGitHub({ extraComments: [existing] });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, false);
+    assert.equal(result.structuredContent.reconciled, true);
+    assert.equal(result.structuredContent.commentNodeId, "IC_existing");
+    assert.equal(fake.state.postAttempts, 0);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("does not adopt a spoofed canonical completion", async () => {
+  const spoof = comment(completionEvent(FIXTURE.passed.body), {
+    nodeId: "IC_spoof",
+    userId: 99,
+    login: "attacker",
+  });
+  const fake = await startFakeGitHub({ extraComments: [spoof] });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, false);
+    assert.equal(result.structuredContent.reconciled, false);
+    assert.equal(fake.state.postAttempts, 1);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects an edited reporter-authored completion", async () => {
+  const existing = comment(completionEvent(FIXTURE.passed.body), {
+    userId: 42,
+    login: "workgraph-reporter",
+    updatedAt: "2026-08-14T12:01:00Z",
+  });
+  const fake = await startFakeGitHub({ extraComments: [existing] });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /completion comment was edited/);
+    assert.equal(fake.state.postAttempts, 0);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects a conflicting reporter-authored canonical event", async () => {
+  const expected = completionEvent(FIXTURE.passed.body);
+  const conflict = {
+    ...expected,
+    payload: {
+      executionId: INPUT.executionId,
+      outcome: "failed",
+      reasonCode: "required-marker-missing",
+    },
+  };
+  const existing = comment(conflict, {
+    userId: 42,
+    login: "workgraph-reporter",
+  });
+  const fake = await startFakeGitHub({ extraComments: [existing] });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /conflicts with expected event/);
+    assert.equal(fake.state.postAttempts, 0);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects a noncanonical reporter-authored completion candidate", async () => {
+  const expected = completionEvent(FIXTURE.passed.body);
+  const noncanonical = { ...expected, actor: "forbidden" };
+  const existing = comment(noncanonical, {
+    userId: 42,
+    login: "workgraph-reporter",
+  });
+  const fake = await startFakeGitHub({ extraComments: [existing] });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /not strict and canonical/);
+    assert.equal(fake.state.postAttempts, 0);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects reporter-authored event type conflict for completion event ID", async () => {
+  const expected = completionEvent(FIXTURE.passed.body);
+  const conflict = {
+    ...expected,
+    eventType: "RoutingDecided",
+    payload: {
+      fromStatus: "AwaitingValidation",
+      toStatus: "AwaitingIssueRiskProfiling",
+      nextResponsibilityType: "issue-risk-profiling",
+    },
+  };
+  const existing = comment(conflict, {
+    userId: 42,
+    login: "workgraph-reporter",
+    body: eventBody(conflict, "Routing decided."),
+  });
+  const fake = await startFakeGitHub({ extraComments: [existing] });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /completion event type is invalid/);
+    assert.equal(fake.state.postAttempts, 0);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects ambiguous duplicate reporter-authored completions", async () => {
+  const event = completionEvent(FIXTURE.passed.body);
+  const fake = await startFakeGitHub({
+    extraComments: [
+      comment(event, { nodeId: "IC_existing_1", userId: 42 }),
+      comment(event, { nodeId: "IC_existing_2", userId: 42 }),
+    ],
+  });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /multiple authenticated/);
+    assert.equal(fake.state.postAttempts, 0);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("detects a concurrent duplicate after successful comment creation", async () => {
+  const fake = await startFakeGitHub({ commentMode: "race" });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /multiple authenticated/);
+    assert.equal(fake.state.postAttempts, 1);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("reconciles an ambiguous comment create response", async () => {
+  const fake = await startFakeGitHub({ commentMode: "ambiguous" });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, false);
+    assert.equal(result.structuredContent.reconciled, true);
+    assert.equal(result.structuredContent.commentNodeId, "IC_created");
+    assert.equal(fake.state.postAttempts, 1);
+    assert.ok(
+      fake.state.operations.indexOf("comment-ambiguous") <
+        fake.state.operations.lastIndexOf("comments"),
+    );
+  } finally {
+    await fake.close();
+  }
+});
+
+test("reconciles an empty successful comment create response", async () => {
+  const fake = await startFakeGitHub({ commentMode: "empty-success" });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, false);
+    assert.equal(result.structuredContent.reconciled, true);
+    assert.equal(result.structuredContent.commentNodeId, "IC_created");
+    assert.equal(fake.state.postAttempts, 1);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects launcher correlation changes during ambiguous create", async () => {
+  const fake = await startFakeGitHub({
+    commentMode: "ambiguous-changed-correlation",
+  });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /correlation changed/);
+    assert.equal(fake.state.postAttempts, 1);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects launcher correlation changes after successful create", async () => {
+  const fake = await startFakeGitHub({
+    commentMode: "success-changed-correlation",
+  });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /correlation changed/);
+    assert.equal(fake.state.postAttempts, 1);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("surfaces explicit comment failure without another write", async () => {
+  const fake = await startFakeGitHub({ commentMode: "failure" });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /HTTP 422: comment rejected/);
+    assert.equal(fake.state.postAttempts, 1);
+    assert.equal(
+      fake.state.operations.filter(
+        (operation) => operation === "comment-failure",
+      ).length,
+      1,
+    );
+  } finally {
+    await fake.close();
   }
 });

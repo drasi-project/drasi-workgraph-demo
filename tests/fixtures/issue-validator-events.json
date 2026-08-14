@@ -1,39 +1,69 @@
 {
-  "taskPrompt": {
-    "expectedEventId": "event:execution:validation-001:CompletedIssueValidation",
+  "algorithm": {
+    "bodyDigest": "sha256(UTF-8(body ?? \"\")) rendered as sha256:<lowercase hex>",
+    "runIdMaterial": "workgraph.run/v1\\n<projectItemNodeId>\\n<subjectNodeId>\\n<contentDigest>",
+    "runId": "run:sha256:<lowercase SHA-256 hex of exact UTF-8 runIdMaterial>",
+    "eventIdMaterial": "workgraph.event/v1\\n<runId>\\n<eventType>",
+    "eventId": "event:sha256:<lowercase SHA-256 hex of exact UTF-8 eventIdMaterial>"
+  },
+  "input": {
+    "subjectNumber": 7,
+    "executionId": "execution:validation-001"
+  },
+  "identity": {
     "projectItemNodeId": "PVTI_example",
     "subjectNodeId": "I_example",
-    "subjectNumber": 7,
-    "routeId": "validate",
-    "responsibilityId": "validate-issue",
-    "executionId": "execution:validation-001",
-    "contentVersion": "2026-08-13T01:00:00Z",
-    "profileRef": "issue-validator@0123456789abcdef0123456789abcdef01234567"
+    "profileRef": "issue-validator@0123456789abcdef0123456789abcdef01234567",
+    "taskId": "task-1"
+  },
+  "issueReadWithoutSubjectNodeId": {
+    "repository": "drasi-project/drasi-workgraph-demo",
+    "number": 7,
+    "body": "Context\nWorkGraph-Validation: pass\n"
   },
   "passed": {
     "body": "Context\nWorkGraph-Validation: pass\n",
-    "result": {
-      "outcome": "passed",
-      "reasonCode": "required-marker-present",
-      "evidence": {
-        "requiredMarker": "WorkGraph-Validation: pass",
-        "found": true
-      },
-      "summary": "The required prototype marker is present."
+    "contentDigest": "sha256:9faac769ff6962c7f331881d97518ff6a9df338da679c5d4851577cb7404a7fa",
+    "runId": "run:sha256:45b506bdc9a824b8bb0ad940de2356e031567a53ac9b103b93a77d623ac1f1f7",
+    "eventIds": {
+      "ResponsibilityAssigned": "event:sha256:bd799afe9cc4cf684fc04f38136715d24abbf029c7ef3ef6426c147ce751b0f9",
+      "ExecutionStarted": "event:sha256:8fa79e8d44b09d6b249ac5dd941259823960c008e67750dcc85ee790581ece44",
+      "CompletedIssueValidation": "event:sha256:f511b558981c70aa7ae8b2635a75342fa7abfbb32595e76a8a2e586653e6e163",
+      "RoutingDecided": "event:sha256:5fccb915b232c13782a8feaffb4b705e58c8faa1566fb9f94cb8dc0be7ea03a8"
     },
-    "completedAt": "2026-08-13T01:00:20Z"
+    "summary": "Issue validation passed.",
+    "payload": {
+      "executionId": "execution:validation-001",
+      "outcome": "passed",
+      "reasonCode": "required-marker-present"
+    }
   },
   "failed": {
     "body": "Context\nworkgraph-validation: pass\n",
-    "result": {
-      "outcome": "failed",
-      "reasonCode": "required-marker-missing",
-      "evidence": {
-        "requiredMarker": "WorkGraph-Validation: pass",
-        "found": false
-      },
-      "summary": "The required prototype marker is missing."
+    "contentDigest": "sha256:e0c941485e591a331a8dd5838ae7e05a661981c51cc5b63e3cdf19b29def39c2",
+    "runId": "run:sha256:a4459b5578d1d7ec783f0ecec38c746526bda4f8647294c28240092369ed3a9d",
+    "eventIds": {
+      "ResponsibilityAssigned": "event:sha256:dea39058a58adbbb5fb1084c42073b49897b183d76dac45b3a55272bf25fa039",
+      "ExecutionStarted": "event:sha256:a783f1e33dc6cc4b552bb55d3494688bf2a6ac4e575e5e4b3a5403693565b340",
+      "CompletedIssueValidation": "event:sha256:7dd9c4fa8d5c717732b0f5713b51afb690b6dd3f3c58c15fbfa912628c700bff",
+      "RoutingDecided": "event:sha256:0019132432c6096b9628e307fbc148c66e55120b6276c9b574c95746680c422f"
     },
-    "completedAt": "2026-08-13T01:00:20Z"
+    "summary": "Issue validation failed.",
+    "payload": {
+      "executionId": "execution:validation-001",
+      "outcome": "failed",
+      "reasonCode": "required-marker-missing"
+    }
+  },
+  "emptyBody": {
+    "body": "",
+    "contentDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "runId": "run:sha256:20128cadff3255e57fd7742172ed57fb1c8fd616c7c2a0e56d22fc7c16bc1969",
+    "eventIds": {
+      "ResponsibilityAssigned": "event:sha256:9465c744555065ebb65ac3f409a46c4e737d47db4c3882c881a454f039678e4d",
+      "ExecutionStarted": "event:sha256:d180b5a4bca9a7cd94f6afcf983c18f05ba8ad42d8be80be6a2f3b325d1f6c5e",
+      "CompletedIssueValidation": "event:sha256:c3bb758710e4ccaf6e698dce70b769ac383b780a68bc1518dc8c325bd93a1993",
+      "RoutingDecided": "event:sha256:2990a6f5470739186b07ca8bfda5a8ca979725aee05abd55ef34fd3f7fecc5bc"
+    }
   }
 }
