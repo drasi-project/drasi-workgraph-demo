@@ -86,7 +86,7 @@ function eventComment(event) {
   return `WorkGraphEvent/v1\n\`\`\`json\n${JSON.stringify(event, null, 2)}\n\`\`\``;
 }
 
-function executionComment(input) {
+function executionComment(input, startedAt = "2026-08-13T01:00:05Z") {
   return {
     node_id: "IC_execution",
     user: { id: 7, login: "trusted-launcher" },
@@ -105,7 +105,7 @@ function executionComment(input) {
       requestedModel: "gpt-5.6-sol",
       actualModel: "gpt-5.4",
       state: "started",
-      startedAt: "2026-08-13T01:00:05Z",
+      startedAt,
     }),
   };
 }
@@ -127,10 +127,11 @@ async function startFakeGitHub({
   issueBody = "Context\nWorkGraph-Validation: pass\n",
   existingComments = [],
   commentMode = "success",
+  executionStartedAt,
   projectItem = {},
 } = {}) {
   const state = {
-    comments: [executionComment(INPUT), ...existingComments],
+    comments: [executionComment(INPUT, executionStartedAt), ...existingComments],
     operations: [],
     mutation: null,
     projectQuery: null,
@@ -492,8 +493,10 @@ test("accepts launcher rename when immutable user ID matches", async () => {
   }
 });
 
-test("creates a server-owned canonical event before fixed status mutation", async () => {
-  const fake = await startFakeGitHub();
+test("creates a canonical event for an explicit zero-offset execution", async () => {
+  const fake = await startFakeGitHub({
+    executionStartedAt: "2026-08-14T05:35:13.662852+00:00",
+  });
   try {
     const responses = await runMcp(protocolMessages(), fake.apiUrl);
     const result = responses[3].result.structuredContent;
@@ -553,7 +556,7 @@ test("rejects a mismatched fixed Project owner/number lookup", async () => {
   }
 });
 
-test("adopts one authenticated schema-valid duplicate", async () => {
+test("reconciles a duplicate for an explicit zero-offset execution", async () => {
   const issueBody = "WorkGraph-Validation: pass\n";
   const existing = {
     node_id: "IC_existing",
@@ -563,6 +566,7 @@ test("adopts one authenticated schema-valid duplicate", async () => {
   const fake = await startFakeGitHub({
     issueBody,
     existingComments: [existing],
+    executionStartedAt: "2026-08-14T05:35:13.662852+00:00",
   });
   try {
     const responses = await runMcp(protocolMessages(), fake.apiUrl);
@@ -647,5 +651,31 @@ test("rejects a Project Item outside the fixed Project", async () => {
     assert.equal(fake.state.operations.includes("status"), false);
   } finally {
     await fake.close();
+  }
+});
+
+test("rejects invalid or non-UTC execution timestamps before writes", async (t) => {
+  for (const startedAt of [
+    "2026-08-14T05:35:13+01:00",
+    "2026-08-14T05:35:13-00:00",
+    "2026-08-14 05:35:13Z",
+    "2026-08-14T05:35:13+0000",
+    "2026-02-30T05:35:13Z",
+  ]) {
+    await t.test(startedAt, async () => {
+      const fake = await startFakeGitHub({ executionStartedAt: startedAt });
+      try {
+        const responses = await runMcp(protocolMessages(), fake.apiUrl);
+        assert.equal(responses[3].result.isError, true);
+        assert.match(
+          responses[3].result.content[0].text,
+          /execution\.startedAt must be a valid RFC3339 UTC instant/,
+        );
+        assert.equal(fake.state.postAttempts, 0);
+        assert.equal(fake.state.operations.includes("status"), false);
+      } finally {
+        await fake.close();
+      }
+    });
   }
 });
