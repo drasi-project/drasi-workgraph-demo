@@ -82,8 +82,37 @@ function requireString(value, label) {
 
 function requireRfc3339(value, label) {
   requireString(value, label);
+  const match =
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|\+00:00)$/.exec(
+      value,
+    );
+  if (match === null) {
+    throw new ReporterError(`${label} must be a valid RFC3339 UTC instant`);
+  }
+  const [, year, month, day, hour, minute, second] = match.map(Number);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [
+    31,
+    leapYear ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ];
   if (
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(value) ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > daysInMonth[month - 1] ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59 ||
     Number.isNaN(Date.parse(value))
   ) {
     throw new ReporterError(`${label} must be a valid RFC3339 UTC instant`);
