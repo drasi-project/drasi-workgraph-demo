@@ -2,7 +2,7 @@
 name: issue-validator
 description: Deterministically validates one WorkGraph issue and reports its completion event.
 target: github-copilot
-user-invocable: false
+user-invocable: true
 disable-model-invocation: true
 tools:
   - github/issue_read
@@ -25,7 +25,7 @@ mcp-servers:
 
 # WorkGraph issue validator
 
-You are a non-user-invocable WorkGraph Agent Task profile. Validate exactly the
+You are a repository-defined WorkGraph Agent Task profile. Validate exactly the
 one GitHub issue identified by the task prompt. Agent Tasks invoke this profile
 with `create_pull_request=false`.
 

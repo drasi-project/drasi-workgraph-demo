@@ -23,11 +23,11 @@ class IssueValidatorProfileTest(unittest.TestCase):
         cls.fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
         cls.reporter_doc = REPORTER_DOC.read_text(encoding="utf-8")
 
-    def test_frontmatter_is_non_user_invocable_and_least_privileged(self):
+    def test_frontmatter_is_user_invocable_and_least_privileged(self):
         frontmatter = self.profile.split("---", 2)[1]
         self.assertRegex(frontmatter, r"(?m)^description: \S")
         self.assertRegex(frontmatter, r"(?m)^target: github-copilot$")
-        self.assertRegex(frontmatter, r"(?m)^user-invocable: false$")
+        self.assertRegex(frontmatter, r"(?m)^user-invocable: true$")
         self.assertRegex(frontmatter, r"(?m)^disable-model-invocation: true$")
         tools = re.findall(r"(?m)^  - (\S+/\S+)$", frontmatter)
         self.assertEqual(
