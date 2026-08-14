@@ -9,6 +9,17 @@ PROFILE = ROOT / ".github" / "agents" / "issue-validator.agent.md"
 FIXTURE = ROOT / "tests" / "fixtures" / "issue-validator-events.json"
 REPORTER_DOC = ROOT / "docs" / "workgraph-completion-reporter.md"
 MARKER = "WorkGraph-Validation: pass"
+REPORTER_INPUT_FIELDS = (
+    "projectItemNodeId",
+    "subjectNodeId",
+    "subjectNumber",
+    "routeId",
+    "responsibilityId",
+    "executionId",
+    "expectedEventId",
+    "contentVersion",
+    "profileRef",
+)
 
 
 def marker_present(body):
@@ -108,6 +119,59 @@ class IssueValidatorProfileTest(unittest.TestCase):
             '"eventType": "CompletedIssueValidation"'
         )
         self.assertLess(event_id, event_type)
+
+    def test_missing_issue_read_node_id_reports_once_with_prompt_identity(self):
+        issue = self.fixture["issueReadWithoutSubjectNodeId"]
+        prompt = self.fixture["taskPrompt"]
+
+        self.assertNotIn("subjectNodeId", issue)
+        self.assertEqual(
+            issue["repository"], "drasi-project/drasi-workgraph-demo"
+        )
+        self.assertEqual(issue["number"], prompt["subjectNumber"])
+        self.assertTrue(marker_present(issue["body"]))
+
+        reporting = self.profile.split("## Ordered reporting", 1)[1]
+        reporter_calls = reporting.count(
+            "Call `workgraph/report_completion` exactly once with only:"
+        )
+        declared_fields = tuple(
+            re.findall(
+                r"(?m)^- `([^`]+)`$",
+                reporting.split("Do not pass", 1)[0],
+            )
+        )
+        self.assertEqual(reporter_calls, 1)
+        self.assertEqual(declared_fields, REPORTER_INPUT_FIELDS)
+
+        reporter_call = {
+            field: prompt[field] for field in declared_fields
+        }
+        self.assertEqual(reporter_call, prompt)
+        self.assertEqual(
+            reporter_call["subjectNodeId"], prompt["subjectNodeId"]
+        )
+
+        self.assertIn(
+            "The `github/issue_read` response may omit `subjectNodeId`",
+            self.profile,
+        )
+        self.assertIn(
+            "Its absence is not\n   a validation failure and must not block reporting",
+            self.profile,
+        )
+        self.assertIn(
+            "carry the\nlauncher-supplied `subjectNodeId` unchanged",
+            self.profile,
+        )
+        self.assertIn(
+            "reporter independently\n   resolves the authoritative GitHub Issue node ID",
+            self.profile,
+        )
+        self.assertIn(
+            "rejects the call unless\n   it matches the unchanged launcher-supplied `subjectNodeId`",
+            self.profile,
+        )
 
     def test_scoped_reporter_owns_ordered_completion(self):
         self.assertIn(
