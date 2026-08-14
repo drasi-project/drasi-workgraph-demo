@@ -1,0 +1,39 @@
+{
+  "taskPrompt": {
+    "expectedEventId": "event:execution:validation-001:CompletedIssueValidation",
+    "projectItemNodeId": "PVTI_example",
+    "subjectNodeId": "I_example",
+    "subjectNumber": 7,
+    "routeId": "validate",
+    "responsibilityId": "validate-issue",
+    "executionId": "execution:validation-001",
+    "contentVersion": "2026-08-13T01:00:00Z",
+    "profileRef": "issue-validator@0123456789abcdef0123456789abcdef01234567"
+  },
+  "passed": {
+    "body": "Context\nWorkGraph-Validation: pass\n",
+    "result": {
+      "outcome": "passed",
+      "reasonCode": "required-marker-present",
+      "evidence": {
+        "requiredMarker": "WorkGraph-Validation: pass",
+        "found": true
+      },
+      "summary": "The required prototype marker is present."
+    },
+    "completedAt": "2026-08-13T01:00:20Z"
+  },
+  "failed": {
+    "body": "Context\nworkgraph-validation: pass\n",
+    "result": {
+      "outcome": "failed",
+      "reasonCode": "required-marker-missing",
+      "evidence": {
+        "requiredMarker": "WorkGraph-Validation: pass",
+        "found": false
+      },
+      "summary": "The required prototype marker is missing."
+    },
+    "completedAt": "2026-08-13T01:00:20Z"
+  }
+}
