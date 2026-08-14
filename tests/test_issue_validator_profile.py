@@ -133,6 +133,27 @@ class IssueValidatorProfileTest(unittest.TestCase):
             self.fixture["passed"]["contentDigest"],
             body_digest(self.fixture["passed"]["body"].replace("\n", "\r\n")),
         )
+        self.assertIn(
+            'contentDigest = "sha256:" + lowercase_sha256', self.reporter_doc
+        )
+        self.assertIn(
+            'runMaterial = "workgraph.run/v1\\n"', self.reporter_doc
+        )
+        self.assertIn(
+            'eventMaterial = "workgraph.event/v1\\n"', self.reporter_doc
+        )
+        self.assertIn("Neither material string has a trailing newline", self.reporter_doc)
+        self.assertIn(self.fixture["passed"]["contentDigest"], self.reporter_doc)
+        self.assertIn(self.fixture["passed"]["runId"], self.reporter_doc)
+        self.assertIn(
+            self.fixture["passed"]["eventIds"]["CompletedIssueValidation"],
+            self.reporter_doc,
+        )
+        self.assertIn(
+            "exactly one accepted event per `eventType` per `runId`",
+            self.reporter_doc,
+        )
+        self.assertIn("one execution/task per run", self.reporter_doc)
 
     def test_exact_common_completion_contract(self):
         self.assertIn("WorkGraphEvent/v1", self.profile)

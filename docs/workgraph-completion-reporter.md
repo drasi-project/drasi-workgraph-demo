@@ -106,9 +106,33 @@ sha256:<lowercase SHA-256 hex of the exact UTF-8 bytes of body ?? "">
 ```
 
 There is no newline conversion, trimming, Unicode normalization, or other body
-normalization. Run IDs and event IDs use the shared WorkGraph v1 algorithms and
-the vectors in `tests/fixtures/issue-validator-events.json`; every producer and
-consumer must match those vectors byte-for-byte.
+normalization. The shared WorkGraph v1 algorithms are:
+
+```text
+contentDigest = "sha256:" + lowercase_sha256(exact UTF-8 (body ?? ""))
+runMaterial = "workgraph.run/v1\n" + projectItemNodeId + "\n"
+  + subjectNodeId + "\n" + contentDigest
+runId = "run:sha256:" + lowercase_sha256(exact UTF-8 runMaterial)
+eventMaterial = "workgraph.event/v1\n" + runId + "\n" + eventType
+eventId = "event:sha256:" + lowercase_sha256(exact UTF-8 eventMaterial)
+```
+
+Neither material string has a trailing newline. For the published pass vector:
+
+| Value | Exact fixture |
+| --- | --- |
+| Body | `Context\nWorkGraph-Validation: pass\n` |
+| Project Item | `PVTI_example` |
+| Subject | `I_example` |
+| Content digest | `sha256:9faac769ff6962c7f331881d97518ff6a9df338da679c5d4851577cb7404a7fa` |
+| Run ID | `run:sha256:45b506bdc9a824b8bb0ad940de2356e031567a53ac9b103b93a77d623ac1f1f7` |
+| Completion event ID | `event:sha256:f511b558981c70aa7ae8b2635a75342fa7abfbb32595e76a8a2e586653e6e163` |
+
+The contract permits exactly one accepted event per `eventType` per `runId` and
+one execution/task per run. A retry reuses that task and execution; changing the
+exact body changes its digest and creates a new run. Every producer and consumer
+must match the vectors in `tests/fixtures/issue-validator-events.json`
+byte-for-byte.
 
 Canonical comment reconciliation also hashes the complete rendered comment as
 exact UTF-8 bytes. A reporter-authored candidate is adoptable only when its body

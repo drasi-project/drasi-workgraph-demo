@@ -725,6 +725,53 @@ test("rejects ambiguous trusted execution records without writing", async () => 
   }
 });
 
+test("rejects a second execution and task for the same run", async () => {
+  const secondExecution = {
+    ...executionEvent(FIXTURE.passed.body),
+    payload: {
+      executionId: "execution:second",
+      taskId: "task-2",
+    },
+  };
+  const comments = [
+    ...trustedComments(FIXTURE.passed.body),
+    comment(secondExecution, {
+      nodeId: "IC_execution_second",
+    }),
+  ];
+  const fake = await startFakeGitHub({ comments });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, true);
+    assert.match(result.content[0].text, /eventId is conflicting/);
+    assert.equal(fake.state.postAttempts, 0);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects a second assignment event for the same run", async () => {
+  const duplicate = assignmentEvent(FIXTURE.passed.body);
+  const comments = [
+    ...trustedComments(FIXTURE.passed.body),
+    comment(duplicate, {
+      nodeId: "IC_assignment_duplicate",
+    }),
+  ];
+  const fake = await startFakeGitHub({ comments });
+  try {
+    const result = await callReporter(fake);
+    assert.equal(result.isError, true);
+    assert.match(
+      result.content[0].text,
+      /exactly one trusted ResponsibilityAssigned/,
+    );
+    assert.equal(fake.state.postAttempts, 0);
+  } finally {
+    await fake.close();
+  }
+});
+
 test("rejects trusted launcher reuse of the execution event ID", async () => {
   const execution = executionEvent(FIXTURE.passed.body);
   const conflict = {
