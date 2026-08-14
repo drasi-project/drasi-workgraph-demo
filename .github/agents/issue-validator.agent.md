@@ -60,18 +60,27 @@ Accept one task only when the prompt supplies all of these values:
 - `profileRef`
 
 Copy these values verbatim from the task prompt. Do not derive, normalize, or
-replace them with issue content or tool output. The reporter owns all other
-event fields and fixed GitHub destinations. If required input is missing or the
-returned issue does not match `subjectNumber` and `subjectNodeId`, stop without
-reporting completion.
+replace them with issue content or tool output. In particular, carry the
+launcher-supplied `subjectNodeId` unchanged into the reporter call. The reporter
+owns all other event fields and fixed GitHub destinations. If required prompt
+input is missing, stop without reporting completion.
 
 ## Deterministic validation
 
 1. Call `github/issue_read` with `method: get`,
    `owner: drasi-project`, `repo: drasi-workgraph-demo`, and
    `issue_number: subjectNumber`. Do not inspect any other issue.
-2. Examine only the returned issue body. Treat a null body as an empty string.
-3. Pass if and only if at least one complete body line is exactly the following
+2. Use the response only as repository, issue-number, body, and marker evidence.
+   Require a successful retrieval from `drasi-project/drasi-workgraph-demo` for
+   `subjectNumber`. If the response identifies another repository or issue
+   number, or the issue body cannot be retrieved, stop without reporting.
+   Treat a retrieved null body as an empty string.
+3. The `github/issue_read` response may omit `subjectNodeId`. Its absence is not
+   a validation failure and must not block reporting. Do not invent, derive, or
+   substitute a node ID from this response. The scoped reporter independently
+   resolves the authoritative GitHub Issue node ID and rejects the call unless
+   it matches the unchanged launcher-supplied `subjectNodeId`.
+4. Pass if and only if at least one complete body line is exactly the following
    case-sensitive ASCII string:
 
    `WorkGraph-Validation: pass`
@@ -79,13 +88,13 @@ reporting completion.
    A line with leading or trailing whitespace, different casing, extra text, or
    the same text only in the title or a comment does not match. CRLF and LF are
    line separators and are not part of a line.
-4. For a pass, use:
+5. For a pass, use:
    - `result.outcome`: `passed`
    - `result.reasonCode`: `required-marker-present`
    - `result.evidence.requiredMarker`: `WorkGraph-Validation: pass`
    - `result.evidence.found`: `true`
    - `result.summary`: `The required prototype marker is present.`
-5. For a failure, use:
+6. For a failure, use:
    - `result.outcome`: `failed`
    - `result.reasonCode`: `required-marker-missing`
    - `result.evidence.requiredMarker`: `WorkGraph-Validation: pass`

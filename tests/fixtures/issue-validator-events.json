@@ -10,6 +10,11 @@
     "contentVersion": "2026-08-13T01:00:00Z",
     "profileRef": "issue-validator@0123456789abcdef0123456789abcdef01234567"
   },
+  "issueReadWithoutSubjectNodeId": {
+    "repository": "drasi-project/drasi-workgraph-demo",
+    "number": 7,
+    "body": "Context\nWorkGraph-Validation: pass\n"
+  },
   "passed": {
     "body": "Context\nWorkGraph-Validation: pass\n",
     "result": {
