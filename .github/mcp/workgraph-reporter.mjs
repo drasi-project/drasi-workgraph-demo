@@ -18,6 +18,8 @@ const ASSIGNMENT_TYPE = "ResponsibilityAssigned";
 const EXECUTION_TYPE = "ExecutionStarted";
 const COMPLETION_TYPE = "CompletedIssueValidation";
 const MARKER = "WorkGraph-Validation: pass";
+const PROJECT_ITEM_NODE_ID_PATTERN = /^PVTI_[A-Za-z0-9]+$/;
+const CONTENT_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
 const INPUT_KEYS = ["subjectNumber", "executionId"];
 const ENVELOPE_KEYS = [
@@ -107,17 +109,26 @@ function bodyDigest(body) {
   return `sha256:${sha256Hex(body ?? "")}`;
 }
 
-function runIdFor(projectItemNodeId, subjectNodeId, contentDigest) {
-  const material =
-    `workgraph.run/v1\n${projectItemNodeId}\n${subjectNodeId}\n` +
-    contentDigest;
-  return `run:sha256:${sha256Hex(material)}`;
+function validateProjectItemNodeId(value, label) {
+  if (!PROJECT_ITEM_NODE_ID_PATTERN.test(value)) {
+    throw new ReporterError(`${label} is invalid`);
+  }
+}
+
+function validateContentDigest(value, label) {
+  if (!CONTENT_DIGEST_PATTERN.test(value)) {
+    throw new ReporterError(`${label} is invalid`);
+  }
+}
+
+function runIdFor(projectItemNodeId, contentDigest) {
+  validateProjectItemNodeId(projectItemNodeId, "projectItemNodeId");
+  validateContentDigest(contentDigest, "contentDigest");
+  return `validation:${projectItemNodeId}:${contentDigest}`;
 }
 
 function eventIdFor(runId, eventType) {
-  return `event:sha256:${sha256Hex(
-    `workgraph.event/v1\n${runId}\n${eventType}`,
-  )}`;
+  return `event:${runId}:${eventType}`;
 }
 
 function commentDigest(body) {
@@ -156,9 +167,10 @@ function validateEnvelope(event) {
   requireString(event.runId, "event.runId");
   requireString(event.projectItemNodeId, "event.projectItemNodeId");
   requireString(event.subjectNodeId, "event.subjectNodeId");
-  if (!event.projectItemNodeId.startsWith("PVTI_")) {
-    throw new ReporterError("event.projectItemNodeId is invalid");
-  }
+  validateProjectItemNodeId(
+    event.projectItemNodeId,
+    "event.projectItemNodeId",
+  );
   if (!event.subjectNodeId.startsWith("I_")) {
     throw new ReporterError("event.subjectNodeId is invalid");
   }
@@ -177,12 +189,12 @@ function validateAssignment(event) {
   if (!/^issue-validator@[0-9a-f]{40}$/.test(event.payload.profileRef)) {
     throw new ReporterError("assignment profileRef is invalid");
   }
-  if (!/^sha256:[0-9a-f]{64}$/.test(event.payload.contentDigest)) {
-    throw new ReporterError("assignment contentDigest is invalid");
-  }
+  validateContentDigest(
+    event.payload.contentDigest,
+    "assignment contentDigest",
+  );
   const expectedRunId = runIdFor(
     event.projectItemNodeId,
-    event.subjectNodeId,
     event.payload.contentDigest,
   );
   if (event.runId !== expectedRunId) {

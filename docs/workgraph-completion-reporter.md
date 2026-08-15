@@ -106,18 +106,17 @@ sha256:<lowercase SHA-256 hex of the exact UTF-8 bytes of body ?? "">
 ```
 
 There is no newline conversion, trimming, Unicode normalization, or other body
-normalization. The shared WorkGraph v1 algorithms are:
+normalization. Before deriving readable identities, `projectItemNodeId` must
+match `PVTI_[A-Za-z0-9]+` and `contentDigest` must match
+`sha256:[0-9a-f]{64}`. The identity contract is:
 
 ```text
 contentDigest = "sha256:" + lowercase_sha256(exact UTF-8 (body ?? ""))
-runMaterial = "workgraph.run/v1\n" + projectItemNodeId + "\n"
-  + subjectNodeId + "\n" + contentDigest
-runId = "run:sha256:" + lowercase_sha256(exact UTF-8 runMaterial)
-eventMaterial = "workgraph.event/v1\n" + runId + "\n" + eventType
-eventId = "event:sha256:" + lowercase_sha256(exact UTF-8 eventMaterial)
+runId = "validation:" + projectItemNodeId + ":" + contentDigest
+eventId = "event:" + runId + ":" + eventType
 ```
 
-Neither material string has a trailing newline. For the published pass vector:
+For the published pass example:
 
 | Value | Exact fixture |
 | --- | --- |
@@ -125,8 +124,8 @@ Neither material string has a trailing newline. For the published pass vector:
 | Project Item | `PVTI_example` |
 | Subject | `I_example` |
 | Content digest | `sha256:9faac769ff6962c7f331881d97518ff6a9df338da679c5d4851577cb7404a7fa` |
-| Run ID | `run:sha256:45b506bdc9a824b8bb0ad940de2356e031567a53ac9b103b93a77d623ac1f1f7` |
-| Completion event ID | `event:sha256:f511b558981c70aa7ae8b2635a75342fa7abfbb32595e76a8a2e586653e6e163` |
+| Run ID | `validation:PVTI_example:sha256:9faac769ff6962c7f331881d97518ff6a9df338da679c5d4851577cb7404a7fa` |
+| Completion event ID | `event:validation:PVTI_example:sha256:9faac769ff6962c7f331881d97518ff6a9df338da679c5d4851577cb7404a7fa:CompletedIssueValidation` |
 
 The contract permits exactly one accepted event per `eventType` per `runId` and
 one execution/task per run. A retry reuses that task and execution; changing the

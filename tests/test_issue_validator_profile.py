@@ -26,14 +26,12 @@ def body_digest(body):
     return f"sha256:{sha256(body or '')}"
 
 
-def run_id(item_id, subject_id, digest):
-    material = f"workgraph.run/v1\n{item_id}\n{subject_id}\n{digest}"
-    return f"run:sha256:{sha256(material)}"
+def run_id(item_id, digest):
+    return f"validation:{item_id}:{digest}"
 
 
 def event_id(run, event_type):
-    material = f"workgraph.event/v1\n{run}\n{event_type}"
-    return f"event:sha256:{sha256(material)}"
+    return f"event:{run}:{event_type}"
 
 
 class IssueValidatorProfileTest(unittest.TestCase):
@@ -115,17 +113,13 @@ class IssueValidatorProfileTest(unittest.TestCase):
         self.assertFalse(marker_present(f"{MARKER} \n"))
         self.assertFalse(marker_present(f"prefix {MARKER}\n"))
 
-    def test_shared_digest_run_and_event_vectors(self):
+    def test_shared_digest_and_readable_identity_vectors(self):
         identity = self.fixture["identity"]
         for name in ("passed", "failed", "emptyBody"):
             vector = self.fixture[name]
             digest = body_digest(vector["body"])
             self.assertEqual(digest, vector["contentDigest"])
-            run = run_id(
-                identity["projectItemNodeId"],
-                identity["subjectNodeId"],
-                digest,
-            )
+            run = run_id(identity["projectItemNodeId"], digest)
             self.assertEqual(run, vector["runId"])
             for event_type, expected in vector["eventIds"].items():
                 self.assertEqual(event_id(run, event_type), expected)
@@ -137,12 +131,16 @@ class IssueValidatorProfileTest(unittest.TestCase):
             'contentDigest = "sha256:" + lowercase_sha256', self.reporter_doc
         )
         self.assertIn(
-            'runMaterial = "workgraph.run/v1\\n"', self.reporter_doc
+            'runId = "validation:" + projectItemNodeId + ":" + contentDigest',
+            self.reporter_doc,
         )
         self.assertIn(
-            'eventMaterial = "workgraph.event/v1\\n"', self.reporter_doc
+            'eventId = "event:" + runId + ":" + eventType', self.reporter_doc
         )
-        self.assertIn("Neither material string has a trailing newline", self.reporter_doc)
+        self.assertNotIn("runMaterial", self.reporter_doc)
+        self.assertNotIn("eventMaterial", self.reporter_doc)
+        self.assertNotIn("run:sha256:", self.reporter_doc)
+        self.assertNotIn("event:sha256:", self.reporter_doc)
         self.assertIn(self.fixture["passed"]["contentDigest"], self.reporter_doc)
         self.assertIn(self.fixture["passed"]["runId"], self.reporter_doc)
         self.assertIn(

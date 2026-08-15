@@ -37,16 +37,11 @@ function digestForBody(body) {
 }
 
 function runIdFor(contentDigest) {
-  const material =
-    `workgraph.run/v1\n${IDENTITY.projectItemNodeId}\n` +
-    `${IDENTITY.subjectNodeId}\n${contentDigest}`;
-  return `run:sha256:${sha256(material)}`;
+  return `validation:${IDENTITY.projectItemNodeId}:${contentDigest}`;
 }
 
 function eventIdFor(runId, eventType) {
-  return `event:sha256:${sha256(
-    `workgraph.event/v1\n${runId}\n${eventType}`,
-  )}`;
+  return `event:${runId}:${eventType}`;
 }
 
 function envelope(eventType, runId, payload) {
@@ -446,7 +441,7 @@ test("rejects additional input before any GitHub operation", async () => {
   }
 });
 
-test("shared body digest, run ID, and event ID vectors are exact", () => {
+test("shared body digest and readable identities are exact", () => {
   for (const name of ["passed", "failed", "emptyBody"]) {
     const vector = FIXTURE[name];
     assert.equal(digestForBody(vector.body), vector.contentDigest);
@@ -459,6 +454,44 @@ test("shared body digest, run ID, and event ID vectors are exact", () => {
     digestForBody(FIXTURE.passed.body.replaceAll("\n", "\r\n")),
     FIXTURE.passed.contentDigest,
   );
+});
+
+test("rejects malformed readable identity components before writing", async (t) => {
+  for (const [name, mutate, message] of [
+    [
+      "Project Item node ID",
+      (event) => ({ ...event, projectItemNodeId: "PVTI_bad:value" }),
+      /trusted ResponsibilityAssigned event is not strict and canonical/,
+    ],
+    [
+      "content digest",
+      (event) => ({
+        ...event,
+        payload: {
+          ...event.payload,
+          contentDigest:
+            "sha256:9FAAC769FF6962C7F331881D97518FF6A9DF338DA679C5D4851577CB7404A7FA",
+        },
+      }),
+      /assignment contentDigest is invalid/,
+    ],
+  ]) {
+    await t.test(name, async () => {
+      const comments = [
+        comment(mutate(assignmentEvent(FIXTURE.passed.body))),
+        comment(executionEvent(FIXTURE.passed.body)),
+      ];
+      const fake = await startFakeGitHub({ comments });
+      try {
+        const result = await callReporter(fake);
+        assert.equal(result.isError, true);
+        assert.match(result.content[0].text, message);
+        assert.equal(fake.state.postAttempts, 0);
+      } finally {
+        await fake.close();
+      }
+    });
+  }
 });
 
 for (const [name, vector] of [
