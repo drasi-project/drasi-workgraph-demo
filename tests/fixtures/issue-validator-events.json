@@ -1,39 +1,69 @@
 {
-  "taskPrompt": {
-    "expectedEventId": "event:execution:validation-001:CompletedIssueValidation",
+  "algorithm": {
+    "bodyDigest": "sha256(UTF-8(body ?? \"\")) rendered as sha256:<lowercase hex>",
+    "projectItemNodeId": "PVTI_<one or more ASCII alphanumeric characters>",
+    "contentDigest": "sha256:<64 lowercase hexadecimal characters>",
+    "runId": "validation:<projectItemNodeId>:<contentDigest>",
+    "eventId": "event:<runId>:<eventType>"
+  },
+  "input": {
+    "subjectNumber": 7,
+    "executionId": "execution:validation-001"
+  },
+  "identity": {
     "projectItemNodeId": "PVTI_example",
     "subjectNodeId": "I_example",
-    "subjectNumber": 7,
-    "routeId": "validate",
-    "responsibilityId": "validate-issue",
-    "executionId": "execution:validation-001",
-    "contentVersion": "2026-08-13T01:00:00Z",
-    "profileRef": "issue-validator@0123456789abcdef0123456789abcdef01234567"
+    "profileRef": "issue-validator@0123456789abcdef0123456789abcdef01234567",
+    "taskId": "task-1"
+  },
+  "issueReadWithoutSubjectNodeId": {
+    "repository": "drasi-project/drasi-workgraph-demo",
+    "number": 7,
+    "body": "Context\nWorkGraph-Validation: pass\n"
   },
   "passed": {
     "body": "Context\nWorkGraph-Validation: pass\n",
-    "result": {
-      "outcome": "passed",
-      "reasonCode": "required-marker-present",
-      "evidence": {
-        "requiredMarker": "WorkGraph-Validation: pass",
-        "found": true
-      },
-      "summary": "The required prototype marker is present."
+    "contentDigest": "sha256:9faac769ff6962c7f331881d97518ff6a9df338da679c5d4851577cb7404a7fa",
+    "runId": "validation:PVTI_example:sha256:9faac769ff6962c7f331881d97518ff6a9df338da679c5d4851577cb7404a7fa",
+    "eventIds": {
+      "ResponsibilityAssigned": "event:validation:PVTI_example:sha256:9faac769ff6962c7f331881d97518ff6a9df338da679c5d4851577cb7404a7fa:ResponsibilityAssigned",
+      "ExecutionStarted": "event:validation:PVTI_example:sha256:9faac769ff6962c7f331881d97518ff6a9df338da679c5d4851577cb7404a7fa:ExecutionStarted",
+      "CompletedIssueValidation": "event:validation:PVTI_example:sha256:9faac769ff6962c7f331881d97518ff6a9df338da679c5d4851577cb7404a7fa:CompletedIssueValidation",
+      "RoutingDecided": "event:validation:PVTI_example:sha256:9faac769ff6962c7f331881d97518ff6a9df338da679c5d4851577cb7404a7fa:RoutingDecided"
     },
-    "completedAt": "2026-08-13T01:00:20Z"
+    "summary": "Issue validation passed.",
+    "payload": {
+      "executionId": "execution:validation-001",
+      "outcome": "passed",
+      "reasonCode": "required-marker-present"
+    }
   },
   "failed": {
     "body": "Context\nworkgraph-validation: pass\n",
-    "result": {
-      "outcome": "failed",
-      "reasonCode": "required-marker-missing",
-      "evidence": {
-        "requiredMarker": "WorkGraph-Validation: pass",
-        "found": false
-      },
-      "summary": "The required prototype marker is missing."
+    "contentDigest": "sha256:e0c941485e591a331a8dd5838ae7e05a661981c51cc5b63e3cdf19b29def39c2",
+    "runId": "validation:PVTI_example:sha256:e0c941485e591a331a8dd5838ae7e05a661981c51cc5b63e3cdf19b29def39c2",
+    "eventIds": {
+      "ResponsibilityAssigned": "event:validation:PVTI_example:sha256:e0c941485e591a331a8dd5838ae7e05a661981c51cc5b63e3cdf19b29def39c2:ResponsibilityAssigned",
+      "ExecutionStarted": "event:validation:PVTI_example:sha256:e0c941485e591a331a8dd5838ae7e05a661981c51cc5b63e3cdf19b29def39c2:ExecutionStarted",
+      "CompletedIssueValidation": "event:validation:PVTI_example:sha256:e0c941485e591a331a8dd5838ae7e05a661981c51cc5b63e3cdf19b29def39c2:CompletedIssueValidation",
+      "RoutingDecided": "event:validation:PVTI_example:sha256:e0c941485e591a331a8dd5838ae7e05a661981c51cc5b63e3cdf19b29def39c2:RoutingDecided"
     },
-    "completedAt": "2026-08-13T01:00:20Z"
+    "summary": "Issue validation failed.",
+    "payload": {
+      "executionId": "execution:validation-001",
+      "outcome": "failed",
+      "reasonCode": "required-marker-missing"
+    }
+  },
+  "emptyBody": {
+    "body": "",
+    "contentDigest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "runId": "validation:PVTI_example:sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "eventIds": {
+      "ResponsibilityAssigned": "event:validation:PVTI_example:sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855:ResponsibilityAssigned",
+      "ExecutionStarted": "event:validation:PVTI_example:sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855:ExecutionStarted",
+      "CompletedIssueValidation": "event:validation:PVTI_example:sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855:CompletedIssueValidation",
+      "RoutingDecided": "event:validation:PVTI_example:sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855:RoutingDecided"
+    }
   }
 }

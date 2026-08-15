@@ -13,24 +13,15 @@ GitHub request, or arbitrary GraphQL.
 
 ## Fixed authority boundary
 
-The reporter owns these destinations and values; callers cannot override them:
+The reporter fixes the repository `drasi-project/drasi-workgraph-demo`,
+organization `drasi-project`, Project number `3`, and ProjectV2 node ID
+`PVT_kwDOCX0YF84BgNE3`. The caller cannot override any destination, identity,
+event field, validation result, or mutation.
 
-| Setting | Fixed value |
-| --- | --- |
-| Repository | `drasi-project/drasi-workgraph-demo` |
-| Project owner | `drasi-project` |
-| Project number | `3` |
-| ProjectV2 node ID | `PVT_kwDOCX0YF84BgNE3` |
-| Status field node ID | `PVTSSF_lADOCX0YF84BgNE3zhaadbw` |
-| `AwaitingRouting` option ID | `3407e5fe` |
-| Event schema | `workgraph.event/v1` |
-| Event type | `CompletedIssueValidation` |
-| Subject type | `Issue` |
-| Actor type | `Agent` |
-| Actor ID / agent profile | `issue-validator` |
-
-The externally configured trust values are the immutable numeric GitHub user
-IDs for the launcher and reporter plus their diagnostic logins.
+The externally configured trust values are immutable numeric GitHub user IDs
+for the launcher and reporter plus their diagnostic logins. Renaming either
+login does not affect trust. The reporter posts one Issue comment and performs
+no Project mutation; the Core router routes directly from `AwaitingValidation`.
 
 ## Tool contract
 
@@ -39,134 +30,178 @@ complete input is:
 
 ```json
 {
-  "projectItemNodeId": "PVTI_...",
-  "subjectNodeId": "I_...",
-  "subjectNumber": 2,
-  "routeId": "validation:PVTI_...:2026-08-13T01:00:00Z",
-  "responsibilityId": "validation:PVTI_...:2026-08-13T01:00:00Z:issue-validator",
-  "executionId": "execution:...",
-  "expectedEventId": "event:execution:...:CompletedIssueValidation",
-  "contentVersion": "2026-08-13T01:00:00Z",
-  "profileRef": "issue-validator@AGENT_PROFILE_BLOB_SHA"
+  "subjectNumber": 7,
+  "executionId": "execution:validation-001"
 }
 ```
 
-The tool does not accept repository, Project, field, option, status, actor,
-event type, result, timestamp, comment body, REST operation, or GraphQL input.
-It derives the validation result from the authoritative issue body and
-generates `completedAt` on the server.
+The caller supplies no node ID, destination, event body, outcome, marker result,
+profile, run ID, timestamp, repository, Project, status, or arbitrary API input.
+The agent's `github/issue_read` response may omit `subjectNodeId`; the profile
+neither requires nor preserves that field because the reporter resolves the
+authoritative identity itself.
 
 Success returns only verified completion identifiers:
 
 ```json
 {
-  "eventId": "event:execution:...:CompletedIssueValidation",
+  "eventId": "...",
+  "executionId": "execution:validation-001",
   "commentNodeId": "IC_...",
   "projectItemNodeId": "PVTI_...",
-  "projectStatus": "AwaitingRouting",
+  "subjectNodeId": "I_...",
   "reconciled": false
 }
 ```
 
-## Ordered behavior
+## Common event format
+
+Every accepted WorkGraph event comment uses exactly:
+
+```text
+WorkGraphEvent/v1
+
+<one non-empty generated human summary line, at most 120 characters>
+
+<one raw JSON object ending at end-of-comment>
+```
+
+There is no Markdown fence or trailing text. Old JSON-only and fenced event
+formats are ignored. The JSON envelope has exactly these keys in this order:
+
+```json
+{
+  "schemaVersion": "workgraph.event/v1",
+  "eventId": "...",
+  "eventType": "ResponsibilityAssigned",
+  "runId": "...",
+  "projectItemNodeId": "PVTI_...",
+  "subjectNodeId": "I_...",
+  "payload": {}
+}
+```
+
+The allowed event types are `ResponsibilityAssigned`, `ExecutionStarted`,
+`CompletedIssueValidation`, and `RoutingDecided`. Each payload has its own exact
+schema. The completion payload is exactly:
+
+```json
+{
+  "executionId": "execution:...",
+  "outcome": "passed",
+  "reasonCode": "required-marker-present"
+}
+```
+
+For failure, outcome is `failed` and reason code is
+`required-marker-missing`. Completion summaries are exactly
+`Issue validation passed.` and `Issue validation failed.`.
+
+## Deterministic identifiers and digests
+
+The exact issue-body digest is:
+
+```text
+sha256:<lowercase SHA-256 hex of the exact UTF-8 bytes of body ?? "">
+```
+
+There is no newline conversion, trimming, Unicode normalization, or other body
+normalization. Before deriving readable identities, `projectItemNodeId` must
+match `PVTI_[A-Za-z0-9]+` and `contentDigest` must match
+`sha256:[0-9a-f]{64}`. The identity contract is:
+
+```text
+contentDigest = "sha256:" + lowercase_sha256(exact UTF-8 (body ?? ""))
+runId = "validation:" + projectItemNodeId + ":" + contentDigest
+eventId = "event:" + runId + ":" + eventType
+```
+
+For the published pass example:
+
+| Value | Exact fixture |
+| --- | --- |
+| Body | `Context\nWorkGraph-Validation: pass\n` |
+| Project Item | `PVTI_example` |
+| Subject | `I_example` |
+| Content digest | `sha256:9faac769ff6962c7f331881d97518ff6a9df338da679c5d4851577cb7404a7fa` |
+| Run ID | `validation:PVTI_example:sha256:9faac769ff6962c7f331881d97518ff6a9df338da679c5d4851577cb7404a7fa` |
+| Completion event ID | `event:validation:PVTI_example:sha256:9faac769ff6962c7f331881d97518ff6a9df338da679c5d4851577cb7404a7fa:CompletedIssueValidation` |
+
+The contract permits exactly one accepted event per `eventType` per `runId` and
+one execution/task per run. A retry reuses that task and execution; changing the
+exact body changes its digest and creates a new run. Every producer and consumer
+must match the vectors in `tests/fixtures/issue-validator-events.json`
+byte-for-byte.
+
+Canonical comment reconciliation also hashes the complete rendered comment as
+exact UTF-8 bytes. A reporter-authored candidate is adoptable only when its body
+hash equals the expected canonical body hash and its GitHub timestamps prove it
+was never edited.
+
+## Authoritative ordered behavior
 
 For each call, the reporter:
 
-1. Rejects malformed or additional input and verifies the deterministic
-   `expectedEventId` and `issue-validator@<40-character-blob-SHA>` profile.
-2. Resolves the PAT identity from GitHub and requires its immutable numeric ID
-   to equal the configured reporter user ID. Reporter login is diagnostic only.
-3. Reads the fixed-repository Issue and verifies its number and node ID.
-4. Resolves organization `drasi-project` Project number `3`, requires its node
-   ID to be `PVT_kwDOCX0YF84BgNE3`, and verifies that the supplied Project Item
-   belongs to it and contains that exact fixed-repository Issue.
-5. Reads issue comments and requires exactly one pure-JSON
-   `workgraph.execution/v1` comment whose immutable `user.id` equals the
-   configured launcher user ID. The login is diagnostic only. The record must
-   be `started` and match the route, responsibility, execution, expected event,
-   event type, agent profile, and profile reference.
-6. Re-evaluates the case-sensitive complete-line marker
-   `WorkGraph-Validation: pass`.
-7. Builds the canonical `WorkGraphEvent/v1` payload with fixed actor, subject,
-   repository, and event type, the derived result, and a server-generated UTC
-   `completedAt`.
-8. Searches for the deterministic event ID. It adopts only one schema-valid,
-   canonically formatted matching comment whose author ID equals the current
-   PAT identity. Spoofed or conflicting comments cannot satisfy reconciliation.
-9. Creates the canonical comment when none exists. If the POST result is
-   ambiguous, it searches again and adopts only the authenticated canonical
-   comment; otherwise it fails without changing Project status.
-10. Only after the comment exists, sends one fixed
-    `updateProjectV2ItemFieldValue` mutation using the literal Project, field,
-    and option IDs above.
-11. Reads the Item back and returns success only when its `Status` value is
-    observed as `AwaitingRouting`.
+1. Rejects malformed or additional input before GitHub access.
+2. Resolves the PAT identity and requires its immutable numeric ID to equal the
+   configured reporter user ID. The login is diagnostic only.
+3. Reads the fixed-repository Issue by `subjectNumber`, obtains its authoritative
+   node ID and exact `body ?? ""`, and rejects pull requests.
+4. Reads Issue comments and considers only unedited strict common-format events.
+   Old JSON-only and fenced records are ignored.
+5. Requires exactly one trusted `ExecutionStarted` event for `executionId`
+   authored by the configured immutable launcher identity. It derives `runId`,
+   Project Item ID, and subject ID from that event.
+6. Requires the matching trusted `ResponsibilityAssigned` event, validates its
+   deterministic IDs and exact schema, and derives `profileRef` and
+   `contentDigest`.
+7. Independently resolves fixed Project number `3`, requires node ID
+   `PVT_kwDOCX0YF84BgNE3`, and requires exactly one Project Item in that Project
+   tracking the authoritative fixed-repository Issue.
+8. Computes SHA-256 over the exact authoritative body and requires equality with
+   the assignment `contentDigest` before any write.
+9. Independently evaluates the complete-line, case-sensitive marker
+   `WorkGraph-Validation: pass`, derives outcome and reason code, derives the
+   deterministic completion event ID, and renders the exact canonical comment.
+10. Reconciles only one unedited, canonically formatted completion authored by
+    the immutable reporter identity with the exact canonical body hash. Spoofed,
+    edited, conflicting, or ambiguous canonical records never satisfy success.
+11. Posts only the completion comment when none exists. If the POST response is
+    ambiguous, it reads comments again and adopts only the authenticated exact
+    canonical record.
 
-An explicit comment failure never produces a status mutation. A retry after a
-status failure adopts the existing comment instead of creating a duplicate.
+There is no `AwaitingRouting` status mutation or readback. An explicit comment
+failure performs no write beyond the failed comment request, and a retry adopts
+the existing canonical comment instead of creating a duplicate.
 
 ## Agents configuration
 
-In the repository, open **Settings > Secrets and variables > Agents** and add:
+In **Settings > Secrets and variables > Agents**, configure:
 
 | Kind | Name | Value |
 | --- | --- | --- |
 | Secret | `COPILOT_MCP_WORKGRAPH_TOKEN` | Write-capable PAT; never commit it |
-| Variable | `COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID` | Immutable numeric ID of the trusted execution-comment author |
+| Variable | `COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID` | Immutable numeric ID of the trusted launcher event author |
 | Variable | `COPILOT_MCP_WORKGRAPH_LAUNCHER_LOGIN` | Diagnostic login for that launcher ID |
 | Variable | `COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID` | Immutable numeric ID of the trusted write-PAT owner |
 | Variable | `COPILOT_MCP_WORKGRAPH_REPORTER_LOGIN` | Diagnostic login for that reporter ID |
 
-Names use the required `COPILOT_MCP_` prefix, so the values are available only
-to MCP configuration. The agent profile maps them to the local server as
-`WORKGRAPH_TOKEN`, `WORKGRAPH_LAUNCHER_USER_ID`,
+The profile maps them to `WORKGRAPH_TOKEN`, `WORKGRAPH_LAUNCHER_USER_ID`,
 `WORKGRAPH_LAUNCHER_LOGIN`, `WORKGRAPH_REPORTER_USER_ID`, and
-`WORKGRAPH_REPORTER_LOGIN`.
+`WORKGRAPH_REPORTER_LOGIN`. The PAT must be restricted to this repository and
+need only read Issue, comment, and Project metadata and write Issue comments.
+It no longer needs Project write permission.
 
-The PAT must:
-
-- be restricted to `drasi-project/drasi-workgraph-demo`;
-- read repository and Issue metadata and write Issue comments;
-- read and write organization ProjectV2 data for Project
-  `PVT_kwDOCX0YF84BgNE3`;
-- be authorized for organization SSO when required.
-
-`COPILOT_MCP_WORKGRAPH_TOKEN` must be a separate least-privilege credential
-from the local launcher's `GITHUB_AGENT_TOKEN`. There is no fallback between
-them, and neither token may be reused for the other role. Do not copy
-`GITHUB_AGENT_TOKEN` into the reporter's Agents secret or expose the reporter
-PAT to the launcher process.
-
-Do not use an Actions secret, the Actions `GITHUB_TOKEN`, an installation token,
-or the default cloud-agent GitHub MCP token. The PAT owner becomes the observed
-completion-comment author and must be allowlisted by the router for the active
-agent execution.
-
-The separate launcher and reporter PATs and all four variables are configured.
-The current configuration identifies both credential owners as login
-`agentofreality`, numeric user ID `4021243`. The launcher's Agent Tasks and
-Project reads have been verified. The reporter identity is not activation
-evidence until a live `workgraph/report_completion` call independently resolves
-the reporter PAT through GitHub's `/user` endpoint and matches that numeric ID.
-
-If the live reporter probe confirms the configured identity, one GitHub identity
-will author both the trusted execution record and completion event even though
-the credentials are separate. This same-user authorship weakens separation of
-duties and is an explicit prototype trust limitation: compromise or misuse of
-that identity could forge both sides of the trust check. Production requires
-separate least-privilege tokens owned by distinct immutable GitHub user IDs.
-
-After merging the profile, obtain its blob SHA for launcher prompts and
-execution records:
-
-```bash
-git rev-parse HEAD:.github/agents/issue-validator.agent.md
-```
+`COPILOT_MCP_WORKGRAPH_TOKEN` must be a separate least-privilege credential from
+the local launcher's `GITHUB_AGENT_TOKEN`. There is no fallback between them,
+and neither token may be reused for the other role. The current prototype uses
+login `agentofreality`, numeric user ID `4021243`, for both configured roles.
+That same-user authorship is an explicit prototype trust limitation; production
+requires distinct immutable GitHub user IDs.
 
 ## Tests and activation gate
 
-Node is preinstalled on GitHub-hosted cloud runners; the server has no package
-dependencies. Run:
+Run:
 
 ```bash
 node --check .github/mcp/workgraph-reporter.mjs
@@ -174,14 +209,7 @@ node --test tests/workgraph-reporter.test.mjs
 python3 -m unittest discover -s tests -v
 ```
 
-The Node suite spawns the actual stdio process and uses a local fake GitHub HTTP
-server. It covers protocol negotiation, the single tool surface, additional
-input rejection, fixed mutation IDs, comment-before-status ordering, duplicate
-adoption, spoof rejection, ambiguous-create reconciliation, and no status write
-after comment failure.
-
 Before automated routing, run a manual Agent Task against a disposable Issue
 with `create_pull_request=false`. This remains an activation blocker because
 local tests cannot prove cloud MCP startup, PAT/SSO policy, live Project
-configuration, or observed author allowlisting. Prove both the normal path and
-an interrupted comment response before enabling the router.
+configuration, or observed author allowlisting.

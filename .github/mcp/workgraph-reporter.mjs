@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
 import process from "node:process";
 import readline from "node:readline";
 import { isDeepStrictEqual } from "node:util";
@@ -11,45 +12,32 @@ const REPOSITORY_NAME = "drasi-workgraph-demo";
 const PROJECT_OWNER = "drasi-project";
 const PROJECT_NUMBER = 3;
 const PROJECT_ID = "PVT_kwDOCX0YF84BgNE3";
-const STATUS_FIELD_ID = "PVTSSF_lADOCX0YF84BgNE3zhaadbw";
-const AWAITING_ROUTING_OPTION_ID = "3407e5fe";
-const EVENT_TYPE = "CompletedIssueValidation";
-const ACTOR_TYPE = "Agent";
-const ACTOR_ID = "issue-validator";
+const EVENT_SCHEMA = "workgraph.event/v1";
+const EVENT_PREFIX = "WorkGraphEvent/v1";
+const ASSIGNMENT_TYPE = "ResponsibilityAssigned";
+const EXECUTION_TYPE = "ExecutionStarted";
+const COMPLETION_TYPE = "CompletedIssueValidation";
 const MARKER = "WorkGraph-Validation: pass";
-const STATUS_NAME = "AwaitingRouting";
+const PROJECT_ITEM_NODE_ID_PATTERN = /^PVTI_[A-Za-z0-9]+$/;
+const CONTENT_DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 
-const INPUT_KEYS = [
-  "projectItemNodeId",
-  "subjectNodeId",
-  "subjectNumber",
-  "routeId",
-  "responsibilityId",
-  "executionId",
-  "expectedEventId",
-  "contentVersion",
-  "profileRef",
-];
-
-const EVENT_KEYS = [
+const INPUT_KEYS = ["subjectNumber", "executionId"];
+const ENVELOPE_KEYS = [
   "schemaVersion",
   "eventId",
   "eventType",
+  "runId",
   "projectItemNodeId",
-  "subjectType",
   "subjectNodeId",
-  "repository",
-  "subjectNumber",
-  "actorType",
-  "actorId",
-  "routeId",
-  "responsibilityId",
-  "executionId",
-  "contentVersion",
-  "profileRef",
-  "result",
-  "completedAt",
+  "payload",
 ];
+const ASSIGNMENT_KEYS = [
+  "responsibilityType",
+  "profileRef",
+  "contentDigest",
+];
+const EXECUTION_KEYS = ["executionId", "taskId"];
+const COMPLETION_KEYS = ["executionId", "outcome", "reasonCode"];
 
 class ReporterError extends Error {}
 class AmbiguousCreateError extends ReporterError {}
@@ -62,11 +50,10 @@ function requireExactKeys(value, expectedKeys, label) {
   if (!isObject(value)) {
     throw new ReporterError(`${label} must be an object`);
   }
-  const actual = Object.keys(value).sort();
-  const expected = [...expectedKeys].sort();
-  if (!isDeepStrictEqual(actual, expected)) {
-    const missing = expected.filter((key) => !actual.includes(key));
-    const extra = actual.filter((key) => !expected.includes(key));
+  const actual = Object.keys(value);
+  if (!isDeepStrictEqual([...actual].sort(), [...expectedKeys].sort())) {
+    const missing = expectedKeys.filter((key) => !actual.includes(key));
+    const extra = actual.filter((key) => !expectedKeys.includes(key));
     throw new ReporterError(
       `${label} has invalid properties; missing=${JSON.stringify(missing)}, ` +
         `extra=${JSON.stringify(extra)}`,
@@ -74,48 +61,15 @@ function requireExactKeys(value, expectedKeys, label) {
   }
 }
 
-function requireString(value, label) {
-  if (typeof value !== "string" || value.length === 0) {
-    throw new ReporterError(`${label} must be a non-empty string`);
+function requireKeyOrder(value, expectedKeys, label) {
+  if (!isDeepStrictEqual(Object.keys(value), expectedKeys)) {
+    throw new ReporterError(`${label} properties are not canonically ordered`);
   }
 }
 
-function requireRfc3339(value, label) {
-  requireString(value, label);
-  const match =
-    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|\+00:00)$/.exec(
-      value,
-    );
-  if (match === null) {
-    throw new ReporterError(`${label} must be a valid RFC3339 UTC instant`);
-  }
-  const [, year, month, day, hour, minute, second] = match.map(Number);
-  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-  const daysInMonth = [
-    31,
-    leapYear ? 29 : 28,
-    31,
-    30,
-    31,
-    30,
-    31,
-    31,
-    30,
-    31,
-    30,
-    31,
-  ];
-  if (
-    month < 1 ||
-    month > 12 ||
-    day < 1 ||
-    day > daysInMonth[month - 1] ||
-    hour > 23 ||
-    minute > 59 ||
-    second > 59 ||
-    Number.isNaN(Date.parse(value))
-  ) {
-    throw new ReporterError(`${label} must be a valid RFC3339 UTC instant`);
+function requireString(value, label) {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new ReporterError(`${label} must be a non-empty string`);
   }
 }
 
@@ -136,47 +90,53 @@ function parseUserId(value, label) {
 
 function validateInput(input) {
   requireExactKeys(input, INPUT_KEYS, "arguments");
-  for (const key of INPUT_KEYS) {
-    if (key !== "subjectNumber") {
-      requireString(input[key], `arguments.${key}`);
-    }
-  }
-  if (
-    !Number.isInteger(input.subjectNumber) ||
-    input.subjectNumber <= 0
-  ) {
+  if (!Number.isInteger(input.subjectNumber) || input.subjectNumber <= 0) {
     throw new ReporterError("arguments.subjectNumber must be a positive integer");
   }
-  if (!input.projectItemNodeId.startsWith("PVTI_")) {
-    throw new ReporterError(
-      "arguments.projectItemNodeId must be a ProjectV2 Item node ID",
-    );
-  }
-  if (!input.subjectNodeId.startsWith("I_")) {
-    throw new ReporterError(
-      "arguments.subjectNodeId must be an Issue node ID",
-    );
-  }
+  requireString(input.executionId, "arguments.executionId");
   if (!input.executionId.startsWith("execution:")) {
     throw new ReporterError(
       "arguments.executionId must start with 'execution:'",
     );
   }
-  const expectedEventId = `event:${input.executionId}:${EVENT_TYPE}`;
-  if (input.expectedEventId !== expectedEventId) {
-    throw new ReporterError(
-      `arguments.expectedEventId must be ${JSON.stringify(expectedEventId)}`,
-    );
-  }
-  if (!/^issue-validator@[0-9a-fA-F]{40}$/.test(input.profileRef)) {
-    throw new ReporterError(
-      "arguments.profileRef must identify issue-validator at a 40-character blob SHA",
-    );
+}
+
+function sha256Hex(value) {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function bodyDigest(body) {
+  return `sha256:${sha256Hex(body ?? "")}`;
+}
+
+function validateProjectItemNodeId(value, label) {
+  if (!PROJECT_ITEM_NODE_ID_PATTERN.test(value)) {
+    throw new ReporterError(`${label} is invalid`);
   }
 }
 
+function validateContentDigest(value, label) {
+  if (!CONTENT_DIGEST_PATTERN.test(value)) {
+    throw new ReporterError(`${label} is invalid`);
+  }
+}
+
+function runIdFor(projectItemNodeId, contentDigest) {
+  validateProjectItemNodeId(projectItemNodeId, "projectItemNodeId");
+  validateContentDigest(contentDigest, "contentDigest");
+  return `validation:${projectItemNodeId}:${contentDigest}`;
+}
+
+function eventIdFor(runId, eventType) {
+  return `event:${runId}:${eventType}`;
+}
+
+function commentDigest(body) {
+  return `sha256:${sha256Hex(body)}`;
+}
+
 function markerPresent(body) {
-  return (body ?? "")
+  return body
     .replaceAll("\r\n", "\n")
     .split("\n")
     .some((line) => line === MARKER);
@@ -185,85 +145,187 @@ function markerPresent(body) {
 function validationResult(body) {
   if (markerPresent(body)) {
     return {
+      summary: "Issue validation passed.",
       outcome: "passed",
       reasonCode: "required-marker-present",
-      evidence: {
-        requiredMarker: MARKER,
-        found: true,
-      },
-      summary: "The required prototype marker is present.",
     };
   }
   return {
+    summary: "Issue validation failed.",
     outcome: "failed",
     reasonCode: "required-marker-missing",
-    evidence: {
-      requiredMarker: MARKER,
-      found: false,
-    },
-    summary: "The required prototype marker is missing.",
   };
 }
 
-function completedAtNow() {
-  const wholeSecond = Math.floor(Date.now() / 1000) * 1000;
-  return new Date(wholeSecond).toISOString().replace(".000Z", "Z");
+function validateEnvelope(event) {
+  requireExactKeys(event, ENVELOPE_KEYS, "event");
+  requireKeyOrder(event, ENVELOPE_KEYS, "event");
+  if (event.schemaVersion !== EVENT_SCHEMA) {
+    throw new ReporterError("event.schemaVersion is invalid");
+  }
+  requireString(event.eventId, "event.eventId");
+  requireString(event.runId, "event.runId");
+  requireString(event.projectItemNodeId, "event.projectItemNodeId");
+  requireString(event.subjectNodeId, "event.subjectNodeId");
+  validateProjectItemNodeId(
+    event.projectItemNodeId,
+    "event.projectItemNodeId",
+  );
+  if (!event.subjectNodeId.startsWith("I_")) {
+    throw new ReporterError("event.subjectNodeId is invalid");
+  }
 }
 
-function canonicalEvent(input, issueBody, completedAt) {
+function validateAssignment(event) {
+  validateEnvelope(event);
+  if (event.eventType !== ASSIGNMENT_TYPE) {
+    throw new ReporterError("assignment event type is invalid");
+  }
+  requireExactKeys(event.payload, ASSIGNMENT_KEYS, "assignment payload");
+  requireKeyOrder(event.payload, ASSIGNMENT_KEYS, "assignment payload");
+  if (event.payload.responsibilityType !== "issue-validation") {
+    throw new ReporterError("assignment responsibility type is invalid");
+  }
+  if (!/^issue-validator@[0-9a-f]{40}$/.test(event.payload.profileRef)) {
+    throw new ReporterError("assignment profileRef is invalid");
+  }
+  validateContentDigest(
+    event.payload.contentDigest,
+    "assignment contentDigest",
+  );
+  const expectedRunId = runIdFor(
+    event.projectItemNodeId,
+    event.payload.contentDigest,
+  );
+  if (event.runId !== expectedRunId) {
+    throw new ReporterError("assignment runId is invalid");
+  }
+  if (event.eventId !== eventIdFor(event.runId, ASSIGNMENT_TYPE)) {
+    throw new ReporterError("assignment eventId is invalid");
+  }
+}
+
+function validateExecution(event) {
+  validateEnvelope(event);
+  if (event.eventType !== EXECUTION_TYPE) {
+    throw new ReporterError("execution event type is invalid");
+  }
+  requireExactKeys(event.payload, EXECUTION_KEYS, "execution payload");
+  requireKeyOrder(event.payload, EXECUTION_KEYS, "execution payload");
+  requireString(event.payload.executionId, "execution payload.executionId");
+  requireString(event.payload.taskId, "execution payload.taskId");
+  if (!event.payload.executionId.startsWith("execution:")) {
+    throw new ReporterError("execution payload.executionId is invalid");
+  }
+  if (event.eventId !== eventIdFor(event.runId, EXECUTION_TYPE)) {
+    throw new ReporterError("execution eventId is invalid");
+  }
+}
+
+function canonicalCompletionEvent(execution, outcome, reasonCode) {
   return {
-    schemaVersion: "workgraph.event/v1",
-    eventId: input.expectedEventId,
-    eventType: EVENT_TYPE,
-    projectItemNodeId: input.projectItemNodeId,
-    subjectType: "Issue",
-    subjectNodeId: input.subjectNodeId,
-    repository: REPOSITORY,
-    subjectNumber: input.subjectNumber,
-    actorType: ACTOR_TYPE,
-    actorId: ACTOR_ID,
-    routeId: input.routeId,
-    responsibilityId: input.responsibilityId,
-    executionId: input.executionId,
-    contentVersion: input.contentVersion,
-    profileRef: input.profileRef,
-    result: validationResult(issueBody),
-    completedAt,
+    schemaVersion: EVENT_SCHEMA,
+    eventId: eventIdFor(execution.runId, COMPLETION_TYPE),
+    eventType: COMPLETION_TYPE,
+    runId: execution.runId,
+    projectItemNodeId: execution.projectItemNodeId,
+    subjectNodeId: execution.subjectNodeId,
+    payload: {
+      executionId: execution.payload.executionId,
+      outcome,
+      reasonCode,
+    },
   };
 }
 
-function formatComment(event) {
-  return `WorkGraphEvent/v1\n\`\`\`json\n${JSON.stringify(event, null, 2)}\n\`\`\``;
+function validateCompletion(event) {
+  validateEnvelope(event);
+  if (event.eventType !== COMPLETION_TYPE) {
+    throw new ReporterError("completion event type is invalid");
+  }
+  requireExactKeys(event.payload, COMPLETION_KEYS, "completion payload");
+  requireKeyOrder(event.payload, COMPLETION_KEYS, "completion payload");
+  requireString(event.payload.executionId, "completion payload.executionId");
+  const validResult =
+    (event.payload.outcome === "passed" &&
+      event.payload.reasonCode === "required-marker-present") ||
+    (event.payload.outcome === "failed" &&
+      event.payload.reasonCode === "required-marker-missing");
+  if (!validResult) {
+    throw new ReporterError("completion outcome and reasonCode are invalid");
+  }
+  if (event.eventId !== eventIdFor(event.runId, COMPLETION_TYPE)) {
+    throw new ReporterError("completion eventId is invalid");
+  }
 }
 
-function parseCompletionComment(body) {
+function formatEvent(summary, event) {
+  if (
+    typeof summary !== "string" ||
+    summary.length === 0 ||
+    summary.length > 120 ||
+    summary.includes("\n") ||
+    summary.includes("\r")
+  ) {
+    throw new ReporterError("event summary is invalid");
+  }
+  return `${EVENT_PREFIX}\n\n${summary}\n\n${JSON.stringify(event, null, 2)}`;
+}
+
+function parseEventCandidate(body) {
   if (typeof body !== "string") {
     return null;
   }
-  const match = body.match(
-    /^WorkGraphEvent\/v1[ \t]*\r?\n```json[ \t]*\r?\n([\s\S]*?)\r?\n```\s*$/,
-  );
-  if (!match) {
+  const normalized = body.replaceAll("\r\n", "\n");
+  if (normalized.includes("\r")) {
     return null;
   }
+  const match =
+    /^WorkGraphEvent\/v1\n\n([^\n]{1,120})\n\n(\{[\s\S]*\})$/.exec(
+      normalized,
+    );
+  if (match === null) {
+    return null;
+  }
+  let event;
   try {
-    const parsed = JSON.parse(match[1]);
-    return isObject(parsed) ? parsed : null;
+    event = JSON.parse(match[2]);
   } catch {
     return null;
   }
+  if (!isObject(event)) {
+    return null;
+  }
+  return {
+    summary: match[1],
+    event,
+    normalizedBody: normalized,
+    json: match[2],
+  };
 }
 
-function validateExistingEvent(event, input, issueBody) {
-  requireExactKeys(event, EVENT_KEYS, "existing completion event");
-  requireRfc3339(event.completedAt, "existing completion event.completedAt");
-  const expected = canonicalEvent(input, issueBody, event.completedAt);
-  if (!isDeepStrictEqual(event, expected)) {
-    throw new ReporterError(
-      "authenticated completion comment conflicts with expected event",
-    );
+function parseEventComment(body) {
+  const candidate = parseEventCandidate(body);
+  if (candidate === null) {
+    return null;
   }
-  return expected;
+  try {
+    validateEnvelope(candidate.event);
+  } catch {
+    return null;
+  }
+  if (candidate.json !== JSON.stringify(candidate.event, null, 2)) {
+    return null;
+  }
+  return candidate;
+}
+
+function isUnedited(comment) {
+  return (
+    typeof comment?.created_at === "string" &&
+    comment.created_at.length > 0 &&
+    comment.updated_at === comment.created_at
+  );
 }
 
 function apiBaseUrl() {
@@ -293,7 +355,8 @@ function loadConfig() {
   const reporterUserIdText = process.env.WORKGRAPH_REPORTER_USER_ID ?? "";
   if (!token) {
     throw new ReporterError(
-      "WORKGRAPH_TOKEN is not configured from the COPILOT_MCP_WORKGRAPH_TOKEN Agents secret",
+      "WORKGRAPH_TOKEN is not configured from the " +
+        "COPILOT_MCP_WORKGRAPH_TOKEN Agents secret",
     );
   }
   validateLogin(launcherLogin, "WORKGRAPH_LAUNCHER_LOGIN");
@@ -372,6 +435,12 @@ class GitHubClient {
       try {
         body = JSON.parse(text);
       } catch (error) {
+        if (ambiguousWrite && response.ok) {
+          throw new AmbiguousCreateError(
+            "comment creation response is ambiguous",
+            { cause: error },
+          );
+        }
         throw new ReporterError("GitHub API response is not valid JSON", {
           cause: error,
         });
@@ -447,198 +516,270 @@ class GitHubClient {
     );
   }
 
-  async getProjectItem(projectItemNodeId) {
+  async findProjectItem(subjectNodeId) {
     const query = `
-query WorkGraphProjectItem($item: ID!) {
+query WorkGraphProjectItems($cursor: String) {
   organization(login: "${PROJECT_OWNER}") {
-    projectV2(number: ${PROJECT_NUMBER}) { id }
-  }
-  node(id: $item) {
-    ... on ProjectV2Item {
+    projectV2(number: ${PROJECT_NUMBER}) {
       id
-      project { id }
-      content {
-        ... on Issue {
+      items(first: 100, after: $cursor) {
+        nodes {
           id
-          number
-          repository { nameWithOwner }
+          content {
+            ... on Issue {
+              id
+              number
+              repository { nameWithOwner }
+            }
+          }
         }
+        pageInfo { hasNextPage endCursor }
       }
     }
   }
 }`;
-    const data = await this.graphql(query, { item: projectItemNodeId });
-    return {
-      item: data.node,
-      configuredProjectId: data.organization?.projectV2?.id,
-    };
-  }
-
-  async setAwaitingRouting(projectItemNodeId) {
-    const mutation = `
-mutation WorkGraphAwaitingRouting($item: ID!) {
-  updateProjectV2ItemFieldValue(input: {
-    projectId: "${PROJECT_ID}",
-    itemId: $item,
-    fieldId: "${STATUS_FIELD_ID}",
-    value: {singleSelectOptionId: "${AWAITING_ROUTING_OPTION_ID}"}
-  }) {
-    projectV2Item { id }
-  }
-}`;
-    const data = await this.graphql(mutation, { item: projectItemNodeId });
-    const updated = data.updateProjectV2ItemFieldValue?.projectV2Item;
-    if (updated?.id !== projectItemNodeId) {
-      throw new ReporterError("GitHub did not confirm the fixed status update");
-    }
-    const verifyQuery = `
-query WorkGraphVerifyStatus($item: ID!) {
-  node(id: $item) {
-    ... on ProjectV2Item {
-      fieldValueByName(name: "Status") {
-        ... on ProjectV2ItemFieldSingleSelectValue { name }
+    const matches = [];
+    let cursor = null;
+    for (let page = 1; page <= 100; page += 1) {
+      const data = await this.graphql(query, { cursor });
+      const project = data.organization?.projectV2;
+      if (!isObject(project) || project.id !== PROJECT_ID) {
+        throw new ReporterError(
+          "drasi-project Project number 3 does not match the fixed Project node ID",
+        );
       }
+      const connection = project.items;
+      if (!isObject(connection) || !Array.isArray(connection.nodes)) {
+        throw new ReporterError("fixed Project Items could not be read");
+      }
+      matches.push(
+        ...connection.nodes.filter(
+          (item) => item?.content?.id === subjectNodeId,
+        ),
+      );
+      if (!connection.pageInfo?.hasNextPage) {
+        return matches;
+      }
+      requireString(connection.pageInfo.endCursor, "Project Items endCursor");
+      cursor = connection.pageInfo.endCursor;
     }
-  }
-}`;
-    const verifyData = await this.graphql(verifyQuery, {
-      item: projectItemNodeId,
-    });
-    if (verifyData.node?.fieldValueByName?.name !== STATUS_NAME) {
-      throw new ReporterError("Project Item Status verification failed");
-    }
-    return STATUS_NAME;
+    throw new ReporterError("Project Item search exceeded 100 pages");
   }
 }
 
-function validateIssue(issue, input) {
+function validateIssue(issue, subjectNumber) {
   if (!isObject(issue) || issue.pull_request !== undefined) {
     throw new ReporterError("completion subject is not an Issue");
   }
-  if (
-    issue.node_id !== input.subjectNodeId ||
-    issue.number !== input.subjectNumber
-  ) {
-    throw new ReporterError("Issue identity does not match tool input");
+  if (issue.number !== subjectNumber) {
+    throw new ReporterError("Issue number does not match tool input");
+  }
+  requireString(issue.node_id, "Issue node ID");
+  if (!issue.node_id.startsWith("I_")) {
+    throw new ReporterError("Issue node ID is invalid");
+  }
+  if (issue.body !== null && typeof issue.body !== "string") {
+    throw new ReporterError("Issue body is invalid");
   }
 }
 
-function validateProjectItem(projectLookup, input) {
-  if (projectLookup.configuredProjectId !== PROJECT_ID) {
-    throw new ReporterError(
-      "drasi-project Project number 3 does not match the fixed Project node ID",
-    );
-  }
-  const item = projectLookup.item;
-  if (!isObject(item) || item.id !== input.projectItemNodeId) {
-    throw new ReporterError("Project Item was not found");
-  }
-  if (item.project?.id !== PROJECT_ID) {
-    throw new ReporterError("Project Item does not belong to the fixed Project");
-  }
-  if (
-    item.content?.id !== input.subjectNodeId ||
-    item.content?.number !== input.subjectNumber ||
-    item.content?.repository?.nameWithOwner !== REPOSITORY
-  ) {
-    throw new ReporterError(
-      "Project Item does not contain the validated repository Issue",
-    );
-  }
+function trustedEventCandidates(comments, launcherUserId) {
+  return comments
+    .filter(
+      (comment) =>
+        isObject(comment) &&
+        comment.user?.id === launcherUserId &&
+        typeof comment.body === "string",
+    )
+    .map((comment) => ({
+      comment,
+      candidate: parseEventCandidate(comment.body),
+      parsed: parseEventComment(comment.body),
+      unedited: isUnedited(comment),
+    }));
 }
 
-function validateActiveExecution(comments, input, config) {
-  const matches = [];
-  for (const comment of comments) {
-    if (
-      !isObject(comment) ||
-      comment.user?.id !== config.launcherUserId ||
-      typeof comment.body !== "string"
-    ) {
-      continue;
-    }
-    let record;
-    try {
-      record = JSON.parse(comment.body);
-    } catch {
-      continue;
-    }
-    if (!isObject(record) || record.executionId !== input.executionId) {
-      continue;
-    }
-    const expected = {
-      schemaVersion: "workgraph.execution/v1",
-      messageType: "execution",
-      routeId: input.routeId,
-      responsibilityId: input.responsibilityId,
-      executionId: input.executionId,
-      expectedEventId: input.expectedEventId,
-      requiredEventType: EVENT_TYPE,
-      agentProfile: ACTOR_ID,
-      profileRef: input.profileRef,
-      state: "started",
-    };
-    const mismatches = Object.entries(expected)
-      .filter(([key, value]) => record[key] !== value)
-      .map(([key]) => key);
-    if (mismatches.length > 0) {
-      throw new ReporterError(
-        `trusted execution record conflicts with: ${mismatches.join(", ")}`,
-      );
-    }
-    for (const field of [
-      "taskId",
-      "taskUrl",
-      "requestedModel",
-      "actualModel",
-    ]) {
-      requireString(record[field], `execution.${field}`);
-    }
-    requireRfc3339(record.startedAt, "execution.startedAt");
-    matches.push(record);
+function findExecution(comments, input, config) {
+  const trusted = trustedEventCandidates(
+    comments,
+    config.launcherUserId,
+  );
+  const matches = trusted.filter(
+    ({ candidate }) =>
+      candidate?.event?.eventType === EXECUTION_TYPE &&
+      candidate.event.payload?.executionId === input.executionId,
+  );
+  if (matches.some(({ parsed }) => parsed === null)) {
+    throw new ReporterError(
+      "trusted ExecutionStarted event is not strict and canonical",
+    );
+  }
+  if (matches.some(({ unedited }) => !unedited)) {
+    throw new ReporterError("trusted execution event was edited");
   }
   if (matches.length !== 1) {
     throw new ReporterError(
-      "exactly one trusted started execution must match the completion; " +
+      "exactly one trusted ExecutionStarted event must match executionId; " +
         `expected launcher user ID ${config.launcherUserId} ` +
         `(${config.launcherLogin})`,
     );
   }
+  validateExecution(matches[0].parsed.event);
+  const expectedEventId = eventIdFor(
+    matches[0].parsed.event.runId,
+    EXECUTION_TYPE,
+  );
+  const eventIdMatches = trusted.filter(
+    ({ candidate }) => candidate?.event?.eventId === expectedEventId,
+  );
+  if (
+    eventIdMatches.length !== 1 ||
+    eventIdMatches[0].comment !== matches[0].comment
+  ) {
+    throw new ReporterError(
+      "trusted ExecutionStarted eventId is conflicting or ambiguous",
+    );
+  }
+  return matches[0].parsed.event;
 }
 
-function findOwnedCompletion(comments, input, issueBody, identity) {
-  const matches = [];
+function findAssignment(comments, execution, config) {
+  const expectedEventId = eventIdFor(execution.runId, ASSIGNMENT_TYPE);
+  const candidates = trustedEventCandidates(
+    comments,
+    config.launcherUserId,
+  ).filter(
+    ({ candidate }) =>
+      candidate?.event?.eventId === expectedEventId ||
+      (candidate?.event?.eventType === ASSIGNMENT_TYPE &&
+        candidate.event.runId === execution.runId),
+  );
+  if (candidates.some(({ parsed }) => parsed === null)) {
+    throw new ReporterError(
+      "trusted ResponsibilityAssigned event is not strict and canonical",
+    );
+  }
+  if (candidates.some(({ unedited }) => !unedited)) {
+    throw new ReporterError("trusted assignment event was edited");
+  }
+  if (candidates.length !== 1) {
+    throw new ReporterError(
+      "exactly one trusted ResponsibilityAssigned event must match execution",
+    );
+  }
+  validateAssignment(candidates[0].parsed.event);
+  return candidates[0].parsed.event;
+}
+
+function validateCurrentChain(
+  comments,
+  input,
+  config,
+  expectedExecution,
+  expectedAssignment,
+) {
+  const execution = findExecution(comments, input, config);
+  const assignment = findAssignment(comments, execution, config);
+  validateExecutionAssignment(execution, assignment);
+  if (
+    !isDeepStrictEqual(execution, expectedExecution) ||
+    !isDeepStrictEqual(assignment, expectedAssignment)
+  ) {
+    throw new ReporterError(
+      "trusted launcher correlation changed during comment creation",
+    );
+  }
+}
+
+function validateExecutionAssignment(execution, assignment) {
+  if (
+    execution.runId !== assignment.runId ||
+    execution.projectItemNodeId !== assignment.projectItemNodeId ||
+    execution.subjectNodeId !== assignment.subjectNodeId
+  ) {
+    throw new ReporterError("execution does not match assignment");
+  }
+}
+
+function validateProjectItem(matches, execution, issue, subjectNumber) {
+  if (matches.length !== 1) {
+    throw new ReporterError(
+      "fixed Project must contain exactly one Item tracking the Issue",
+    );
+  }
+  const item = matches[0];
+  if (item.id !== execution.projectItemNodeId) {
+    throw new ReporterError(
+      "trusted execution Project Item does not match fixed Project membership",
+    );
+  }
+  if (
+    item.content?.id !== issue.node_id ||
+    item.content?.number !== subjectNumber ||
+    item.content?.repository?.nameWithOwner !== REPOSITORY
+  ) {
+    throw new ReporterError(
+      "Project Item does not contain the authoritative repository Issue",
+    );
+  }
+}
+
+function findOwnedCompletion(
+  comments,
+  expectedEvent,
+  expectedBody,
+  identity,
+) {
+  const expectedHash = commentDigest(expectedBody);
+  const owned = [];
   for (const comment of comments) {
     if (!isObject(comment) || comment.user?.id !== identity.id) {
       continue;
     }
-    const event = parseCompletionComment(comment.body);
-    if (event?.eventId === input.expectedEventId) {
-      const expected = validateExistingEvent(event, input, issueBody);
-      if (comment.body !== formatComment(expected)) {
-        throw new ReporterError(
-          "authenticated completion comment is not canonically formatted",
-        );
-      }
-      matches.push({ comment, event: expected });
+    const candidate = parseEventCandidate(comment.body);
+    if (candidate?.event?.eventId !== expectedEvent.eventId) {
       continue;
     }
-    if (
-      typeof comment.body === "string" &&
-      comment.body.startsWith("WorkGraphEvent/v1") &&
-      comment.body.includes(input.expectedEventId)
-    ) {
+    const parsed = parseEventComment(comment.body);
+    if (parsed === null) {
       throw new ReporterError(
-        "authenticated identity wrote a conflicting completion comment",
+        "authenticated completion comment is not strict and canonical",
       );
     }
+    if (!isUnedited(comment)) {
+      throw new ReporterError("authenticated completion comment was edited");
+    }
+    validateCompletion(parsed.event);
+    if (
+      !isDeepStrictEqual(parsed.event, expectedEvent) ||
+      commentDigest(comment.body) !== expectedHash ||
+      comment.body !== expectedBody
+    ) {
+      throw new ReporterError(
+        "authenticated completion comment conflicts with expected event",
+      );
+    }
+    owned.push(comment);
   }
-  if (matches.length > 1) {
+  if (owned.length > 1) {
     throw new ReporterError(
       "multiple authenticated completion comments exist for eventId",
     );
   }
-  return matches[0] ?? null;
+  return owned[0] ?? null;
+}
+
+async function verifyCurrentIssue(client, input, expectedNodeId, assignment) {
+  const issue = await client.getIssue(input.subjectNumber);
+  validateIssue(issue, input.subjectNumber);
+  if (issue.node_id !== expectedNodeId) {
+    throw new ReporterError("authoritative Issue identity changed");
+  }
+  if (bodyDigest(issue.body ?? "") !== assignment.payload.contentDigest) {
+    throw new ReporterError(
+      "authoritative Issue body changed during completion reporting",
+    );
+  }
 }
 
 class CompletionReporter {
@@ -657,73 +798,105 @@ class CompletionReporter {
           `(${this.config.reporterLogin})`,
       );
     }
-    const issue = await this.client.getIssue(input.subjectNumber);
-    validateIssue(issue, input);
-    const item = await this.client.getProjectItem(input.projectItemNodeId);
-    validateProjectItem(item, input);
-    let comments = await this.client.listComments(input.subjectNumber);
-    validateActiveExecution(comments, input, this.config);
 
-    let completion = findOwnedCompletion(
-      comments,
-      input,
-      issue.body,
-      identity,
+    const issue = await this.client.getIssue(input.subjectNumber);
+    validateIssue(issue, input.subjectNumber);
+    const issueBody = issue.body ?? "";
+    let comments = await this.client.listComments(input.subjectNumber);
+    const execution = findExecution(comments, input, this.config);
+    const assignment = findAssignment(comments, execution, this.config);
+    validateExecutionAssignment(execution, assignment);
+
+    if (execution.subjectNodeId !== issue.node_id) {
+      throw new ReporterError(
+        "trusted execution subject does not match authoritative Issue",
+      );
+    }
+    const projectItems = await this.client.findProjectItem(issue.node_id);
+    validateProjectItem(projectItems, execution, issue, input.subjectNumber);
+
+    const actualDigest = bodyDigest(issueBody);
+    if (assignment.payload.contentDigest !== actualDigest) {
+      throw new ReporterError(
+        "authoritative Issue body digest does not match assignment",
+      );
+    }
+
+    const result = validationResult(issueBody);
+    const event = canonicalCompletionEvent(
+      execution,
+      result.outcome,
+      result.reasonCode,
     );
-    let reconciled = completion !== null;
-    if (completion === null) {
-      const event = canonicalEvent(input, issue.body, completedAtNow());
-      const body = formatComment(event);
-      let comment;
+    const body = formatEvent(result.summary, event);
+    let comment = findOwnedCompletion(comments, event, body, identity);
+    const existingCompletion = comment !== null;
+    let ambiguousCreate = false;
+
+    if (comment === null) {
+      await verifyCurrentIssue(
+        this.client,
+        input,
+        issue.node_id,
+        assignment,
+      );
       try {
-        comment = await this.client.createComment(input.subjectNumber, body);
+        const created = await this.client.createComment(
+          input.subjectNumber,
+          body,
+        );
+        if (
+          !isObject(created) ||
+          created.user?.id !== identity.id ||
+          created.body !== body ||
+          !isUnedited(created)
+        ) {
+          throw new AmbiguousCreateError(
+            "GitHub comment creation response was not authoritative",
+          );
+        }
       } catch (error) {
         if (!(error instanceof AmbiguousCreateError)) {
           throw error;
         }
-        comments = await this.client.listComments(input.subjectNumber);
-        validateActiveExecution(comments, input, this.config);
-        completion = findOwnedCompletion(
-          comments,
-          input,
-          issue.body,
-          identity,
-        );
-        if (completion === null) {
-          throw new ReporterError(
-            "comment creation was ambiguous and no authenticated completion was found",
-          );
-        }
-        reconciled = true;
-      }
-      if (completion === null) {
-        if (
-          !isObject(comment) ||
-          comment.user?.id !== identity.id ||
-          comment.body !== body
-        ) {
-          throw new ReporterError(
-            "GitHub did not confirm the authenticated canonical comment",
-          );
-        }
-        completion = { comment, event };
+        ambiguousCreate = true;
       }
     }
 
-    const commentNodeId = completion.comment.node_id;
-    if (typeof commentNodeId !== "string" || commentNodeId.length === 0) {
-      throw new ReporterError("completion comment has no node ID");
-    }
-
-    const projectStatus = await this.client.setAwaitingRouting(
-      input.projectItemNodeId,
+    comments = await this.client.listComments(input.subjectNumber);
+    validateCurrentChain(
+      comments,
+      input,
+      this.config,
+      execution,
+      assignment,
     );
+    comment = findOwnedCompletion(comments, event, body, identity);
+    if (comment === null) {
+      if (ambiguousCreate) {
+        throw new ReporterError(
+          "comment creation was ambiguous and no authenticated " +
+            "canonical completion was found",
+        );
+      }
+      throw new ReporterError(
+        "completion comment could not be reconciled",
+      );
+    }
+    await verifyCurrentIssue(
+      this.client,
+      input,
+      issue.node_id,
+      assignment,
+    );
+    requireString(comment.node_id, "completion comment node ID");
     return {
-      eventId: input.expectedEventId,
-      commentNodeId,
-      projectItemNodeId: input.projectItemNodeId,
-      projectStatus,
-      reconciled,
+      eventId: event.eventId,
+      executionId: input.executionId,
+      commentNodeId: comment.node_id,
+      projectItemNodeId: execution.projectItemNodeId,
+      subjectNodeId: execution.subjectNodeId,
+      reconciled: existingCompletion || ambiguousCreate,
     };
   }
 }
@@ -731,25 +904,15 @@ class CompletionReporter {
 const TOOL = {
   name: "report_completion",
   description:
-    "Validate one trusted issue-validation execution, publish its canonical " +
-    "event, then set its fixed Project Item status to AwaitingRouting.",
+    "Resolve and validate one trusted issue-validation execution and publish " +
+    "only its canonical completion event comment.",
   inputSchema: {
     type: "object",
     additionalProperties: false,
     required: INPUT_KEYS,
     properties: {
-      projectItemNodeId: { type: "string", pattern: "^PVTI_" },
-      subjectNodeId: { type: "string", pattern: "^I_" },
       subjectNumber: { type: "integer", minimum: 1 },
-      routeId: { type: "string", minLength: 1 },
-      responsibilityId: { type: "string", minLength: 1 },
       executionId: { type: "string", pattern: "^execution:" },
-      expectedEventId: { type: "string", minLength: 1 },
-      contentVersion: { type: "string", minLength: 1 },
-      profileRef: {
-        type: "string",
-        pattern: "^issue-validator@[0-9a-fA-F]{40}$",
-      },
     },
   },
 };
@@ -778,7 +941,7 @@ async function handleRequest(message) {
         capabilities: { tools: { listChanged: false } },
         serverInfo: {
           name: "drasi-workgraph-completion-reporter",
-          version: "2.0.0",
+          version: "3.0.0",
         },
       };
     case "ping":
