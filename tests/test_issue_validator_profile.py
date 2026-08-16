@@ -1,146 +1,129 @@
-import json
 import re
 import unittest
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-PROFILE = ROOT / ".github" / "agents" / "issue-validator.agent.md"
-FIXTURE = ROOT / "tests" / "fixtures" / "issue-validator-events.json"
-REPORTER_DOC = ROOT / "docs" / "workgraph-completion-reporter.md"
-MARKER = "WorkGraph-Validation: pass"
+AGENTS = ROOT / ".github" / "agents"
+REPORTER = ROOT / ".github" / "mcp" / "workgraph-reporter.mjs"
+DOC = ROOT / "docs" / "workgraph-result-reporter.md"
 
 
-def marker_present(body):
-    lines = (body or "").replace("\r\n", "\n").split("\n")
-    return any(line == MARKER for line in lines)
-
-
-class IssueValidatorProfileTest(unittest.TestCase):
+class WorkGraphAgentProfilesTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.profile = PROFILE.read_text(encoding="utf-8")
-        cls.fixture = json.loads(FIXTURE.read_text(encoding="utf-8"))
-        cls.reporter_doc = REPORTER_DOC.read_text(encoding="utf-8")
+        cls.profiles = {
+            path.stem.removesuffix(".agent"): path.read_text(encoding="utf-8")
+            for path in AGENTS.glob("*.agent.md")
+        }
+        cls.reporter = REPORTER.read_text(encoding="utf-8")
+        cls.doc = DOC.read_text(encoding="utf-8")
 
-    def test_frontmatter_is_user_invocable_and_least_privileged(self):
-        frontmatter = self.profile.split("---", 2)[1]
-        self.assertRegex(frontmatter, r"(?m)^description: \S")
-        self.assertRegex(frontmatter, r"(?m)^target: github-copilot$")
-        self.assertRegex(frontmatter, r"(?m)^user-invocable: true$")
-        self.assertRegex(frontmatter, r"(?m)^disable-model-invocation: true$")
-        tools = re.findall(r"(?m)^  - (\S+/\S+)$", frontmatter)
+    def test_exactly_two_repository_defined_profiles_exist(self):
         self.assertEqual(
-            tools,
-            [
-                "github/issue_read",
-                "workgraph/report_completion",
-            ],
-        )
-        self.assertNotIn("github/add_issue_comment", frontmatter)
-        self.assertNotIn("github/projects_write", frontmatter)
-        self.assertIn("mcp-servers:\n  workgraph:", frontmatter)
-        self.assertIn("command: node", frontmatter)
-        self.assertIn(
-            ".github/mcp/workgraph-reporter.mjs", frontmatter
-        )
-        self.assertIn(
-            "secrets.COPILOT_MCP_WORKGRAPH_TOKEN", frontmatter
-        )
-        self.assertIn(
-            "vars.COPILOT_MCP_WORKGRAPH_REPORTER_LOGIN", frontmatter
-        )
-        self.assertIn(
-            "vars.COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID", frontmatter
-        )
-        self.assertIn(
-            "vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID", frontmatter
+            set(self.profiles),
+            {"issue-validation", "issue-risk-profile"},
         )
 
-    def test_marker_match_is_complete_and_case_sensitive(self):
-        self.assertTrue(marker_present(self.fixture["passed"]["body"]))
-        self.assertTrue(marker_present(f"{MARKER}\r\n"))
-        self.assertFalse(marker_present(self.fixture["failed"]["body"]))
-        self.assertFalse(marker_present(f" {MARKER}\n"))
-        self.assertFalse(marker_present(f"{MARKER} \n"))
-        self.assertFalse(marker_present(f"prefix {MARKER}\n"))
+    def test_profiles_are_user_invocable_and_least_privileged(self):
+        for name, profile in self.profiles.items():
+            with self.subTest(profile=name):
+                frontmatter = profile.split("---", 2)[1]
+                self.assertRegex(frontmatter, rf"(?m)^name: {name}$")
+                self.assertRegex(frontmatter, r"(?m)^description: \S")
+                self.assertRegex(
+                    frontmatter, r"(?m)^target: github-copilot$"
+                )
+                self.assertRegex(
+                    frontmatter, r"(?m)^user-invocable: true$"
+                )
+                self.assertRegex(
+                    frontmatter, r"(?m)^disable-model-invocation: true$"
+                )
+                tools = re.findall(
+                    r"(?m)^  - (\S+/\S+)$", frontmatter
+                )
+                self.assertEqual(
+                    tools,
+                    ["github/issue_read", "workgraph/report_result"],
+                )
+                self.assertIn(
+                    ".github/mcp/workgraph-reporter.mjs", frontmatter
+                )
+                self.assertIn(
+                    "secrets.COPILOT_MCP_WORKGRAPH_TOKEN", frontmatter
+                )
+                self.assertIn(
+                    "vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID",
+                    frontmatter,
+                )
+                self.assertNotIn("github/add_issue_comment", frontmatter)
+                self.assertNotIn("github/projects_write", frontmatter)
 
-    def test_result_contract_is_deterministic(self):
-        self.assertEqual(
-            (
-                self.fixture["passed"]["result"]["outcome"],
-                self.fixture["passed"]["result"]["reasonCode"],
-            ),
-            ("passed", "required-marker-present"),
-        )
-        self.assertEqual(
-            (
-                self.fixture["failed"]["result"]["outcome"],
-                self.fixture["failed"]["result"]["reasonCode"],
-            ),
-            ("failed", "required-marker-missing"),
-        )
-        self.assertTrue(self.fixture["passed"]["result"]["evidence"]["found"])
-        self.assertFalse(self.fixture["failed"]["result"]["evidence"]["found"])
-        self.assertEqual(
-            self.fixture["passed"]["result"]["summary"],
-            "The required prototype marker is present.",
-        )
-        self.assertEqual(
-            self.fixture["failed"]["result"]["summary"],
-            "The required prototype marker is missing.",
-        )
+    def test_profiles_lock_assignment_and_result_envelopes(self):
+        for name, profile in self.profiles.items():
+            with self.subTest(profile=name):
+                self.assertIn("WorkGraphAssignment/v1", profile)
+                self.assertIn("WorkGraphResult/v1", profile)
+                self.assertIn("exactly one", profile)
+                self.assertIn("assignmentId", profile)
+                self.assertIn("agentProfile", profile)
+                self.assertIn("priority", profile)
+                self.assertIn("outcome", profile)
+                self.assertIn("succeeded", profile)
+                self.assertIn("failed", profile)
+                self.assertIn("blocked", profile)
+                self.assertRegex(
+                    profile,
+                    r"Call\s+`workgraph/report_result` exactly once",
+                )
+                self.assertIn("current Issue fields", profile)
+
+    def test_validation_profile_has_typed_contract(self):
+        profile = self.profiles["issue-validation"]
+        self.assertIn("validationProfile", profile)
+        self.assertIn("criteria", profile)
+        self.assertIn('"criterion"', profile)
+        self.assertIn('"passed"', profile)
+        self.assertIn('"evidence"', profile)
         self.assertRegex(
-            self.fixture["passed"]["completedAt"],
-            r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$",
+            profile, r"Preserve\s+each criterion string exactly"
         )
-        self.assertIn("WorkGraphEvent/v1", self.profile)
-        self.assertIn('"schemaVersion": "workgraph.event/v1"', self.profile)
-        self.assertIn('"eventType": "CompletedIssueValidation"', self.profile)
-        self.assertIn('"subjectNumber": <subjectNumber', self.profile)
-        self.assertIn(
-            '"completedAt": "<server-generated UTC completion instant>"',
-            self.profile,
-        )
-        self.assertNotIn('"number":', self.profile)
-        event_id = self.profile.index('"eventId": "<expectedEventId>"')
-        event_type = self.profile.index(
-            '"eventType": "CompletedIssueValidation"'
-        )
-        self.assertLess(event_id, event_type)
 
-    def test_scoped_reporter_owns_ordered_completion(self):
-        self.assertIn(
-            "Call `workgraph/report_completion` exactly once", self.profile
-        )
-        self.assertIn(
-            "organization `drasi-project`, Project number `3`", self.profile
-        )
-        self.assertIn("`PVT_kwDOCX0YF84BgNE3`", self.profile)
-        comment = self.reporter_doc.index("Creates the canonical comment")
-        status = self.reporter_doc.index("Only after the comment exists")
-        self.assertLess(comment, status)
-        self.assertIn("`AwaitingRouting` option ID", self.reporter_doc)
-        self.assertIn(
-            ".github/mcp/workgraph-reporter.mjs", self.reporter_doc
-        )
-        self.assertIn(
-            "separate least-privilege credential", self.reporter_doc
-        )
-        self.assertIn("There is no fallback", self.reporter_doc)
-        self.assertIn("`GITHUB_AGENT_TOKEN`", self.reporter_doc)
-        self.assertIn(
-            "separate launcher and reporter PATs and all four variables are configured",
-            self.reporter_doc,
-        )
-        self.assertIn(
-            "not activation\nevidence until a live `workgraph/report_completion` call",
-            self.reporter_doc,
-        )
-        self.assertIn("same-user authorship", self.reporter_doc)
-        self.assertIn("distinct immutable GitHub user IDs", self.reporter_doc)
-        self.assertIn("manual Agent Task", self.reporter_doc)
-        self.assertNotIn("GraphQL document", self.profile.split("---", 2)[1])
+    def test_risk_profile_has_typed_contract(self):
+        profile = self.profiles["issue-risk-profile"]
+        self.assertIn("riskProfile", profile)
+        self.assertIn("dimensions", profile)
+        self.assertIn('"dimension"', profile)
+        self.assertIn('"score"', profile)
+        self.assertIn('"rationale"', profile)
+        self.assertIn("higher score is riskier", profile)
+        self.assertIn("0 through 100", profile)
+
+    def test_runtime_surface_does_not_revive_legacy_protocol(self):
+        runtime = "\n".join([*self.profiles.values(), self.reporter])
+        for obsolete in [
+            "WorkGraphEvent/v1",
+            "report_completion",
+            "projectItemNodeId",
+            "routeId",
+            "responsibilityId",
+            "executionId",
+            "expectedEventId",
+            "AwaitingRouting",
+            "updateProjectV2ItemFieldValue",
+        ]:
+            with self.subTest(obsolete=obsolete):
+                self.assertNotIn(obsolete, runtime)
+
+    def test_documentation_records_retry_and_activation_limits(self):
+        self.assertIn("assignmentId", self.doc)
+        self.assertIn("different author", self.doc)
+        self.assertIn("ambiguous", self.doc)
+        self.assertIn("never sends a second create request", self.doc)
+        self.assertIn("concurrent first attempts can race", self.doc)
+        self.assertIn("manual\ncloud Agent Task", self.doc)
+        self.assertIn("performs no deployment", self.doc)
 
 
 if __name__ == "__main__":
