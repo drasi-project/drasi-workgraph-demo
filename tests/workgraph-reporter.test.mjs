@@ -82,7 +82,8 @@ Evaluated both requested validation criteria.
   }
 }
 \`\`\`
-</details>`;
+</details>
+`;
 
 const RISK_ASSIGNMENT = {
   assignmentId: "assignment-risk-001",
@@ -129,7 +130,7 @@ function resultComment(workResult) {
     `<details>\n<summary>WorkGraph Result</summary>\n\n` +
     `WorkGraphResult/v1\n\n${workResult.summary}\n\n` +
     `\`\`\`json\n${JSON.stringify(workResult, null, 2)}\n\`\`\`\n` +
-    `</details>`
+    `</details>\n`
   );
 }
 
@@ -386,13 +387,14 @@ test("creates one canonical issue-validation Result", async () => {
       VALIDATION_RESULT.summary,
       "",
     ]);
-    assert.equal(lines.at(-2), "```");
-    assert.equal(lines.at(-1), "</details>");
+    assert.equal(lines.at(-3), "```");
+    assert.equal(lines.at(-2), "</details>");
+    assert.equal(lines.at(-1), "");
     assert.equal(body.includes("<details open>"), false);
     assert.equal(body.includes("<details open=\"open\">"), false);
     assert.equal(body.includes(`Issue #${ISSUE_NUMBER}`), false);
     const payload = JSON.parse(
-      body.match(/```json\n([\s\S]+)\n```\n<\/details>$/)[1],
+      body.match(/```json\n([\s\S]+)\n```\n<\/details>\n$/)[1],
     );
     assert.deepEqual(payload, VALIDATION_RESULT);
     assert.deepEqual(Object.keys(payload).sort(), [
@@ -419,7 +421,7 @@ test("creates one canonical issue-risk-profile Result", async () => {
     assert.equal(fake.state.comments[0].body, resultComment(RISK_RESULT));
     const payload = JSON.parse(
       fake.state.comments[0].body.match(
-        /```json\n([\s\S]+)\n```\n<\/details>$/,
+        /```json\n([\s\S]+)\n```\n<\/details>\n$/,
       )[1],
     );
     assert.deepEqual(payload.result.dimensions, RISK_RESULT.result.dimensions);
@@ -690,8 +692,16 @@ test("rejects malformed Result envelopes instead of duplicating", async (t) => {
       body: canonical.replace("\n</details>", ""),
     },
     {
+      name: "missing final LF",
+      body: canonical.slice(0, -1),
+    },
+    {
+      name: "extra final LF",
+      body: `${canonical}\n`,
+    },
+    {
       name: "prose after details",
-      body: `${canonical}\nUnexpected trailing prose.`,
+      body: `${canonical}Unexpected trailing prose.\n`,
     },
     {
       name: "literal backslash-n separators",
@@ -725,30 +735,42 @@ test("rejects malformed Result envelopes instead of duplicating", async (t) => {
   }
 });
 
-test("rejects compact JSON instead of reconciling or duplicating", async () => {
+test("rejects byte-noncanonical bodies instead of duplicating", async (t) => {
   const compact = resultComment(VALIDATION_RESULT).replace(
     JSON.stringify(VALIDATION_RESULT, null, 2),
     JSON.stringify(VALIDATION_RESULT),
   );
-  const fake = await startFakeGitHub({
-    existingComments: [
-      {
-        node_id: "IC_compact",
-        user: { id: 42, login: "workgraph-reporter" },
-        body: compact,
-      },
-    ],
-  });
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl);
-    assert.equal(responses[3].result.isError, true);
-    assert.match(
-      responses[3].result.content[0].text,
-      /authenticated Result comment.*conflicts/,
-    );
-    assert.equal(fake.state.postAttempts, 0);
-  } finally {
-    await fake.close();
+  const cases = [
+    { name: "compact JSON", body: compact },
+    {
+      name: "CRLF bytes",
+      body: resultComment(VALIDATION_RESULT).replaceAll("\n", "\r\n"),
+    },
+  ];
+
+  for (const item of cases) {
+    await t.test(item.name, async () => {
+      const fake = await startFakeGitHub({
+        existingComments: [
+          {
+            node_id: "IC_noncanonical",
+            user: { id: 42, login: "workgraph-reporter" },
+            body: item.body,
+          },
+        ],
+      });
+      try {
+        const responses = await runMcp(protocolMessages(), fake.apiUrl);
+        assert.equal(responses[3].result.isError, true);
+        assert.match(
+          responses[3].result.content[0].text,
+          /authenticated Result comment.*conflicts/,
+        );
+        assert.equal(fake.state.postAttempts, 0);
+      } finally {
+        await fake.close();
+      }
+    });
   }
 });
 

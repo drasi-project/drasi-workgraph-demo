@@ -142,6 +142,8 @@ Evaluated all requested validation criteria.
 </details>
 ````
 
+The canonical comment ends with one LF after `</details>`.
+
 Treat a successful reporter response as completion only when it returns the
 same `assignmentId` and `taskType` plus a non-empty `commentNodeId`. A
 `reconciled: true` response means the canonical authenticated Result already

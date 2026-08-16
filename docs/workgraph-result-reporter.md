@@ -80,6 +80,7 @@ The opening tag is exactly `<details>` without `open`, the summary label is
 exactly `WorkGraph Result`, and the blank lines around the marker, human
 summary, and JSON fence are part of the canonical body. JSON is serialized with
 two-space indentation. The human summary must equal the payload `summary`.
+Exactly one final LF follows `</details>`.
 Literal `\n` text is not a line break, and compact or otherwise non-pretty JSON
 is noncanonical.
 

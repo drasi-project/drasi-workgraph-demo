@@ -179,6 +179,7 @@ class WorkGraphAgentProfilesTest(unittest.TestCase):
         self.assertIn("ambiguous", self.doc)
         self.assertIn("never sends a second create request", self.doc)
         self.assertIn("concurrent first attempts can race", self.doc)
+        self.assertIn("Exactly one final LF follows `</details>`", self.doc)
         self.assertIn("Literal `\\n` text is not a line break", self.doc)
         self.assertIn("compact or otherwise non-pretty JSON", self.doc)
         self.assertIn("manual\ncloud Agent Task", self.doc)

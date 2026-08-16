@@ -291,7 +291,7 @@ function formatResultComment(workResult) {
     `${RESULT_DETAILS_OPEN}\n${RESULT_SUMMARY}\n\n${RESULT_MARKER}\n\n` +
     `${canonical.summary}\n\n` +
     `\`\`\`json\n${JSON.stringify(canonical, null, 2)}\n\`\`\`\n` +
-    RESULT_DETAILS_CLOSE
+    `${RESULT_DETAILS_CLOSE}\n`
   );
 }
 
@@ -361,8 +361,9 @@ function inspectResultComment(body) {
     humanSummary.trim().length > 0 &&
     fences.length === 2 &&
     lines[open] === "```json" &&
-    close === lines.length - 2 &&
-    lines[close + 1] === RESULT_DETAILS_CLOSE;
+    close === lines.length - 3 &&
+    lines[close + 1] === RESULT_DETAILS_CLOSE &&
+    lines[close + 2] === "";
 
   return {
     assignmentId,
