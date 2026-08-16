@@ -2,7 +2,10 @@
 
 import process from "node:process";
 import readline from "node:readline";
-import { isDeepStrictEqual } from "node:util";
+import { lstatSync, readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual, TextDecoder } from "node:util";
 
 const GITHUB_API_URL = "https://api.github.com";
 const REPOSITORY_OWNER = "drasi-project";
@@ -13,6 +16,23 @@ const RESULT_SUMMARY = "<summary>WorkGraph Result</summary>";
 const RESULT_DETAILS_CLOSE = "</details>";
 const TASK_TYPES = ["issue-validation", "issue-risk-profile"];
 const OUTCOMES = ["succeeded", "failed", "blocked"];
+const REPORTER_FILE_PATH = fileURLToPath(import.meta.url);
+const REPOSITORY_ROOT = path.resolve(
+  path.dirname(REPORTER_FILE_PATH),
+  "..",
+  "..",
+);
+const ISSUE_VALIDATION_PROFILE_DIRECTORY = path.join(
+  REPOSITORY_ROOT,
+  ".github",
+  "workgraph",
+  "profiles",
+  "issue-validation",
+);
+const VALIDATION_PROFILE_NAME_PATTERN =
+  /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+const MAX_VALIDATION_PROFILE_NAME_LENGTH = 64;
+const MAX_VALIDATION_PROFILE_BYTES = 64 * 1024;
 const INPUT_KEYS = ["issueNumber", "assignment", "workResult"];
 const ASSIGNMENT_KEYS = [
   "assignmentId",
@@ -101,6 +121,164 @@ function requireNonEmptyStringArray(value, label) {
   });
 }
 
+function requireValidationProfileName(value) {
+  if (
+    typeof value !== "string" ||
+    value.length > MAX_VALIDATION_PROFILE_NAME_LENGTH ||
+    !VALIDATION_PROFILE_NAME_PATTERN.test(value)
+  ) {
+    throw new ReporterError(
+      "assignment.task.validationProfile must be 1-64 lowercase letters " +
+        "or digits separated only by single hyphens",
+    );
+  }
+}
+
+export function resolveIssueValidationProfilePath(validationProfile) {
+  requireValidationProfileName(validationProfile);
+  const profilePath = path.resolve(
+    ISSUE_VALIDATION_PROFILE_DIRECTORY,
+    `${validationProfile}.md`,
+  );
+  if (path.dirname(profilePath) !== ISSUE_VALIDATION_PROFILE_DIRECTORY) {
+    throw new ReporterError(
+      "assignment.task.validationProfile does not resolve to the canonical " +
+        "issue-validation profile directory",
+    );
+  }
+  return profilePath;
+}
+
+export function parseIssueValidationProfile(
+  source,
+  label = "issue-validation profile",
+) {
+  if (typeof source !== "string" || source.length === 0) {
+    throw new ReporterError(`${label} must be non-empty UTF-8 Markdown`);
+  }
+  if (source.includes("\0") || source.includes("\r")) {
+    throw new ReporterError(
+      `${label} must use LF text without NUL or carriage-return characters`,
+    );
+  }
+  if (!source.endsWith("\n")) {
+    throw new ReporterError(`${label} must end with one LF`);
+  }
+
+  const lines = source.slice(0, -1).split("\n");
+  const criteriaHeadings = lines
+    .map((line, index) => ({ line, index }))
+    .filter(({ line }) =>
+      /^[ \t]*#{1,6}[ \t]+criteria\b/i.test(line),
+    );
+  if (criteriaHeadings.length === 0) {
+    throw new ReporterError(`${label} is missing the ## Criteria section`);
+  }
+  const exactCriteriaHeadings = criteriaHeadings.filter(
+    ({ line }) => line === "## Criteria",
+  );
+  if (exactCriteriaHeadings.length > 1) {
+    throw new ReporterError(
+      `${label} must contain exactly one Criteria heading`,
+    );
+  }
+  if (
+    exactCriteriaHeadings.length !== 1 ||
+    criteriaHeadings.length !== 1
+  ) {
+    throw new ReporterError(
+      `${label} Criteria heading must be exactly "## Criteria"`,
+    );
+  }
+
+  const heading = exactCriteriaHeadings[0];
+  const sectionLines = lines.slice(heading.index + 1);
+  if (sectionLines[0] !== "") {
+    throw new ReporterError(
+      `${label} must have one blank line after ## Criteria`,
+    );
+  }
+  const itemLines = sectionLines.slice(1);
+  if (itemLines.length === 0) {
+    throw new ReporterError(`${label} Criteria section must not be empty`);
+  }
+
+  const criteria = [];
+  const seen = new Set();
+  itemLines.forEach((line, index) => {
+    const match = line.match(/^([1-9][0-9]*)\. (\S(?:.*\S)?)$/);
+    if (match === null) {
+      throw new ReporterError(
+        `${label} has unexpected Criteria content at item ${index + 1}`,
+      );
+    }
+    const number = Number(match[1]);
+    if (!Number.isSafeInteger(number) || number !== index + 1) {
+      throw new ReporterError(
+        `${label} Criteria items must be numbered consecutively from 1`,
+      );
+    }
+    const criterion = match[2];
+    if (seen.has(criterion)) {
+      throw new ReporterError(
+        `${label} contains duplicate criterion ${JSON.stringify(criterion)}`,
+      );
+    }
+    seen.add(criterion);
+    criteria.push(criterion);
+  });
+  return criteria;
+}
+
+export function loadIssueValidationProfile(validationProfile) {
+  const profilePath = resolveIssueValidationProfilePath(validationProfile);
+  let bytes;
+  try {
+    const metadata = lstatSync(profilePath);
+    if (!metadata.isFile()) {
+      throw new ReporterError(
+        `issue-validation profile ${JSON.stringify(validationProfile)} ` +
+          "must be a regular file",
+      );
+    }
+    if (metadata.size > MAX_VALIDATION_PROFILE_BYTES) {
+      throw new ReporterError(
+        `issue-validation profile ${JSON.stringify(validationProfile)} ` +
+          `must not exceed ${MAX_VALIDATION_PROFILE_BYTES} bytes`,
+      );
+    }
+    bytes = readFileSync(profilePath);
+  } catch (error) {
+    if (error instanceof ReporterError) {
+      throw error;
+    }
+    if (error?.code === "ENOENT") {
+      throw new ReporterError(
+        `issue-validation profile ${JSON.stringify(validationProfile)} ` +
+          "does not exist",
+      );
+    }
+    throw new ReporterError(
+      `issue-validation profile ${JSON.stringify(validationProfile)} ` +
+        "could not be read",
+    );
+  }
+
+  let source;
+  try {
+    source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new ReporterError(
+      `issue-validation profile ${JSON.stringify(validationProfile)} ` +
+        "must be valid UTF-8",
+    );
+  }
+  return parseIssueValidationProfile(
+    source,
+    `issue-validation profile ${JSON.stringify(validationProfile)}`,
+  );
+}
+
 function validateAssignment(assignment) {
   requireExactKeys(assignment, ASSIGNMENT_KEYS, "assignment");
   requireNonEmptyString(assignment.assignmentId, "assignment.assignmentId");
@@ -118,17 +296,10 @@ function validateAssignment(assignment) {
   if (assignment.taskType === "issue-validation") {
     requireExactKeys(
       assignment.task,
-      ["validationProfile", "criteria"],
+      ["validationProfile"],
       "assignment.task",
     );
-    requireNonEmptyString(
-      assignment.task.validationProfile,
-      "assignment.task.validationProfile",
-    );
-    requireNonEmptyStringArray(
-      assignment.task.criteria,
-      "assignment.task.criteria",
-    );
+    requireValidationProfileName(assignment.task.validationProfile);
     return;
   }
 
@@ -172,6 +343,7 @@ function validateWorkResult(workResult) {
         "workResult.result.criteria must contain at least one item",
       );
     }
+    const seenCriteria = new Set();
     workResult.result.criteria.forEach((criterion, index) => {
       const label = `workResult.result.criteria[${index}]`;
       requireExactKeys(
@@ -184,6 +356,12 @@ function validateWorkResult(workResult) {
         throw new ReporterError(`${label}.passed must be a boolean`);
       }
       requireNonEmptyString(criterion.evidence, `${label}.evidence`);
+      if (seenCriteria.has(criterion.criterion)) {
+        throw new ReporterError(
+          "workResult.result.criteria must not contain duplicate criteria",
+        );
+      }
+      seenCriteria.add(criterion.criterion);
     });
     return;
   }
@@ -242,7 +420,9 @@ function validateInput(input) {
 
   const expectedNames =
     input.assignment.taskType === "issue-validation"
-      ? input.assignment.task.criteria
+      ? loadIssueValidationProfile(
+          input.assignment.task.validationProfile,
+        )
       : input.assignment.task.dimensions;
   const actualNames =
     input.workResult.taskType === "issue-validation"
@@ -253,8 +433,14 @@ function validateInput(input) {
       input.assignment.taskType === "issue-validation"
         ? "criteria"
         : "dimensions";
+    const source =
+      input.assignment.taskType === "issue-validation"
+        ? `validation profile ${JSON.stringify(
+            input.assignment.task.validationProfile,
+          )}`
+        : "Assignment";
     throw new ReporterError(
-      `workResult ${field} must exactly match the assigned ${field} in order`,
+      `workResult ${field} must exactly match the ${source} ${field} in order`,
     );
   }
 }
@@ -698,6 +884,12 @@ const NON_EMPTY_STRING = {
   minLength: 1,
   pattern: "[\\s\\S]*\\S[\\s\\S]*",
 };
+const VALIDATION_PROFILE_NAME = {
+  type: "string",
+  minLength: 1,
+  maxLength: MAX_VALIDATION_PROFILE_NAME_LENGTH,
+  pattern: VALIDATION_PROFILE_NAME_PATTERN.source,
+};
 
 function strictObject(properties) {
   return {
@@ -717,12 +909,7 @@ function assignmentSchema(taskType) {
     taskType: { const: taskType },
     task: validation
       ? strictObject({
-          validationProfile: NON_EMPTY_STRING,
-          criteria: {
-            type: "array",
-            minItems: 1,
-            items: NON_EMPTY_STRING,
-          },
+          validationProfile: VALIDATION_PROFILE_NAME,
         })
       : strictObject({
           riskProfile: NON_EMPTY_STRING,
@@ -878,6 +1065,11 @@ async function main() {
   }
 }
 
-main().catch(() => {
-  process.exitCode = 1;
-});
+if (
+  process.argv[1] !== undefined &&
+  path.resolve(process.argv[1]) === REPORTER_FILE_PATH
+) {
+  main().catch(() => {
+    process.exitCode = 1;
+  });
+}

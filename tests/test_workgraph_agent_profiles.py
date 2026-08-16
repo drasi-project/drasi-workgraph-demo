@@ -6,11 +6,25 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 AGENTS = ROOT / ".github" / "agents"
 REPORTER = ROOT / ".github" / "mcp" / "workgraph-reporter.mjs"
+VALIDATION_PROFILES = (
+    ROOT / ".github" / "workgraph" / "profiles" / "issue-validation"
+)
 DOC = ROOT / "docs" / "workgraph-result-reporter.md"
 README = ROOT / "README.md"
 PROFILE_TASK_TYPES = {
     "issue-validator": "issue-validation",
     "issue-risk-profiler": "issue-risk-profile",
+}
+PROFILE_TOOLS = {
+    "issue-validator": [
+        "read",
+        "github/issue_read",
+        "workgraph/report_result",
+    ],
+    "issue-risk-profiler": [
+        "github/issue_read",
+        "workgraph/report_result",
+    ],
 }
 
 
@@ -22,6 +36,10 @@ class WorkGraphAgentProfilesTest(unittest.TestCase):
             for path in AGENTS.glob("*.agent.md")
         }
         cls.reporter = REPORTER.read_text(encoding="utf-8")
+        cls.validation_profiles = {
+            path.stem: path.read_text(encoding="utf-8")
+            for path in VALIDATION_PROFILES.glob("*.md")
+        }
         cls.doc = DOC.read_text(encoding="utf-8")
         cls.readme = README.read_text(encoding="utf-8")
 
@@ -54,11 +72,11 @@ class WorkGraphAgentProfilesTest(unittest.TestCase):
                     frontmatter, r"(?m)^disable-model-invocation: true$"
                 )
                 tools = re.findall(
-                    r"(?m)^  - (\S+/\S+)$", frontmatter
+                    r"(?m)^  - (\S+)$", frontmatter
                 )
                 self.assertEqual(
                     tools,
-                    ["github/issue_read", "workgraph/report_result"],
+                    PROFILE_TOOLS[name],
                 )
                 self.assertIn(
                     ".github/mcp/workgraph-reporter.mjs", frontmatter
@@ -139,6 +157,7 @@ class WorkGraphAgentProfilesTest(unittest.TestCase):
     def test_validation_profile_has_typed_contract(self):
         profile = self.profiles["issue-validator"]
         self.assertIn("validationProfile", profile)
+        self.assertIn("`task` has exactly `validationProfile`", profile)
         self.assertIn("criteria", profile)
         self.assertIn('"criterion"', profile)
         self.assertIn('"passed"', profile)
@@ -146,6 +165,37 @@ class WorkGraphAgentProfilesTest(unittest.TestCase):
         self.assertRegex(
             profile, r"Preserve\s+each criterion string exactly"
         )
+
+    def test_repository_validation_profile_is_canonical(self):
+        self.assertEqual(
+            set(self.validation_profiles),
+            {"new-issue-default"},
+        )
+        profile = self.validation_profiles["new-issue-default"]
+        self.assertIn("## Guidance\n\n", profile)
+        self.assertTrue(profile.endswith(
+            "## Criteria\n\n"
+            "1. The Issue has a non-empty title\n"
+            "2. The Issue body is present\n"
+        ))
+        self.assertNotIn("\r", profile)
+
+    def test_assignment_examples_do_not_duplicate_validation_criteria(self):
+        self.assertIn(
+            '"task": {\n'
+            '    "validationProfile": "new-issue-default"\n'
+            "  }",
+            self.doc,
+        )
+        sources = "\n".join(
+            [self.profiles["issue-validator"], self.doc, self.readme]
+        )
+        self.assertNotRegex(
+            sources,
+            r'"validationProfile": "[^"]+",\s*"criteria"',
+        )
+        self.assertIn("stale", self.doc)
+        self.assertIn("unknown", self.doc)
 
     def test_risk_profile_has_typed_contract(self):
         profile = self.profiles["issue-risk-profiler"]

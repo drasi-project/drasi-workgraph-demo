@@ -11,6 +11,10 @@ profiles:
 
 Both use the scoped, retry-safe Result comment capability documented in
 [`docs/workgraph-result-reporter.md`](docs/workgraph-result-reporter.md).
+Issue validation selects repository criteria with the exact Assignment task
+`{ "validationProfile": "new-issue-default" }`. The profile is
+`.github/workgraph/profiles/issue-validation/new-issue-default.md`; Assignment
+payloads do not duplicate its criteria.
 
 Result comments use this collapsed-by-default shape:
 
@@ -20,20 +24,25 @@ Result comments use this collapsed-by-default shape:
 
 WorkGraphResult/v1
 
-Evaluated all requested validation criteria.
+Validated the title and body requirements.
 
 ```json
 {
   "assignmentId": "organization-unique-id",
   "taskType": "issue-validation",
   "outcome": "succeeded",
-  "summary": "Evaluated all requested validation criteria.",
+  "summary": "Validated the title and body requirements.",
   "result": {
     "criteria": [
       {
-        "criterion": "Acceptance criteria are explicit",
+        "criterion": "The Issue has a non-empty title",
         "passed": true,
-        "evidence": "The body contains a complete acceptance checklist."
+        "evidence": "The title contains non-whitespace text."
+      },
+      {
+        "criterion": "The Issue body is present",
+        "passed": true,
+        "evidence": "The body contains non-whitespace text."
       }
     ]
   }

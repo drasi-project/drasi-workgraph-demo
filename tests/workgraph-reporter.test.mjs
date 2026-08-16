@@ -5,6 +5,11 @@ import { createServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import test from "node:test";
+import {
+  loadIssueValidationProfile,
+  parseIssueValidationProfile,
+  resolveIssueValidationProfilePath,
+} from "../.github/mcp/workgraph-reporter.mjs";
 
 const ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -16,6 +21,11 @@ const REPORTER = path.join(
   "mcp",
   "workgraph-reporter.mjs",
 );
+const VALIDATION_PROFILE_NAME = "new-issue-default";
+const VALIDATION_CRITERIA = [
+  "The Issue has a non-empty title",
+  "The Issue body is present",
+];
 const ISSUE_NUMBER = 7;
 
 const VALIDATION_ASSIGNMENT = {
@@ -24,11 +34,7 @@ const VALIDATION_ASSIGNMENT = {
   priority: 10,
   taskType: "issue-validation",
   task: {
-    validationProfile: "default",
-    criteria: [
-      "The issue defines acceptance criteria",
-      "The issue identifies an owner",
-    ],
+    validationProfile: VALIDATION_PROFILE_NAME,
   },
 };
 
@@ -36,18 +42,18 @@ const VALIDATION_RESULT = {
   assignmentId: "assignment-validation-001",
   taskType: "issue-validation",
   outcome: "succeeded",
-  summary: "Evaluated both requested validation criteria.",
+  summary: "Validated the title and body requirements.",
   result: {
     criteria: [
       {
-        criterion: "The issue defines acceptance criteria",
+        criterion: VALIDATION_CRITERIA[0],
         passed: true,
-        evidence: "The body contains an acceptance checklist.",
+        evidence: "The title contains non-whitespace text.",
       },
       {
-        criterion: "The issue identifies an owner",
-        passed: false,
-        evidence: "The title and body do not identify an owner.",
+        criterion: VALIDATION_CRITERIA[1],
+        passed: true,
+        evidence: "The body contains non-whitespace text.",
       },
     ],
   },
@@ -58,25 +64,25 @@ const EXPECTED_VALIDATION_COMMENT = `<details>
 
 WorkGraphResult/v1
 
-Evaluated both requested validation criteria.
+Validated the title and body requirements.
 
 \`\`\`json
 {
   "assignmentId": "assignment-validation-001",
   "taskType": "issue-validation",
   "outcome": "succeeded",
-  "summary": "Evaluated both requested validation criteria.",
+  "summary": "Validated the title and body requirements.",
   "result": {
     "criteria": [
       {
-        "criterion": "The issue defines acceptance criteria",
+        "criterion": "The Issue has a non-empty title",
         "passed": true,
-        "evidence": "The body contains an acceptance checklist."
+        "evidence": "The title contains non-whitespace text."
       },
       {
-        "criterion": "The issue identifies an owner",
-        "passed": false,
-        "evidence": "The title and body do not identify an owner."
+        "criterion": "The Issue body is present",
+        "passed": true,
+        "evidence": "The body contains non-whitespace text."
       }
     ]
   }
@@ -131,6 +137,13 @@ function resultComment(workResult) {
     `WorkGraphResult/v1\n\n${workResult.summary}\n\n` +
     `\`\`\`json\n${JSON.stringify(workResult, null, 2)}\n\`\`\`\n` +
     `</details>\n`
+  );
+}
+
+function profileMarkdown(criteriaLines) {
+  return (
+    "# Test profile\n\n## Guidance\n\nUse current Issue fields.\n\n" +
+    `## Criteria\n\n${criteriaLines.join("\n")}\n`
   );
 }
 
@@ -340,6 +353,31 @@ test("exposes one strict typed report_result tool", async () => {
     ]);
     assert.equal(schema.properties.assignment.oneOf.length, 2);
     assert.equal(schema.properties.workResult.oneOf.length, 2);
+    const validationAssignmentSchema =
+      schema.properties.assignment.oneOf.find(
+        (entry) =>
+          entry.properties.taskType.const === "issue-validation",
+      );
+    assert.deepEqual(
+      Object.keys(
+        validationAssignmentSchema.properties.task.properties,
+      ),
+      ["validationProfile"],
+    );
+    assert.equal(
+      validationAssignmentSchema.properties.task.additionalProperties,
+      false,
+    );
+    assert.deepEqual(
+      validationAssignmentSchema.properties.task.properties
+        .validationProfile,
+      {
+        type: "string",
+        minLength: 1,
+        maxLength: 64,
+        pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      },
+    );
     const serialized = JSON.stringify(schema);
     for (const forbidden of [
       "repository",
@@ -353,6 +391,129 @@ test("exposes one strict typed report_result tool", async () => {
     }
   } finally {
     await fake.close();
+  }
+});
+
+test("loads the canonical repository-backed validation profile", () => {
+  assert.equal(
+    resolveIssueValidationProfilePath(VALIDATION_PROFILE_NAME),
+    path.join(
+      ROOT,
+      ".github",
+      "workgraph",
+      "profiles",
+      "issue-validation",
+      `${VALIDATION_PROFILE_NAME}.md`,
+    ),
+  );
+  assert.deepEqual(
+    loadIssueValidationProfile(VALIDATION_PROFILE_NAME),
+    VALIDATION_CRITERIA,
+  );
+  assert.throws(
+    () => loadIssueValidationProfile("missing-profile"),
+    /profile "missing-profile" does not exist/,
+  );
+});
+
+test("rejects invalid and traversal validation profile names", () => {
+  for (const validationProfile of [
+    "",
+    "New-Issue-Default",
+    "new_issue_default",
+    "new--issue",
+    "new-issue-default.md",
+    "../new-issue-default",
+    "nested/new-issue-default",
+  ]) {
+    assert.throws(
+      () => resolveIssueValidationProfilePath(validationProfile),
+      /validationProfile must be 1-64 lowercase letters/,
+    );
+  }
+});
+
+test("parses only strict final numbered Criteria sections", (t) => {
+  assert.deepEqual(
+    parseIssueValidationProfile(
+      profileMarkdown([
+        `1. ${VALIDATION_CRITERIA[0]}`,
+        `2. ${VALIDATION_CRITERIA[1]}`,
+      ]),
+    ),
+    VALIDATION_CRITERIA,
+  );
+
+  const cases = [
+    {
+      name: "missing section",
+      source: "# Test profile\n\n## Guidance\n\nNo criteria.\n",
+      pattern: /missing the ## Criteria section/,
+    },
+    {
+      name: "malformed heading",
+      source: "# Test profile\n\n## criteria\n\n1. Criterion\n",
+      pattern: /heading must be exactly "## Criteria"/,
+    },
+    {
+      name: "unexpected criteria-like heading",
+      source:
+        "# Test profile\n\n## Criteria notes\n\nIgnore.\n\n" +
+        "## Criteria\n\n1. Criterion\n",
+      pattern: /heading must be exactly "## Criteria"/,
+    },
+    {
+      name: "indented duplicate heading",
+      source:
+        "# Test profile\n\n   ## Criteria\n\n1. First\n\n" +
+        "## Criteria\n\n1. Second\n",
+      pattern: /heading must be exactly "## Criteria"/,
+    },
+    {
+      name: "empty section",
+      source: "# Test profile\n\n## Criteria\n\n",
+      pattern: /Criteria section must not be empty/,
+    },
+    {
+      name: "empty criterion",
+      source: profileMarkdown(["1. "]),
+      pattern: /unexpected Criteria content/,
+    },
+    {
+      name: "duplicate criteria",
+      source: profileMarkdown(["1. Criterion", "2. Criterion"]),
+      pattern: /duplicate criterion/,
+    },
+    {
+      name: "nonconsecutive numbering",
+      source: profileMarkdown(["1. First", "3. Second"]),
+      pattern: /numbered consecutively from 1/,
+    },
+    {
+      name: "unexpected prose",
+      source: profileMarkdown(["1. Criterion", "Unexpected prose"]),
+      pattern: /unexpected Criteria content/,
+    },
+    {
+      name: "duplicate section",
+      source:
+        "# Test profile\n\n## Criteria\n\n1. First\n\n" +
+        "## Criteria\n\n1. Second\n",
+      pattern: /exactly one Criteria heading/,
+    },
+    {
+      name: "missing final LF",
+      source: "# Test profile\n\n## Criteria\n\n1. Criterion",
+      pattern: /must end with one LF/,
+    },
+  ];
+  for (const item of cases) {
+    t.test(item.name, () => {
+      assert.throws(
+        () => parseIssueValidationProfile(item.source),
+        item.pattern,
+      );
+    });
   }
 });
 
@@ -466,7 +627,38 @@ test("rejects malformed typed Assignments before GitHub access", async (t) => {
           validationProfile: " ",
         },
       },
-      pattern: /validationProfile must be a non-empty string/,
+      pattern: /validationProfile must be 1-64 lowercase letters/,
+    },
+    {
+      name: "traversal validation profile",
+      assignment: {
+        ...VALIDATION_ASSIGNMENT,
+        task: {
+          validationProfile: "../new-issue-default",
+        },
+      },
+      pattern: /validationProfile must be 1-64 lowercase letters/,
+    },
+    {
+      name: "missing validation profile",
+      assignment: {
+        ...VALIDATION_ASSIGNMENT,
+        task: {
+          validationProfile: "missing-profile",
+        },
+      },
+      pattern: /profile "missing-profile" does not exist/,
+    },
+    {
+      name: "stale Assignment criteria",
+      assignment: {
+        ...VALIDATION_ASSIGNMENT,
+        task: {
+          ...VALIDATION_ASSIGNMENT.task,
+          criteria: VALIDATION_CRITERIA,
+        },
+      },
+      pattern: /extra=.*criteria/,
     },
     {
       name: "extra task field",
@@ -576,27 +768,66 @@ test("rejects malformed typed Results before GitHub access", async (t) => {
   }
 });
 
-test("requires Result items to match the Assignment in order", async () => {
-  const fake = await startFakeGitHub();
-  try {
-    const workResult = {
-      ...VALIDATION_RESULT,
-      result: {
-        criteria: [...VALIDATION_RESULT.result.criteria].reverse(),
-      },
-    };
-    const responses = await runMcp(
-      protocolMessages(inputFor(VALIDATION_ASSIGNMENT, workResult)),
-      fake.apiUrl,
-    );
-    assert.equal(responses[3].result.isError, true);
-    assert.match(
-      responses[3].result.content[0].text,
-      /criteria must exactly match the assigned criteria in order/,
-    );
-    assert.deepEqual(fake.state.operations, []);
-  } finally {
-    await fake.close();
+test("requires Result criteria to exactly match the profile", async (t) => {
+  const cases = [
+    {
+      name: "criterion text mismatch",
+      criteria: [
+        {
+          ...VALIDATION_RESULT.result.criteria[0],
+          criterion: "The Issue has a title",
+        },
+        VALIDATION_RESULT.result.criteria[1],
+      ],
+      pattern:
+        /criteria must exactly match the validation profile .* in order/,
+    },
+    {
+      name: "criterion order mismatch",
+      criteria: [...VALIDATION_RESULT.result.criteria].reverse(),
+      pattern:
+        /criteria must exactly match the validation profile .* in order/,
+    },
+    {
+      name: "criterion omission",
+      criteria: VALIDATION_RESULT.result.criteria.slice(0, 1),
+      pattern:
+        /criteria must exactly match the validation profile .* in order/,
+    },
+    {
+      name: "duplicate criterion",
+      criteria: [
+        VALIDATION_RESULT.result.criteria[0],
+        VALIDATION_RESULT.result.criteria[0],
+      ],
+      pattern: /must not contain duplicate criteria/,
+    },
+  ];
+
+  for (const item of cases) {
+    await t.test(item.name, async () => {
+      const fake = await startFakeGitHub();
+      try {
+        const workResult = {
+          ...VALIDATION_RESULT,
+          result: { criteria: item.criteria },
+        };
+        const responses = await runMcp(
+          protocolMessages(
+            inputFor(VALIDATION_ASSIGNMENT, workResult),
+          ),
+          fake.apiUrl,
+        );
+        assert.equal(responses[3].result.isError, true);
+        assert.match(
+          responses[3].result.content[0].text,
+          item.pattern,
+        );
+        assert.deepEqual(fake.state.operations, []);
+      } finally {
+        await fake.close();
+      }
+    });
   }
 });
 
