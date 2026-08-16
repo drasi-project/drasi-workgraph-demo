@@ -1,8 +1,7 @@
 import assert from "node:assert/strict";
-import { once } from "node:events";
 import { spawn } from "node:child_process";
+import { once } from "node:events";
 import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import test from "node:test";
@@ -17,97 +16,88 @@ const REPORTER = path.join(
   "mcp",
   "workgraph-reporter.mjs",
 );
-const FIXTURE = JSON.parse(
-  await readFile(
-    path.join(ROOT, "tests", "fixtures", "issue-validator-events.json"),
-    "utf8",
-  ),
-);
+const ISSUE_NUMBER = 7;
 
-const PROJECT_ID = "PVT_kwDOCX0YF84BgNE3";
-const STATUS_FIELD_ID = "PVTSSF_lADOCX0YF84BgNE3zhaadbw";
-const STATUS_OPTION_ID = "3407e5fe";
-const REPOSITORY = "drasi-project/drasi-workgraph-demo";
-const INPUT = FIXTURE.taskPrompt;
+const VALIDATION_ASSIGNMENT = {
+  assignmentId: "assignment-validation-001",
+  agentProfile: "issue-validation",
+  priority: 10,
+  taskType: "issue-validation",
+  task: {
+    validationProfile: "default",
+    criteria: [
+      "The issue defines acceptance criteria",
+      "The issue identifies an owner",
+    ],
+  },
+};
 
-function resultForBody(body) {
-  const found = (body ?? "")
-    .replaceAll("\r\n", "\n")
-    .split("\n")
-    .some((line) => line === "WorkGraph-Validation: pass");
-  return found
-    ? {
-        outcome: "passed",
-        reasonCode: "required-marker-present",
-        evidence: {
-          requiredMarker: "WorkGraph-Validation: pass",
-          found: true,
-        },
-        summary: "The required prototype marker is present.",
-      }
-    : {
-        outcome: "failed",
-        reasonCode: "required-marker-missing",
-        evidence: {
-          requiredMarker: "WorkGraph-Validation: pass",
-          found: false,
-        },
-        summary: "The required prototype marker is missing.",
-      };
-}
+const VALIDATION_RESULT = {
+  assignmentId: "assignment-validation-001",
+  taskType: "issue-validation",
+  outcome: "succeeded",
+  summary: "Evaluated both requested validation criteria.",
+  result: {
+    criteria: [
+      {
+        criterion: "The issue defines acceptance criteria",
+        passed: true,
+        evidence: "The body contains an acceptance checklist.",
+      },
+      {
+        criterion: "The issue identifies an owner",
+        passed: false,
+        evidence: "The title and body do not identify an owner.",
+      },
+    ],
+  },
+};
 
-function canonicalEvent(
-  input,
-  issueBody,
-  completedAt = "2026-08-13T01:00:20Z",
-) {
+const RISK_ASSIGNMENT = {
+  assignmentId: "assignment-risk-001",
+  agentProfile: "issue-risk-profile",
+  priority: 4,
+  taskType: "issue-risk-profile",
+  task: {
+    riskProfile: "delivery",
+    dimensions: ["Security impact", "Rollback complexity"],
+  },
+};
+
+const RISK_RESULT = {
+  assignmentId: "assignment-risk-001",
+  taskType: "issue-risk-profile",
+  outcome: "succeeded",
+  summary: "Scored both requested risk dimensions.",
+  result: {
+    dimensions: [
+      {
+        dimension: "Security impact",
+        score: 75,
+        rationale: "The change affects authorization checks.",
+      },
+      {
+        dimension: "Rollback complexity",
+        score: 25,
+        rationale: "The issue describes a feature-flag rollback.",
+      },
+    ],
+  },
+};
+
+function inputFor(assignment, workResult) {
   return {
-    schemaVersion: "workgraph.event/v1",
-    eventId: input.expectedEventId,
-    eventType: "CompletedIssueValidation",
-    projectItemNodeId: input.projectItemNodeId,
-    subjectType: "Issue",
-    subjectNodeId: input.subjectNodeId,
-    repository: REPOSITORY,
-    subjectNumber: input.subjectNumber,
-    actorType: "Agent",
-    actorId: "issue-validator",
-    routeId: input.routeId,
-    responsibilityId: input.responsibilityId,
-    executionId: input.executionId,
-    contentVersion: input.contentVersion,
-    profileRef: input.profileRef,
-    result: resultForBody(issueBody),
-    completedAt,
+    issueNumber: ISSUE_NUMBER,
+    assignment,
+    workResult,
   };
 }
 
-function eventComment(event) {
-  return `WorkGraphEvent/v1\n\`\`\`json\n${JSON.stringify(event, null, 2)}\n\`\`\``;
-}
-
-function executionComment(input, startedAt = "2026-08-13T01:00:05Z") {
-  return {
-    node_id: "IC_execution",
-    user: { id: 7, login: "trusted-launcher" },
-    body: JSON.stringify({
-      schemaVersion: "workgraph.execution/v1",
-      messageType: "execution",
-      routeId: input.routeId,
-      responsibilityId: input.responsibilityId,
-      executionId: input.executionId,
-      expectedEventId: input.expectedEventId,
-      requiredEventType: "CompletedIssueValidation",
-      taskId: "task-1",
-      taskUrl: "https://github.com/github/copilot/tasks/task-1",
-      agentProfile: "issue-validator",
-      profileRef: input.profileRef,
-      requestedModel: "gpt-5.6-sol",
-      actualModel: "gpt-5.4",
-      state: "started",
-      startedAt,
-    }),
-  };
+function resultComment(workResult) {
+  return (
+    `WorkGraphResult/v1\n${workResult.summary}\n` +
+    `\`\`\`json\n${JSON.stringify(workResult, null, 2)}\n\`\`\``
+  );
 }
 
 async function requestBody(request) {
@@ -115,7 +105,7 @@ async function requestBody(request) {
   for await (const chunk of request) {
     body += chunk;
   }
-  return body ? JSON.parse(body) : null;
+  return body.length > 0 ? JSON.parse(body) : null;
 }
 
 function sendJson(response, status, body) {
@@ -124,17 +114,14 @@ function sendJson(response, status, body) {
 }
 
 async function startFakeGitHub({
-  issueBody = "Context\nWorkGraph-Validation: pass\n",
   existingComments = [],
   commentMode = "success",
-  executionStartedAt,
-  projectItem = {},
+  identityId = 42,
+  issueIsPullRequest = false,
 } = {}) {
   const state = {
-    comments: [executionComment(INPUT, executionStartedAt), ...existingComments],
+    comments: [...existingComments],
     operations: [],
-    mutation: null,
-    projectQuery: null,
     postAttempts: 0,
   };
   const server = createServer(async (request, response) => {
@@ -146,27 +133,32 @@ async function startFakeGitHub({
 
     if (request.method === "GET" && url.pathname === "/user") {
       state.operations.push("identity");
-      sendJson(response, 200, { id: 42, login: "workgraph-reporter" });
-      return;
-    }
-    if (
-      request.method === "GET" &&
-      url.pathname ===
-        `/repos/drasi-project/drasi-workgraph-demo/issues/${INPUT.subjectNumber}`
-    ) {
-      state.operations.push("issue");
       sendJson(response, 200, {
-        node_id: INPUT.subjectNodeId,
-        number: INPUT.subjectNumber,
-        body: issueBody,
+        id: identityId,
+        login: "workgraph-reporter",
       });
       return;
     }
     if (
       request.method === "GET" &&
-      url.pathname.endsWith(
-        `/issues/${INPUT.subjectNumber}/comments`,
-      )
+      url.pathname ===
+        `/repos/drasi-project/drasi-workgraph-demo/issues/${ISSUE_NUMBER}`
+    ) {
+      state.operations.push("issue");
+      sendJson(response, 200, {
+        node_id: "I_example",
+        number: ISSUE_NUMBER,
+        title: "Example issue",
+        body: "Acceptance criteria:\n- [ ] Complete",
+        ...(issueIsPullRequest
+          ? { pull_request: { url: "https://example.test/pull/7" } }
+          : {}),
+      });
+      return;
+    }
+    if (
+      request.method === "GET" &&
+      url.pathname.endsWith(`/issues/${ISSUE_NUMBER}/comments`)
     ) {
       state.operations.push("comments");
       sendJson(response, 200, state.comments);
@@ -174,9 +166,7 @@ async function startFakeGitHub({
     }
     if (
       request.method === "POST" &&
-      url.pathname.endsWith(
-        `/issues/${INPUT.subjectNumber}/comments`,
-      )
+      url.pathname.endsWith(`/issues/${ISSUE_NUMBER}/comments`)
     ) {
       state.postAttempts += 1;
       const payload = await requestBody(request);
@@ -187,73 +177,24 @@ async function startFakeGitHub({
       }
       const comment = {
         node_id: "IC_created",
-        user: { id: 42, login: "workgraph-reporter" },
+        user: { id: identityId, login: "workgraph-reporter" },
         body: payload.body,
       };
       state.comments.push(comment);
-      if (commentMode === "ambiguous" && state.postAttempts === 1) {
+      if (commentMode === "ambiguous") {
         state.operations.push("comment-ambiguous");
         request.socket.destroy();
+        return;
+      }
+      if (commentMode === "malformed-response") {
+        state.operations.push("comment-malformed-response");
+        response.writeHead(201, { "Content-Type": "application/json" });
+        response.end("not-json");
         return;
       }
       state.operations.push("comment");
       sendJson(response, 201, comment);
       return;
-    }
-    if (request.method === "POST" && url.pathname === "/graphql") {
-      const payload = await requestBody(request);
-      if (payload.query.includes("query WorkGraphProjectItem")) {
-        state.operations.push("project-item");
-        state.projectQuery = payload.query;
-        sendJson(response, 200, {
-          data: {
-            organization: {
-              projectV2: {
-                id: projectItem.configuredProjectId ?? PROJECT_ID,
-              },
-            },
-            node: {
-              id: projectItem.id ?? INPUT.projectItemNodeId,
-              project: {
-                id: projectItem.projectId ?? PROJECT_ID,
-              },
-              content: {
-                id: projectItem.subjectNodeId ?? INPUT.subjectNodeId,
-                number:
-                  projectItem.subjectNumber ?? INPUT.subjectNumber,
-                repository: {
-                  nameWithOwner:
-                    projectItem.repository ?? REPOSITORY,
-                },
-              },
-            },
-          },
-        });
-        return;
-      }
-      if (payload.query.includes("query WorkGraphVerifyStatus")) {
-        state.operations.push("status-verify");
-        sendJson(response, 200, {
-          data: {
-            node: {
-              fieldValueByName: { name: "AwaitingRouting" },
-            },
-          },
-        });
-        return;
-      }
-      if (payload.query.includes("mutation WorkGraphAwaitingRouting")) {
-        state.operations.push("status");
-        state.mutation = payload;
-        sendJson(response, 200, {
-          data: {
-            updateProjectV2ItemFieldValue: {
-              projectV2Item: { id: INPUT.projectItemNodeId },
-            },
-          },
-        });
-        return;
-      }
     }
     sendJson(response, 404, { message: "not found" });
   });
@@ -263,22 +204,17 @@ async function startFakeGitHub({
   return {
     state,
     apiUrl: `http://127.0.0.1:${address.port}`,
-    close: async () => {
-      server.close();
-      await once(server, "close");
-    },
+    close: () =>
+      new Promise((resolve) => {
+        server.close(resolve);
+      }),
   };
 }
 
 async function runMcp(
   messages,
   apiUrl,
-  {
-    launcherLogin = "trusted-launcher",
-    launcherUserId = "7",
-    reporterLogin = "workgraph-reporter",
-    reporterUserId = "42",
-  } = {},
+  { reporterUserId = "42" } = {},
 ) {
   const child = spawn(process.execPath, [REPORTER], {
     cwd: ROOT,
@@ -287,9 +223,6 @@ async function runMcp(
       NODE_ENV: "test",
       WORKGRAPH_TEST_GITHUB_API_URL: apiUrl,
       WORKGRAPH_TOKEN: "test-token",
-      WORKGRAPH_LAUNCHER_LOGIN: launcherLogin,
-      WORKGRAPH_LAUNCHER_USER_ID: launcherUserId,
-      WORKGRAPH_REPORTER_LOGIN: reporterLogin,
       WORKGRAPH_REPORTER_USER_ID: reporterUserId,
     },
     stdio: ["pipe", "pipe", "pipe"],
@@ -317,7 +250,9 @@ async function runMcp(
     .map((line) => JSON.parse(line));
 }
 
-function protocolMessages(argumentsValue = INPUT) {
+function protocolMessages(
+  input = inputFor(VALIDATION_ASSIGNMENT, VALIDATION_RESULT),
+) {
   return [
     {
       jsonrpc: "2.0",
@@ -331,279 +266,403 @@ function protocolMessages(argumentsValue = INPUT) {
       jsonrpc: "2.0",
       id: 4,
       method: "tools/call",
-      params: {
-        name: "report_completion",
-        arguments: argumentsValue,
-      },
+      params: { name: "report_result", arguments: input },
     },
   ];
 }
 
-test("exposes exactly one strict report_completion tool", async () => {
+async function runCall(options = {}) {
+  const fake = await startFakeGitHub(options);
+  try {
+    const responses = await runMcp(
+      protocolMessages(options.input),
+      fake.apiUrl,
+      options.config,
+    );
+    return { fake, responses };
+  } catch (error) {
+    await fake.close();
+    throw error;
+  }
+}
+
+test("exposes one strict typed report_result tool", async () => {
   const fake = await startFakeGitHub();
   try {
     const responses = await runMcp(protocolMessages(), fake.apiUrl);
     assert.equal(
       responses[0].result.serverInfo.name,
-      "drasi-workgraph-completion-reporter",
+      "drasi-workgraph-result-reporter",
     );
     assert.deepEqual(responses[1].result, {});
     const tools = responses[2].result.tools;
-    assert.deepEqual(tools.map((tool) => tool.name), [
-      "report_completion",
+    assert.deepEqual(tools.map((tool) => tool.name), ["report_result"]);
+    const schema = tools[0].inputSchema;
+    assert.equal(schema.additionalProperties, false);
+    assert.deepEqual(Object.keys(schema.properties).sort(), [
+      "assignment",
+      "issueNumber",
+      "workResult",
     ]);
-    assert.equal(tools[0].inputSchema.additionalProperties, false);
-    assert.deepEqual(
-      Object.keys(tools[0].inputSchema.properties).sort(),
-      Object.keys(INPUT).sort(),
-    );
-    const properties = tools[0].inputSchema.properties;
+    assert.equal(schema.properties.assignment.oneOf.length, 2);
+    assert.equal(schema.properties.workResult.oneOf.length, 2);
+    const serialized = JSON.stringify(schema);
     for (const forbidden of [
       "repository",
-      "project",
-      "status",
-      "field",
       "commentBody",
       "graphql",
+      "projectItemNodeId",
+      "routeId",
+      "executionId",
     ]) {
-      assert.equal(Object.hasOwn(properties, forbidden), false);
+      assert.equal(serialized.includes(forbidden), false);
     }
   } finally {
     await fake.close();
   }
 });
 
-test("rejects additional input before any GitHub operation", async () => {
+test("creates one canonical issue-validation Result", async () => {
   const fake = await startFakeGitHub();
-  try {
-    const responses = await runMcp(
-      protocolMessages({ ...INPUT, status: "Done" }),
-      fake.apiUrl,
-    );
-    assert.equal(responses[3].result.isError, true);
-    assert.match(responses[3].result.content[0].text, /extra=.*status/);
-    assert.deepEqual(fake.state.operations, []);
-  } finally {
-    await fake.close();
-  }
-});
-
-test("rejects reused reporter login when immutable user ID differs", async () => {
-  const fake = await startFakeGitHub();
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl, {
-      reporterLogin: "workgraph-reporter",
-      reporterUserId: "99",
-    });
-    assert.equal(responses[3].result.isError, true);
-    assert.match(
-      responses[3].result.content[0].text,
-      /expected 99/,
-    );
-    assert.deepEqual(fake.state.operations, ["identity"]);
-  } finally {
-    await fake.close();
-  }
-});
-
-test("rejects a non-integer reporter user ID before GitHub access", async () => {
-  const fake = await startFakeGitHub();
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl, {
-      reporterUserId: "not-an-integer",
-    });
-    assert.equal(responses[3].result.isError, true);
-    assert.match(
-      responses[3].result.content[0].text,
-      /REPORTER_USER_ID must be a positive integer/,
-    );
-    assert.deepEqual(fake.state.operations, []);
-  } finally {
-    await fake.close();
-  }
-});
-
-test("accepts reporter rename when immutable user ID matches", async () => {
-  const fake = await startFakeGitHub();
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl, {
-      reporterLogin: "renamed-reporter",
-      reporterUserId: "42",
-    });
-    assert.equal(responses[3].result.isError, false);
-    assert.equal(
-      responses[3].result.structuredContent.projectStatus,
-      "AwaitingRouting",
-    );
-  } finally {
-    await fake.close();
-  }
-});
-
-test("rejects reused launcher login when immutable user ID differs", async () => {
-  const fake = await startFakeGitHub();
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl, {
-      launcherLogin: "trusted-launcher",
-      launcherUserId: "99",
-    });
-    assert.equal(responses[3].result.isError, true);
-    assert.match(
-      responses[3].result.content[0].text,
-      /expected launcher user ID 99/,
-    );
-    assert.equal(fake.state.postAttempts, 0);
-    assert.equal(fake.state.operations.includes("status"), false);
-  } finally {
-    await fake.close();
-  }
-});
-
-test("rejects a non-integer launcher user ID before GitHub access", async () => {
-  const fake = await startFakeGitHub();
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl, {
-      launcherUserId: "not-an-integer",
-    });
-    assert.equal(responses[3].result.isError, true);
-    assert.match(
-      responses[3].result.content[0].text,
-      /LAUNCHER_USER_ID must be a positive integer/,
-    );
-    assert.deepEqual(fake.state.operations, []);
-  } finally {
-    await fake.close();
-  }
-});
-
-test("accepts launcher rename when immutable user ID matches", async () => {
-  const fake = await startFakeGitHub();
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl, {
-      launcherLogin: "renamed-launcher",
-      launcherUserId: "7",
-    });
-    assert.equal(responses[3].result.isError, false);
-    assert.equal(
-      responses[3].result.structuredContent.projectStatus,
-      "AwaitingRouting",
-    );
-  } finally {
-    await fake.close();
-  }
-});
-
-test("creates a canonical event for an explicit zero-offset execution", async () => {
-  const fake = await startFakeGitHub({
-    executionStartedAt: "2026-08-14T05:35:13.662852+00:00",
-  });
   try {
     const responses = await runMcp(protocolMessages(), fake.apiUrl);
     const result = responses[3].result.structuredContent;
-    assert.equal(result.reconciled, false);
-    assert.equal(result.projectStatus, "AwaitingRouting");
-    assert.ok(
-      fake.state.operations.indexOf("comment") <
-        fake.state.operations.indexOf("status"),
-    );
-    const created = fake.state.comments.at(-1);
-    assert.equal(created.user.id, 42);
-    assert.match(created.body, /^WorkGraphEvent\/v1\n```json\n/);
+    assert.deepEqual(result, {
+      assignmentId: VALIDATION_ASSIGNMENT.assignmentId,
+      taskType: "issue-validation",
+      commentNodeId: "IC_created",
+      reconciled: false,
+    });
+    assert.deepEqual(fake.state.operations, [
+      "identity",
+      "issue",
+      "comments",
+      "comment",
+    ]);
+    assert.equal(fake.state.postAttempts, 1);
+    const body = fake.state.comments[0].body;
+    assert.equal(body, resultComment(VALIDATION_RESULT));
+    assert.equal((body.match(/^```/gm) ?? []).length, 2);
+    const lines = body.split("\n");
+    assert.equal(lines[0], "WorkGraphResult/v1");
+    assert.equal(lines[1], VALIDATION_RESULT.summary);
     const payload = JSON.parse(
-      created.body.match(/```json\n([\s\S]+)\n```$/)[1],
+      body.match(/```json\n([\s\S]+)\n```$/)[1],
     );
-    assert.equal(payload.repository, REPOSITORY);
-    assert.equal(payload.actorType, "Agent");
-    assert.equal(payload.actorId, "issue-validator");
-    assert.equal(payload.eventType, "CompletedIssueValidation");
-    assert.equal(payload.result.outcome, "passed");
-    assert.match(payload.completedAt, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
-    assert.equal(fake.state.mutation.variables.item, INPUT.projectItemNodeId);
-    const projectRead = fake.state.operations.indexOf("project-item");
-    assert.ok(projectRead >= 0);
-    assert.match(
-      fake.state.projectQuery,
-      /organization\(login: "drasi-project"\)/,
-    );
-    assert.match(fake.state.projectQuery, /projectV2\(number: 3\)/);
-    assert.match(fake.state.mutation.query, new RegExp(PROJECT_ID));
-    assert.match(fake.state.mutation.query, new RegExp(STATUS_FIELD_ID));
-    assert.match(fake.state.mutation.query, new RegExp(STATUS_OPTION_ID));
-    assert.ok(
-      fake.state.operations.indexOf("status") <
-        fake.state.operations.indexOf("status-verify"),
-    );
+    assert.deepEqual(payload, VALIDATION_RESULT);
+    assert.deepEqual(Object.keys(payload).sort(), [
+      "assignmentId",
+      "outcome",
+      "result",
+      "summary",
+      "taskType",
+    ]);
   } finally {
     await fake.close();
   }
 });
 
-test("rejects a mismatched fixed Project owner/number lookup", async () => {
+test("creates one canonical issue-risk-profile Result", async () => {
+  const fake = await startFakeGitHub();
+  try {
+    const input = inputFor(RISK_ASSIGNMENT, RISK_RESULT);
+    const responses = await runMcp(protocolMessages(input), fake.apiUrl);
+    const result = responses[3].result.structuredContent;
+    assert.equal(result.taskType, "issue-risk-profile");
+    assert.equal(result.reconciled, false);
+    assert.equal(fake.state.postAttempts, 1);
+    assert.equal(fake.state.comments[0].body, resultComment(RISK_RESULT));
+    const payload = JSON.parse(
+      fake.state.comments[0].body.match(
+        /```json\n([\s\S]+)\n```$/,
+      )[1],
+    );
+    assert.deepEqual(payload.result.dimensions, RISK_RESULT.result.dimensions);
+    assert.equal(payload.result.dimensions[0].score, 75);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects additional input before GitHub access", async () => {
+  const fake = await startFakeGitHub();
+  try {
+    const input = {
+      ...inputFor(VALIDATION_ASSIGNMENT, VALIDATION_RESULT),
+      repository: "other/repository",
+    };
+    const responses = await runMcp(protocolMessages(input), fake.apiUrl);
+    assert.equal(responses[3].result.isError, true);
+    assert.match(responses[3].result.content[0].text, /extra=.*repository/);
+    assert.deepEqual(fake.state.operations, []);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects malformed typed Assignments before GitHub access", async (t) => {
+  const cases = [
+    {
+      name: "empty agent profile",
+      assignment: {
+        ...VALIDATION_ASSIGNMENT,
+        agentProfile: " ",
+      },
+      pattern: /agentProfile must be a non-empty string/,
+    },
+    {
+      name: "empty validation profile",
+      assignment: {
+        ...VALIDATION_ASSIGNMENT,
+        task: {
+          ...VALIDATION_ASSIGNMENT.task,
+          validationProfile: " ",
+        },
+      },
+      pattern: /validationProfile must be a non-empty string/,
+    },
+    {
+      name: "extra task field",
+      assignment: {
+        ...RISK_ASSIGNMENT,
+        task: { ...RISK_ASSIGNMENT.task, route: "legacy" },
+      },
+      pattern: /extra=.*route/,
+      workResult: RISK_RESULT,
+    },
+  ];
+  for (const item of cases) {
+    await t.test(item.name, async () => {
+      const fake = await startFakeGitHub();
+      try {
+        const responses = await runMcp(
+          protocolMessages(
+            inputFor(
+              item.assignment,
+              item.workResult ?? VALIDATION_RESULT,
+            ),
+          ),
+          fake.apiUrl,
+        );
+        assert.equal(responses[3].result.isError, true);
+        assert.match(responses[3].result.content[0].text, item.pattern);
+        assert.deepEqual(fake.state.operations, []);
+      } finally {
+        await fake.close();
+      }
+    });
+  }
+});
+
+test("rejects malformed typed Results before GitHub access", async (t) => {
+  const cases = [
+    {
+      name: "empty evidence",
+      assignment: VALIDATION_ASSIGNMENT,
+      workResult: {
+        ...VALIDATION_RESULT,
+        result: {
+          criteria: [
+            {
+              ...VALIDATION_RESULT.result.criteria[0],
+              evidence: "",
+            },
+            VALIDATION_RESULT.result.criteria[1],
+          ],
+        },
+      },
+      pattern: /evidence must be a non-empty string/,
+    },
+    {
+      name: "non-integer score",
+      assignment: RISK_ASSIGNMENT,
+      workResult: {
+        ...RISK_RESULT,
+        result: {
+          dimensions: [
+            { ...RISK_RESULT.result.dimensions[0], score: 50.5 },
+            RISK_RESULT.result.dimensions[1],
+          ],
+        },
+      },
+      pattern: /score must be an integer between 0 and 100/,
+    },
+    {
+      name: "score above 100",
+      assignment: RISK_ASSIGNMENT,
+      workResult: {
+        ...RISK_RESULT,
+        result: {
+          dimensions: [
+            { ...RISK_RESULT.result.dimensions[0], score: 101 },
+            RISK_RESULT.result.dimensions[1],
+          ],
+        },
+      },
+      pattern: /score must be an integer between 0 and 100/,
+    },
+  ];
+  for (const item of cases) {
+    await t.test(item.name, async () => {
+      const fake = await startFakeGitHub();
+      try {
+        const responses = await runMcp(
+          protocolMessages(inputFor(item.assignment, item.workResult)),
+          fake.apiUrl,
+        );
+        assert.equal(responses[3].result.isError, true);
+        assert.match(responses[3].result.content[0].text, item.pattern);
+        assert.deepEqual(fake.state.operations, []);
+      } finally {
+        await fake.close();
+      }
+    });
+  }
+});
+
+test("requires Result items to match the Assignment in order", async () => {
+  const fake = await startFakeGitHub();
+  try {
+    const workResult = {
+      ...VALIDATION_RESULT,
+      result: {
+        criteria: [...VALIDATION_RESULT.result.criteria].reverse(),
+      },
+    };
+    const responses = await runMcp(
+      protocolMessages(inputFor(VALIDATION_ASSIGNMENT, workResult)),
+      fake.apiUrl,
+    );
+    assert.equal(responses[3].result.isError, true);
+    assert.match(
+      responses[3].result.content[0].text,
+      /criteria must exactly match the assigned criteria in order/,
+    );
+    assert.deepEqual(fake.state.operations, []);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("reconciles one authenticated canonical Result", async () => {
+  const existing = {
+    node_id: "IC_existing",
+    user: { id: 42, login: "workgraph-reporter" },
+    body: resultComment(VALIDATION_RESULT),
+  };
+  const fake = await startFakeGitHub({ existingComments: [existing] });
+  try {
+    const reorderedResult = {
+      result: {
+        criteria: VALIDATION_RESULT.result.criteria.map((entry) => ({
+          evidence: entry.evidence,
+          passed: entry.passed,
+          criterion: entry.criterion,
+        })),
+      },
+      summary: VALIDATION_RESULT.summary,
+      outcome: VALIDATION_RESULT.outcome,
+      taskType: VALIDATION_RESULT.taskType,
+      assignmentId: VALIDATION_RESULT.assignmentId,
+    };
+    const responses = await runMcp(
+      protocolMessages(
+        inputFor(VALIDATION_ASSIGNMENT, reorderedResult),
+      ),
+      fake.apiUrl,
+    );
+    assert.deepEqual(responses[3].result.structuredContent, {
+      assignmentId: VALIDATION_ASSIGNMENT.assignmentId,
+      taskType: "issue-validation",
+      commentNodeId: "IC_existing",
+      reconciled: true,
+    });
+    assert.equal(fake.state.postAttempts, 0);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("fails instead of duplicating a conflicting authenticated Result", async () => {
+  const conflicting = {
+    ...VALIDATION_RESULT,
+    summary: "A different valid result.",
+  };
   const fake = await startFakeGitHub({
-    projectItem: { configuredProjectId: "PVT_wrong" },
+    existingComments: [
+      {
+        node_id: "IC_conflict",
+        user: { id: 42, login: "workgraph-reporter" },
+        body: resultComment(conflicting),
+      },
+    ],
   });
   try {
     const responses = await runMcp(protocolMessages(), fake.apiUrl);
     assert.equal(responses[3].result.isError, true);
     assert.match(
       responses[3].result.content[0].text,
-      /Project number 3 does not match/,
+      /authenticated Result comment.*conflicts/,
     );
     assert.equal(fake.state.postAttempts, 0);
-    assert.equal(fake.state.operations.includes("status"), false);
   } finally {
     await fake.close();
   }
 });
 
-test("reconciles a duplicate for an explicit zero-offset execution", async () => {
-  const issueBody = "WorkGraph-Validation: pass\n";
-  const existing = {
-    node_id: "IC_existing",
-    user: { id: 42, login: "workgraph-reporter" },
-    body: eventComment(canonicalEvent(INPUT, issueBody)),
-  };
+test("fails instead of duplicating another author's valid Result", async () => {
   const fake = await startFakeGitHub({
-    issueBody,
-    existingComments: [existing],
-    executionStartedAt: "2026-08-14T05:35:13.662852+00:00",
+    existingComments: [
+      {
+        node_id: "IC_other",
+        user: { id: 99, login: "other" },
+        body: resultComment(VALIDATION_RESULT),
+      },
+    ],
   });
   try {
     const responses = await runMcp(protocolMessages(), fake.apiUrl);
-    assert.equal(responses[3].result.structuredContent.reconciled, true);
-    assert.equal(responses[3].result.structuredContent.commentNodeId, "IC_existing");
+    assert.equal(responses[3].result.isError, true);
+    assert.match(
+      responses[3].result.content[0].text,
+      /exists from a different author/,
+    );
     assert.equal(fake.state.postAttempts, 0);
-    assert.ok(fake.state.operations.includes("status"));
   } finally {
     await fake.close();
   }
 });
 
-test("does not adopt a spoofed completion comment", async () => {
-  const issueBody = "WorkGraph-Validation: pass\n";
-  const spoof = {
-    node_id: "IC_spoof",
-    user: { id: 99, login: "attacker" },
-    body: eventComment(canonicalEvent(INPUT, issueBody)),
-  };
+test("rejects multiple valid Results for one assignmentId", async () => {
+  const body = resultComment(VALIDATION_RESULT);
   const fake = await startFakeGitHub({
-    issueBody,
-    existingComments: [spoof],
+    existingComments: [
+      {
+        node_id: "IC_one",
+        user: { id: 42, login: "workgraph-reporter" },
+        body,
+      },
+      {
+        node_id: "IC_two",
+        user: { id: 42, login: "workgraph-reporter" },
+        body,
+      },
+    ],
   });
   try {
     const responses = await runMcp(protocolMessages(), fake.apiUrl);
-    assert.equal(responses[3].result.structuredContent.reconciled, false);
-    assert.equal(fake.state.postAttempts, 1);
-    assert.ok(
-      fake.state.operations.indexOf("comment") <
-        fake.state.operations.indexOf("status"),
+    assert.equal(responses[3].result.isError, true);
+    assert.match(
+      responses[3].result.content[0].text,
+      /multiple schema-valid Result comments/,
     );
+    assert.equal(fake.state.postAttempts, 0);
   } finally {
     await fake.close();
   }
 });
 
-test("reconciles an ambiguous comment create before status", async () => {
+test("reconciles an ambiguous create without a second POST", async () => {
   const fake = await startFakeGitHub({ commentMode: "ambiguous" });
   try {
     const responses = await runMcp(protocolMessages(), fake.apiUrl);
@@ -611,17 +670,41 @@ test("reconciles an ambiguous comment create before status", async () => {
     assert.equal(result.reconciled, true);
     assert.equal(result.commentNodeId, "IC_created");
     assert.equal(fake.state.postAttempts, 1);
-    const ambiguous = fake.state.operations.indexOf("comment-ambiguous");
-    const secondCommentRead = fake.state.operations.lastIndexOf("comments");
-    const status = fake.state.operations.indexOf("status");
-    assert.ok(ambiguous < secondCommentRead);
-    assert.ok(secondCommentRead < status);
+    assert.deepEqual(fake.state.operations, [
+      "identity",
+      "issue",
+      "comments",
+      "comment-ambiguous",
+      "comments",
+    ]);
   } finally {
     await fake.close();
   }
 });
 
-test("never writes status after explicit comment failure", async () => {
+test("reconciles a malformed successful create response", async () => {
+  const fake = await startFakeGitHub({
+    commentMode: "malformed-response",
+  });
+  try {
+    const responses = await runMcp(protocolMessages(), fake.apiUrl);
+    const result = responses[3].result.structuredContent;
+    assert.equal(result.reconciled, true);
+    assert.equal(result.commentNodeId, "IC_created");
+    assert.equal(fake.state.postAttempts, 1);
+    assert.deepEqual(fake.state.operations, [
+      "identity",
+      "issue",
+      "comments",
+      "comment-malformed-response",
+      "comments",
+    ]);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("does not retry an explicit comment rejection", async () => {
   const fake = await startFakeGitHub({ commentMode: "failure" });
   try {
     const responses = await runMcp(protocolMessages(), fake.apiUrl);
@@ -630,52 +713,46 @@ test("never writes status after explicit comment failure", async () => {
       responses[3].result.content[0].text,
       /HTTP 422: comment rejected/,
     );
-    assert.equal(fake.state.operations.includes("status"), false);
+    assert.equal(fake.state.postAttempts, 1);
+    assert.equal(
+      fake.state.operations.filter((entry) => entry === "comments").length,
+      1,
+    );
   } finally {
     await fake.close();
   }
 });
 
-test("rejects a Project Item outside the fixed Project", async () => {
-  const fake = await startFakeGitHub({
-    projectItem: { projectId: "PVT_wrong" },
-  });
+test("rejects a token identity mismatch before Issue access", async () => {
+  const fake = await startFakeGitHub({ identityId: 42 });
+  try {
+    const responses = await runMcp(
+      protocolMessages(),
+      fake.apiUrl,
+      { reporterUserId: "99" },
+    );
+    assert.equal(responses[3].result.isError, true);
+    assert.match(
+      responses[3].result.content[0].text,
+      /does not match WORKGRAPH_REPORTER_USER_ID 99/,
+    );
+    assert.deepEqual(fake.state.operations, ["identity"]);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects a pull request destination before comment access", async () => {
+  const fake = await startFakeGitHub({ issueIsPullRequest: true });
   try {
     const responses = await runMcp(protocolMessages(), fake.apiUrl);
     assert.equal(responses[3].result.isError, true);
     assert.match(
       responses[3].result.content[0].text,
-      /does not belong to the fixed Project/,
+      /destination is not the requested Issue/,
     );
-    assert.equal(fake.state.postAttempts, 0);
-    assert.equal(fake.state.operations.includes("status"), false);
+    assert.deepEqual(fake.state.operations, ["identity", "issue"]);
   } finally {
     await fake.close();
-  }
-});
-
-test("rejects invalid or non-UTC execution timestamps before writes", async (t) => {
-  for (const startedAt of [
-    "2026-08-14T05:35:13+01:00",
-    "2026-08-14T05:35:13-00:00",
-    "2026-08-14 05:35:13Z",
-    "2026-08-14T05:35:13+0000",
-    "2026-02-30T05:35:13Z",
-  ]) {
-    await t.test(startedAt, async () => {
-      const fake = await startFakeGitHub({ executionStartedAt: startedAt });
-      try {
-        const responses = await runMcp(protocolMessages(), fake.apiUrl);
-        assert.equal(responses[3].result.isError, true);
-        assert.match(
-          responses[3].result.content[0].text,
-          /execution\.startedAt must be a valid RFC3339 UTC instant/,
-        );
-        assert.equal(fake.state.postAttempts, 0);
-        assert.equal(fake.state.operations.includes("status"), false);
-      } finally {
-        await fake.close();
-      }
-    });
   }
 });

@@ -1,7 +1,11 @@
 # drasi-workgraph-demo
 WorkGraph workflow prototype
 
-The repository-defined issue validator is
-`.github/agents/issue-validator.agent.md`. Its scoped completion capability and
-required external activation probe are documented in
-[`docs/workgraph-completion-reporter.md`](docs/workgraph-completion-reporter.md).
+The minimal GitHub WorkGraph prototype defines exactly two Copilot agent
+profiles:
+
+- `.github/agents/issue-validation.agent.md`
+- `.github/agents/issue-risk-profile.agent.md`
+
+Both use the scoped, retry-safe Result comment capability documented in
+[`docs/workgraph-result-reporter.md`](docs/workgraph-result-reporter.md).
