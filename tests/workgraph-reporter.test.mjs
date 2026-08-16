@@ -548,6 +548,15 @@ test("rejects malformed typed Results before GitHub access", async (t) => {
       },
       pattern: /score must be an integer between 0 and 100/,
     },
+    {
+      name: "summary contains the Result marker",
+      assignment: VALIDATION_ASSIGNMENT,
+      workResult: {
+        ...VALIDATION_RESULT,
+        summary: "Do not repeat WorkGraphResult/v1 in the summary.",
+      },
+      pattern: /Result markers/,
+    },
   ];
   for (const item of cases) {
     await t.test(item.name, async () => {

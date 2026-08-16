@@ -81,7 +81,7 @@ function requirePublishableSummary(value, label) {
     lines.some(
       (line) =>
         line.startsWith("```") ||
-        line === RESULT_MARKER ||
+        line.includes(RESULT_MARKER) ||
         /<\/?(?:details|summary)\b/i.test(line),
     )
   ) {
