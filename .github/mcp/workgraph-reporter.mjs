@@ -36,6 +36,21 @@ function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function extractAssignmentId(text) {
+  const match = text.match(
+    /"assignmentId"\s*:\s*("(?:\\.|[^"\\])*")/,
+  );
+  if (match === null) {
+    return null;
+  }
+  try {
+    const value = JSON.parse(match[1]);
+    return typeof value === "string" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 function requireExactKeys(value, expectedKeys, label) {
   if (!isObject(value)) {
     throw new ReporterError(`${label} must be an object`);
@@ -284,7 +299,18 @@ function inspectResultComment(body) {
   if (typeof body !== "string") {
     return null;
   }
-  const lines = body.replaceAll("\r\n", "\n").split("\n");
+  const normalizedBody = body.replaceAll("\r\n", "\n");
+  const firstActualNewline = normalizedBody.indexOf("\n");
+  const firstLiteralNewline = normalizedBody.indexOf("\\n");
+  const usesLiteralNewlines =
+    (normalizedBody.startsWith("<details") ||
+      normalizedBody.startsWith(RESULT_MARKER)) &&
+    firstLiteralNewline >= 0 &&
+    (firstActualNewline < 0 || firstLiteralNewline < firstActualNewline);
+  const inspectedBody = usesLiteralNewlines
+    ? normalizedBody.replaceAll("\\n", "\n")
+    : normalizedBody;
+  const lines = inspectedBody.split("\n");
   const looksLikeResult =
     lines.includes(RESULT_MARKER) ||
     (lines[0]?.startsWith("<details") && lines[1] === RESULT_SUMMARY);
@@ -317,12 +343,14 @@ function inspectResultComment(body) {
       // silently cause a second Result comment.
     }
   }
+  assignmentId ??= extractAssignmentId(normalizedBody);
 
   const humanSummary =
     open >= 7 && lines[open - 1] === ""
       ? lines.slice(5, open - 1).join("\n")
       : null;
   const envelopeIsCanonical =
+    !usesLiteralNewlines &&
     lines[0] === RESULT_DETAILS_OPEN &&
     lines[1] === RESULT_SUMMARY &&
     lines[2] === "" &&

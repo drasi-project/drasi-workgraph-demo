@@ -643,10 +643,21 @@ test("rejects malformed Result envelopes instead of duplicating", async (t) => {
       body: canonical.replace("<details>", "<details open>"),
     },
     {
+      name: "details attributes",
+      body: canonical.replace("<details>", '<details data-kind="result">'),
+    },
+    {
       name: "mismatched summary label",
       body: canonical.replace(
         "<summary>WorkGraph Result</summary>",
         "<summary>Result</summary>",
+      ),
+    },
+    {
+      name: "missing summary blank line",
+      body: canonical.replace(
+        "<summary>WorkGraph Result</summary>\n\n",
+        "<summary>WorkGraph Result</summary>\n",
       ),
     },
     {
@@ -661,8 +672,19 @@ test("rejects malformed Result envelopes instead of duplicating", async (t) => {
       body: canonical.replace("```json", "```JSON"),
     },
     {
+      name: "multiple JSON fences",
+      body: canonical.replace(
+        "\n```\n</details>",
+        "\n```\n```\n</details>",
+      ),
+    },
+    {
       name: "unclosed details",
       body: canonical.replace("\n</details>", ""),
+    },
+    {
+      name: "literal backslash-n separators",
+      body: canonical.replaceAll("\n", "\\n"),
     },
   ];
 
@@ -689,6 +711,33 @@ test("rejects malformed Result envelopes instead of duplicating", async (t) => {
         await fake.close();
       }
     });
+  }
+});
+
+test("rejects compact JSON instead of reconciling or duplicating", async () => {
+  const compact = resultComment(VALIDATION_RESULT).replace(
+    JSON.stringify(VALIDATION_RESULT, null, 2),
+    JSON.stringify(VALIDATION_RESULT),
+  );
+  const fake = await startFakeGitHub({
+    existingComments: [
+      {
+        node_id: "IC_compact",
+        user: { id: 42, login: "workgraph-reporter" },
+        body: compact,
+      },
+    ],
+  });
+  try {
+    const responses = await runMcp(protocolMessages(), fake.apiUrl);
+    assert.equal(responses[3].result.isError, true);
+    assert.match(
+      responses[3].result.content[0].text,
+      /authenticated Result comment.*conflicts/,
+    );
+    assert.equal(fake.state.postAttempts, 0);
+  } finally {
+    await fake.close();
   }
 });
 
