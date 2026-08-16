@@ -1,6 +1,6 @@
 ---
-name: issue-validation
-description: Evaluates assigned validation criteria against one current GitHub Issue and publishes one WorkGraph Result.
+name: issue-validator
+description: Validates assigned criteria against one current GitHub Issue and publishes one WorkGraph Result.
 target: github-copilot
 user-invocable: true
 disable-model-invocation: true
@@ -20,10 +20,11 @@ mcp-servers:
       WORKGRAPH_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID }}
 ---
 
-# WorkGraph issue validation
+# WorkGraph issue validator
 
-Evaluate exactly one `issue-validation` Assignment against the current Issue.
-Agent Tasks invoke this repository-defined profile with
+The `issue-validator` agent profile evaluates exactly one `issue-validation`
+Assignment against the current Issue. Agent Tasks invoke this
+repository-defined profile with
 `create_pull_request=false`.
 
 ## Trust boundary

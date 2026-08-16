@@ -1,5 +1,5 @@
 ---
-name: issue-risk-profile
+name: issue-risk-profiler
 description: Scores assigned risk dimensions from one current GitHub Issue and publishes one WorkGraph Result.
 target: github-copilot
 user-invocable: true
@@ -20,10 +20,11 @@ mcp-servers:
       WORKGRAPH_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID }}
 ---
 
-# WorkGraph issue risk profile
+# WorkGraph issue risk profiler
 
-Evaluate exactly one `issue-risk-profile` Assignment against the current
-Issue. Agent Tasks invoke this repository-defined profile with
+The `issue-risk-profiler` agent profile evaluates exactly one
+`issue-risk-profile` Assignment against the current Issue. Agent Tasks invoke
+this repository-defined profile with
 `create_pull_request=false`.
 
 ## Trust boundary
