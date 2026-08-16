@@ -134,8 +134,8 @@ For each tool call, the reporter:
 3. Confirms the fixed-repository destination is the requested Issue.
 4. Searches all Issue conversation comments for a Result candidate with the
    same `assignmentId`. A malformed payload or an unwrapped, open, mislabeled,
-   unclosed, or otherwise noncanonical envelope is rejected rather than
-   ignored.
+   unclosed, extra-prose, or otherwise noncanonical envelope is rejected
+   rather than ignored.
 5. Adopts one canonically formatted, byte-identical Result only when its author
    is the authenticated reporter. It fails without writing on a conflict, a
    different author, or multiple valid matches.

@@ -668,6 +668,13 @@ test("rejects malformed Result envelopes instead of duplicating", async (t) => {
       ),
     },
     {
+      name: "missing human summary blank line",
+      body: canonical.replace(
+        `${VALIDATION_RESULT.summary}\n\n\`\`\`json`,
+        `${VALIDATION_RESULT.summary}\n\`\`\`json`,
+      ),
+    },
+    {
       name: "mismatched JSON fence",
       body: canonical.replace("```json", "```JSON"),
     },
@@ -681,6 +688,10 @@ test("rejects malformed Result envelopes instead of duplicating", async (t) => {
     {
       name: "unclosed details",
       body: canonical.replace("\n</details>", ""),
+    },
+    {
+      name: "prose after details",
+      body: `${canonical}\nUnexpected trailing prose.`,
     },
     {
       name: "literal backslash-n separators",
