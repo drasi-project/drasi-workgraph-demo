@@ -104,20 +104,42 @@ Construct exactly this strict JSON shape, with no additional fields:
 }
 ```
 
-Use a plain-text summary with no carriage return or Markdown fence line. Call
-`workgraph/report_result` exactly once with only `issueNumber`, the complete
-Assignment JSON object as `assignment`, and the complete Result JSON object as
-`workResult`.
+Use a concise plain-text summary that states the assessment outcome without
+mentioning the current Issue number or ID; the destination already supplies
+that context. Do not use a carriage return, Markdown fence line, Result marker,
+or `details`/`summary` HTML tag. Call `workgraph/report_result` exactly once
+with only `issueNumber`, the complete Assignment JSON object as `assignment`,
+and the complete Result JSON object as `workResult`.
 
 The reporter creates this exact conversation-comment envelope, using the JSON
 `summary` as its human summary:
 
 ````text
+<details>
+<summary>WorkGraph Result</summary>
+
 WorkGraphResult/v1
-Brief non-empty human summary.
+
+Scored all requested risk dimensions.
+
 ```json
-{ "assignmentId": "...", "taskType": "issue-risk-profile", "...": "..." }
+{
+  "assignmentId": "organization-unique-id",
+  "taskType": "issue-risk-profile",
+  "outcome": "succeeded",
+  "summary": "Scored all requested risk dimensions.",
+  "result": {
+    "dimensions": [
+      {
+        "dimension": "Rollback complexity",
+        "score": 25,
+        "rationale": "The body describes a feature-flag rollback."
+      }
+    ]
+  }
+}
 ```
+</details>
 ````
 
 Treat a successful reporter response as completion only when it returns the

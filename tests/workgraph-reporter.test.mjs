@@ -53,6 +53,37 @@ const VALIDATION_RESULT = {
   },
 };
 
+const EXPECTED_VALIDATION_COMMENT = `<details>
+<summary>WorkGraph Result</summary>
+
+WorkGraphResult/v1
+
+Evaluated both requested validation criteria.
+
+\`\`\`json
+{
+  "assignmentId": "assignment-validation-001",
+  "taskType": "issue-validation",
+  "outcome": "succeeded",
+  "summary": "Evaluated both requested validation criteria.",
+  "result": {
+    "criteria": [
+      {
+        "criterion": "The issue defines acceptance criteria",
+        "passed": true,
+        "evidence": "The body contains an acceptance checklist."
+      },
+      {
+        "criterion": "The issue identifies an owner",
+        "passed": false,
+        "evidence": "The title and body do not identify an owner."
+      }
+    ]
+  }
+}
+\`\`\`
+</details>`;
+
 const RISK_ASSIGNMENT = {
   assignmentId: "assignment-risk-001",
   agentProfile: "issue-risk-profiler",
@@ -95,8 +126,10 @@ function inputFor(assignment, workResult) {
 
 function resultComment(workResult) {
   return (
-    `WorkGraphResult/v1\n${workResult.summary}\n` +
-    `\`\`\`json\n${JSON.stringify(workResult, null, 2)}\n\`\`\``
+    `<details>\n<summary>WorkGraph Result</summary>\n\n` +
+    `WorkGraphResult/v1\n\n${workResult.summary}\n\n` +
+    `\`\`\`json\n${JSON.stringify(workResult, null, 2)}\n\`\`\`\n` +
+    `</details>`
   );
 }
 
@@ -341,13 +374,25 @@ test("creates one canonical issue-validation Result", async () => {
     ]);
     assert.equal(fake.state.postAttempts, 1);
     const body = fake.state.comments[0].body;
-    assert.equal(body, resultComment(VALIDATION_RESULT));
+    assert.equal(body, EXPECTED_VALIDATION_COMMENT);
     assert.equal((body.match(/^```/gm) ?? []).length, 2);
     const lines = body.split("\n");
-    assert.equal(lines[0], "WorkGraphResult/v1");
-    assert.equal(lines[1], VALIDATION_RESULT.summary);
+    assert.deepEqual(lines.slice(0, 7), [
+      "<details>",
+      "<summary>WorkGraph Result</summary>",
+      "",
+      "WorkGraphResult/v1",
+      "",
+      VALIDATION_RESULT.summary,
+      "",
+    ]);
+    assert.equal(lines.at(-2), "```");
+    assert.equal(lines.at(-1), "</details>");
+    assert.equal(body.includes("<details open>"), false);
+    assert.equal(body.includes("<details open=\"open\">"), false);
+    assert.equal(body.includes(`Issue #${ISSUE_NUMBER}`), false);
     const payload = JSON.parse(
-      body.match(/```json\n([\s\S]+)\n```$/)[1],
+      body.match(/```json\n([\s\S]+)\n```\n<\/details>$/)[1],
     );
     assert.deepEqual(payload, VALIDATION_RESULT);
     assert.deepEqual(Object.keys(payload).sort(), [
@@ -374,7 +419,7 @@ test("creates one canonical issue-risk-profile Result", async () => {
     assert.equal(fake.state.comments[0].body, resultComment(RISK_RESULT));
     const payload = JSON.parse(
       fake.state.comments[0].body.match(
-        /```json\n([\s\S]+)\n```$/,
+        /```json\n([\s\S]+)\n```\n<\/details>$/,
       )[1],
     );
     assert.deepEqual(payload.result.dimensions, RISK_RESULT.result.dimensions);
@@ -577,6 +622,123 @@ test("reconciles one authenticated canonical Result", async () => {
       commentNodeId: "IC_existing",
       reconciled: true,
     });
+    assert.equal(fake.state.postAttempts, 0);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects malformed Result envelopes instead of duplicating", async (t) => {
+  const canonical = resultComment(VALIDATION_RESULT);
+  const unwrapped =
+    `WorkGraphResult/v1\n${VALIDATION_RESULT.summary}\n` +
+    `\`\`\`json\n${JSON.stringify(VALIDATION_RESULT, null, 2)}\n\`\`\``;
+  const cases = [
+    {
+      name: "unwrapped",
+      body: unwrapped,
+    },
+    {
+      name: "open details",
+      body: canonical.replace("<details>", "<details open>"),
+    },
+    {
+      name: "mismatched summary label",
+      body: canonical.replace(
+        "<summary>WorkGraph Result</summary>",
+        "<summary>Result</summary>",
+      ),
+    },
+    {
+      name: "missing marker blank line",
+      body: canonical.replace(
+        "WorkGraphResult/v1\n\n",
+        "WorkGraphResult/v1\n",
+      ),
+    },
+    {
+      name: "mismatched JSON fence",
+      body: canonical.replace("```json", "```JSON"),
+    },
+    {
+      name: "unclosed details",
+      body: canonical.replace("\n</details>", ""),
+    },
+  ];
+
+  for (const item of cases) {
+    await t.test(item.name, async () => {
+      const fake = await startFakeGitHub({
+        existingComments: [
+          {
+            node_id: "IC_malformed",
+            user: { id: 42, login: "workgraph-reporter" },
+            body: item.body,
+          },
+        ],
+      });
+      try {
+        const responses = await runMcp(protocolMessages(), fake.apiUrl);
+        assert.equal(responses[3].result.isError, true);
+        assert.match(
+          responses[3].result.content[0].text,
+          /malformed Result comment envelope/,
+        );
+        assert.equal(fake.state.postAttempts, 0);
+      } finally {
+        await fake.close();
+      }
+    });
+  }
+});
+
+test("rejects a malformed existing Result payload", async () => {
+  const malformed = {
+    ...VALIDATION_RESULT,
+    unexpected: true,
+  };
+  const fake = await startFakeGitHub({
+    existingComments: [
+      {
+        node_id: "IC_malformed_payload",
+        user: { id: 42, login: "workgraph-reporter" },
+        body: resultComment(malformed),
+      },
+    ],
+  });
+  try {
+    const responses = await runMcp(protocolMessages(), fake.apiUrl);
+    assert.equal(responses[3].result.isError, true);
+    assert.match(
+      responses[3].result.content[0].text,
+      /malformed Result payload/,
+    );
+    assert.equal(fake.state.postAttempts, 0);
+  } finally {
+    await fake.close();
+  }
+});
+
+test("rejects a human summary that mismatches the Result payload", async () => {
+  const fake = await startFakeGitHub({
+    existingComments: [
+      {
+        node_id: "IC_mismatched_summary",
+        user: { id: 42, login: "workgraph-reporter" },
+        body: resultComment(VALIDATION_RESULT).replace(
+          VALIDATION_RESULT.summary,
+          "A different human summary.",
+        ),
+      },
+    ],
+  });
+  try {
+    const responses = await runMcp(protocolMessages(), fake.apiUrl);
+    assert.equal(responses[3].result.isError, true);
+    assert.match(
+      responses[3].result.content[0].text,
+      /authenticated Result comment.*conflicts/,
+    );
     assert.equal(fake.state.postAttempts, 0);
   } finally {
     await fake.close();

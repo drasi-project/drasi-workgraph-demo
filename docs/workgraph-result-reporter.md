@@ -45,11 +45,17 @@ For the `issue-risk-profiler` agent profile, `agentProfile` is
 contains a non-empty `riskProfile` plus a non-empty `dimensions` string array.
 Unknown fields are rejected at every object level.
 
-The reporter writes exactly:
+The reporter writes exactly this closed, collapsed-by-default envelope. The
+human summary is concise and does not repeat the current Issue number or ID:
 
 ````text
+<details>
+<summary>WorkGraph Result</summary>
+
 WorkGraphResult/v1
+
 Brief non-empty human summary.
+
 ```json
 {
   "assignmentId": "organization-unique-id",
@@ -67,7 +73,13 @@ Brief non-empty human summary.
   }
 }
 ```
+</details>
 ````
+
+The opening tag is exactly `<details>` without `open`, the summary label is
+exactly `WorkGraph Result`, and the blank lines around the marker, human
+summary, and JSON fence are part of the canonical body. JSON is serialized with
+two-space indentation. The human summary must equal the payload `summary`.
 
 The only common Result fields are `assignmentId`, `taskType`, `outcome`,
 `summary`, and `result`. `outcome` is `succeeded`, `failed`, or `blocked`.
@@ -118,8 +130,10 @@ For each tool call, the reporter:
 2. Resolves the token owner and requires its immutable user ID to match the
    configured reporter ID.
 3. Confirms the fixed-repository destination is the requested Issue.
-4. Searches all Issue conversation comments for a schema-valid
-   `WorkGraphResult/v1` with the same `assignmentId`.
+4. Searches all Issue conversation comments for a Result candidate with the
+   same `assignmentId`. A malformed payload or an unwrapped, open, mislabeled,
+   unclosed, or otherwise noncanonical envelope is rejected rather than
+   ignored.
 5. Adopts one canonically formatted, byte-identical Result only when its author
    is the authenticated reporter. It fails without writing on a conflict, a
    different author, or multiple valid matches.

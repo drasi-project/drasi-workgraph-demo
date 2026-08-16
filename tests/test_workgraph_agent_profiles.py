@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 AGENTS = ROOT / ".github" / "agents"
 REPORTER = ROOT / ".github" / "mcp" / "workgraph-reporter.mjs"
 DOC = ROOT / "docs" / "workgraph-result-reporter.md"
+README = ROOT / "README.md"
 PROFILE_TASK_TYPES = {
     "issue-validator": "issue-validation",
     "issue-risk-profiler": "issue-risk-profile",
@@ -22,6 +23,7 @@ class WorkGraphAgentProfilesTest(unittest.TestCase):
         }
         cls.reporter = REPORTER.read_text(encoding="utf-8")
         cls.doc = DOC.read_text(encoding="utf-8")
+        cls.readme = README.read_text(encoding="utf-8")
 
     def test_exactly_two_repository_defined_profile_files_exist(self):
         self.assertEqual(
@@ -99,6 +101,40 @@ class WorkGraphAgentProfilesTest(unittest.TestCase):
                     set(re.findall(r'"taskType": "([^"]+)"', profile)),
                     {task_type},
                 )
+
+    def test_profiles_require_concise_nonredundant_summaries(self):
+        for name, profile in self.profiles.items():
+            with self.subTest(profile=name):
+                self.assertIn("concise plain-text summary", profile)
+                self.assertIn(
+                    "without\nmentioning the current Issue number or ID",
+                    profile,
+                )
+
+    def test_documented_result_envelopes_are_closed_and_collapsed(self):
+        for name, content in {
+            **self.profiles,
+            "documentation": self.doc,
+            "readme": self.readme,
+        }.items():
+            with self.subTest(source=name):
+                self.assertIn("<details>", content)
+                self.assertNotIn("<details open", content)
+                self.assertIn(
+                    "<summary>WorkGraph Result</summary>\n\n"
+                    "WorkGraphResult/v1\n\n",
+                    content,
+                )
+                self.assertRegex(
+                    content,
+                    r"```json\n\{\n[\s\S]*\n\}\n```\n</details>",
+                )
+
+    def test_examples_do_not_repeat_an_issue_number(self):
+        examples = "\n".join(
+            [*self.profiles.values(), self.doc, self.readme]
+        )
+        self.assertNotRegex(examples, r"(?i)\bissue\s*#?\d+\b")
 
     def test_validation_profile_has_typed_contract(self):
         profile = self.profiles["issue-validator"]
