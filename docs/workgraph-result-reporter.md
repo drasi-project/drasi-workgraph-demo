@@ -184,7 +184,7 @@ The MCP process receives exactly `COPILOT_MCP_WORKGRAPH_TOKEN`,
 `COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID`, and
 `COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID`; there are no shorter process aliases.
 Numeric user IDs are positive integers. The configured GraphQL Issue Type node
-ID must equal `task.type.id`; the code constant `WorkGraphTask` must equal
+ID must equal `task.type.node_id`; the code constant `WorkGraphTask` must equal
 `task.type.name`. Every check fails closed. Both repository agent profiles pin
 `COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID` directly to the deployed
 organization Issue Type node ID `IT_kwDOCX0YF84CKGIJ`; it is not an Agents

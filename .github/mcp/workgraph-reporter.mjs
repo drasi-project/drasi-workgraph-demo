@@ -113,6 +113,7 @@ function requirePlainText(value, label, maxBytes) {
   if (
     value.includes("\r") ||
     value.includes("```") ||
+    value.includes("~~~") ||
     STRUCTURED_MARKERS.some((marker) => value.includes(marker)) ||
     /<\/?(?:details|summary)\b/i.test(value)
   ) {
@@ -574,7 +575,7 @@ function looksLikeStructuredResult(body) {
     typeof body === "string" &&
     (STRUCTURED_MARKERS.some((marker) => body.includes(marker)) ||
       /<summary>\s*WorkGraph(?: Task)? Result\s*<\/summary>/i.test(body) ||
-      (/```[ \t]*json\b/i.test(body) &&
+      (/(?:```|~~~)[ \t]*json\b/i.test(body) &&
         body.includes('"assignmentId"') &&
         body.includes('"taskType"') &&
         body.includes('"result"')))
@@ -813,7 +814,7 @@ function validateTaskIssue(issue, input, config) {
   }
   if (
     issue.type?.name !== TASK_TYPE_NAME ||
-    issue.type?.id !== config.taskIssueTypeId
+    issue.type?.node_id !== config.taskIssueTypeId
   ) {
     throw new ReporterError(
       "task Issue does not have the configured exact WorkGraphTask type ID and name",

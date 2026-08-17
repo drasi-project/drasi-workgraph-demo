@@ -27,6 +27,7 @@ const TASK_NODE_ID = "I_task";
 const PARENT_NUMBER = 7;
 const PARENT_NODE_ID = "I_parent";
 const TASK_TYPE_ID = "IT_workgraph_task";
+const TASK_TYPE_DATABASE_ID = 36200969;
 const REPORTER_USER_ID = 42;
 const CREATOR_USER_ID = 84;
 const VALIDATION_ASSIGNMENT_ID = `issue-validation:${PARENT_NODE_ID}`;
@@ -198,7 +199,11 @@ async function startFakeGitHub({
     title: "WorkGraph task",
     body: `${JSON.stringify(assignment, null, 2)}\n`,
     user: { id: CREATOR_USER_ID, login: "workgraph-core" },
-    type: { id: TASK_TYPE_ID, name: "WorkGraphTask" },
+    type: {
+      id: TASK_TYPE_DATABASE_ID,
+      node_id: TASK_TYPE_ID,
+      name: "WorkGraphTask",
+    },
     ...taskOverrides,
   };
   const parent = {
@@ -584,6 +589,7 @@ test("rejects progress control content before GitHub access", async (t) => {
     ["legacy Result marker", "WorkGraphResult/v1"],
     ["legacy Assignment marker", "WorkGraphAssignment/v1"],
     ["fence", "```json\n{}\n```"],
+    ["tilde fence", "~~~json\n{}\n~~~"],
     ["details", "<details>text</details>"],
     ["summary", "<summary>text</summary>"],
     ["oversized", "x".repeat(4097)],
@@ -621,14 +627,35 @@ test("validates all task identity, type, body, and parent boundaries", async (t)
     },
     {
       name: "type name mismatch",
-      options: { taskOverrides: { type: { id: TASK_TYPE_ID, name: "Task" } } },
+      options: {
+        taskOverrides: {
+          type: {
+            id: TASK_TYPE_DATABASE_ID,
+            node_id: TASK_TYPE_ID,
+            name: "Task",
+          },
+        },
+      },
       pattern: /exact WorkGraphTask type ID and name/,
     },
     {
-      name: "type ID mismatch",
+      name: "type node ID mismatch",
       options: {
         taskOverrides: {
-          type: { id: "IT_other", name: "WorkGraphTask" },
+          type: {
+            id: TASK_TYPE_DATABASE_ID,
+            node_id: "IT_other",
+            name: "WorkGraphTask",
+          },
+        },
+      },
+      pattern: /exact WorkGraphTask type ID and name/,
+    },
+    {
+      name: "type node ID missing",
+      options: {
+        taskOverrides: {
+          type: { id: TASK_TYPE_DATABASE_ID, name: "WorkGraphTask" },
         },
       },
       pattern: /exact WorkGraphTask type ID and name/,
@@ -923,6 +950,17 @@ test("rejects malformed, conflicting, foreign, and multiple candidates", async (
         body: canonical
           .replace("WorkGraphTaskResult/v1\n\n", "")
           .replace("```json", "```JSON"),
+      }],
+      pattern: /malformed structured Result/,
+    },
+    {
+      name: "Result-shaped tilde fence without marker",
+      comments: [{
+        node_id: "IC_unmarked_tilde",
+        user: { id: REPORTER_USER_ID },
+        body: canonical
+          .replace("WorkGraphTaskResult/v1\n\n", "")
+          .replaceAll("```", "~~~"),
       }],
       pattern: /malformed structured Result/,
     },
