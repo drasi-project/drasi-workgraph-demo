@@ -5,17 +5,22 @@ import readline from "node:readline";
 import { lstatSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { isDeepStrictEqual, TextDecoder } from "node:util";
+import { isDeepStrictEqual, TextDecoder, TextEncoder } from "node:util";
 
 const GITHUB_API_URL = "https://api.github.com";
 const REPOSITORY_OWNER = "drasi-project";
 const REPOSITORY_NAME = "drasi-workgraph-demo";
-const RESULT_MARKER = "WorkGraphResult/v1";
-const RESULT_DETAILS_OPEN = "<details>";
-const RESULT_SUMMARY = "<summary>WorkGraph Result</summary>";
-const RESULT_DETAILS_CLOSE = "</details>";
+const TASK_TYPE_NAME = "WorkGraphTask";
+const RESULT_MARKER = "WorkGraphTaskResult/v1";
+const STRUCTURED_MARKERS = [
+  RESULT_MARKER,
+  "WorkGraphResult/v1",
+  "WorkGraphAssignment/v1",
+  "WorkGraphEvent/v1",
+];
 const TASK_TYPES = ["issue-validation", "issue-risk-profile"];
 const OUTCOMES = ["succeeded", "failed", "blocked"];
+const MAX_PROGRESS_BYTES = 4096;
 const REPORTER_FILE_PATH = fileURLToPath(import.meta.url);
 const REPOSITORY_ROOT = path.resolve(
   path.dirname(REPORTER_FILE_PATH),
@@ -33,7 +38,12 @@ const VALIDATION_PROFILE_NAME_PATTERN =
   /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MAX_VALIDATION_PROFILE_NAME_LENGTH = 64;
 const MAX_VALIDATION_PROFILE_BYTES = 64 * 1024;
-const INPUT_KEYS = ["issueNumber", "assignment", "workResult"];
+const ISSUE_REFERENCE_KEYS = [
+  "taskIssueNumber",
+  "taskIssueNodeId",
+  "parentIssueNumber",
+  "parentIssueNodeId",
+];
 const ASSIGNMENT_KEYS = [
   "assignmentId",
   "agentProfile",
@@ -48,27 +58,16 @@ const RESULT_KEYS = [
   "summary",
   "result",
 ];
+const PROFILE_BY_TASK_TYPE = {
+  "issue-validation": "issue-validator",
+  "issue-risk-profile": "issue-risk-profiler",
+};
 
 class ReporterError extends Error {}
 class AmbiguousCreateError extends ReporterError {}
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function extractAssignmentId(text) {
-  const match = text.match(
-    /"assignmentId"\s*:\s*("(?:\\.|[^"\\])*")/,
-  );
-  if (match === null) {
-    return null;
-  }
-  try {
-    const value = JSON.parse(match[1]);
-    return typeof value === "string" ? value : null;
-  } catch {
-    return null;
-  }
 }
 
 function requireExactKeys(value, expectedKeys, label) {
@@ -93,21 +92,23 @@ function requireNonEmptyString(value, label) {
   }
 }
 
-function requirePublishableSummary(value, label) {
+function requirePlainText(value, label, maxBytes) {
   requireNonEmptyString(value, label);
-  const lines = value.split("\n");
+  const byteLength = new TextEncoder().encode(value).length;
+  if (byteLength > maxBytes) {
+    throw new ReporterError(
+      `${label} must not exceed ${maxBytes} UTF-8 bytes`,
+    );
+  }
   if (
     value.includes("\r") ||
-    lines.some(
-      (line) =>
-        line.startsWith("```") ||
-        line.includes(RESULT_MARKER) ||
-        /<\/?(?:details|summary)\b/i.test(line),
-    )
+    value.includes("```") ||
+    STRUCTURED_MARKERS.some((marker) => value.includes(marker)) ||
+    /<\/?(?:details|summary)\b/i.test(value)
   ) {
     throw new ReporterError(
-      `${label} must be human-readable text without carriage returns, ` +
-        "fence lines, Result markers, or details/summary tags",
+      `${label} must be ordinary LF text without carriage returns, ` +
+        "structured markers, fences, or details/summary tags",
     );
   }
 }
@@ -293,6 +294,13 @@ function validateAssignment(assignment) {
       "assignment.taskType must be issue-validation or issue-risk-profile",
     );
   }
+  if (
+    assignment.agentProfile !== PROFILE_BY_TASK_TYPE[assignment.taskType]
+  ) {
+    throw new ReporterError(
+      "assignment.agentProfile does not match assignment.taskType",
+    );
+  }
   if (assignment.taskType === "issue-validation") {
     requireExactKeys(
       assignment.task,
@@ -318,6 +326,34 @@ function validateAssignment(assignment) {
   );
 }
 
+function parseAssignmentBody(body) {
+  if (typeof body !== "string" || body.trim().length === 0) {
+    throw new ReporterError(
+      "WorkGraphTask body must be raw WorkGraphAssignment JSON",
+    );
+  }
+  if (
+    body.includes("\r") ||
+    body.includes("```") ||
+    STRUCTURED_MARKERS.some((marker) => body.includes(marker)) ||
+    /<\/?(?:details|summary)\b/i.test(body)
+  ) {
+    throw new ReporterError(
+      "WorkGraphTask body must contain only raw WorkGraphAssignment JSON",
+    );
+  }
+  let assignment;
+  try {
+    assignment = JSON.parse(body);
+  } catch {
+    throw new ReporterError(
+      "WorkGraphTask body is not valid WorkGraphAssignment JSON",
+    );
+  }
+  validateAssignment(assignment);
+  return assignment;
+}
+
 function validateWorkResult(workResult) {
   requireExactKeys(workResult, RESULT_KEYS, "workResult");
   requireNonEmptyString(workResult.assignmentId, "workResult.assignmentId");
@@ -331,7 +367,7 @@ function validateWorkResult(workResult) {
       "workResult.outcome must be succeeded, failed, or blocked",
     );
   }
-  requireNonEmptyString(workResult.summary, "workResult.summary");
+  requirePlainText(workResult.summary, "workResult.summary", 4096);
 
   if (workResult.taskType === "issue-validation") {
     requireExactKeys(workResult.result, ["criteria"], "workResult.result");
@@ -396,47 +432,73 @@ function validateWorkResult(workResult) {
   });
 }
 
-function validateInput(input) {
-  requireExactKeys(input, INPUT_KEYS, "arguments");
-  if (!Number.isSafeInteger(input.issueNumber) || input.issueNumber <= 0) {
-    throw new ReporterError("arguments.issueNumber must be a positive integer");
+function validateIssueReferences(input, expectedKeys) {
+  requireExactKeys(input, expectedKeys, "arguments");
+  for (const key of ["taskIssueNumber", "parentIssueNumber"]) {
+    if (!Number.isSafeInteger(input[key]) || input[key] <= 0) {
+      throw new ReporterError(`arguments.${key} must be a positive integer`);
+    }
   }
-  validateAssignment(input.assignment);
+  for (const key of ["taskIssueNodeId", "parentIssueNodeId"]) {
+    requireNonEmptyString(input[key], `arguments.${key}`);
+  }
+  if (input.taskIssueNumber === input.parentIssueNumber) {
+    throw new ReporterError("task and parent Issue numbers must differ");
+  }
+  if (input.taskIssueNodeId === input.parentIssueNodeId) {
+    throw new ReporterError("task and parent Issue node IDs must differ");
+  }
+}
+
+function validateProgressInput(input) {
+  validateIssueReferences(input, [...ISSUE_REFERENCE_KEYS, "progress"]);
+  requirePlainText(input.progress, "arguments.progress", MAX_PROGRESS_BYTES);
+}
+
+function validateResultInputShape(input) {
+  validateIssueReferences(input, [...ISSUE_REFERENCE_KEYS, "workResult"]);
   validateWorkResult(input.workResult);
-  requirePublishableSummary(
-    input.workResult.summary,
-    "workResult.summary",
-  );
-  if (input.workResult.assignmentId !== input.assignment.assignmentId) {
+}
+
+function reconcileAssignment(assignment, parentNodeId, workResult) {
+  if (assignment.assignmentId !== parentNodeId) {
     throw new ReporterError(
-      "workResult.assignmentId must match assignment.assignmentId",
+      "assignment.assignmentId must equal the authoritative parent node ID",
     );
   }
-  if (input.workResult.taskType !== input.assignment.taskType) {
-    throw new ReporterError(
-      "workResult.taskType must match assignment.taskType",
-    );
+  if (workResult !== undefined) {
+    if (workResult.assignmentId !== assignment.assignmentId) {
+      throw new ReporterError(
+        "workResult.assignmentId must match assignment.assignmentId",
+      );
+    }
+    if (workResult.taskType !== assignment.taskType) {
+      throw new ReporterError(
+        "workResult.taskType must match assignment.taskType",
+      );
+    }
   }
 
   const expectedNames =
-    input.assignment.taskType === "issue-validation"
-      ? loadIssueValidationProfile(
-          input.assignment.task.validationProfile,
-        )
-      : input.assignment.task.dimensions;
+    assignment.taskType === "issue-validation"
+      ? loadIssueValidationProfile(assignment.task.validationProfile)
+      : assignment.task.dimensions;
+  if (workResult === undefined) {
+    return;
+  }
   const actualNames =
-    input.workResult.taskType === "issue-validation"
-      ? input.workResult.result.criteria.map((entry) => entry.criterion)
-      : input.workResult.result.dimensions.map((entry) => entry.dimension);
+    workResult.taskType === "issue-validation"
+      ? workResult.result.criteria.map((entry) => entry.criterion)
+      : workResult.result.dimensions.map((entry) => entry.dimension);
   if (!isDeepStrictEqual(actualNames, expectedNames)) {
     const field =
-      input.assignment.taskType === "issue-validation"
+      assignment.taskType === "issue-validation"
         ? "criteria"
         : "dimensions";
     const source =
-      input.assignment.taskType === "issue-validation"
+      assignment.taskType === "issue-validation"
         ? `validation profile ${JSON.stringify(
-            input.assignment.task.validationProfile,
+            assignment.task.validationProfile,
           )}`
         : "Assignment";
     throw new ReporterError(
@@ -471,92 +533,48 @@ function canonicalWorkResult(workResult) {
   };
 }
 
-function formatResultComment(workResult) {
-  const canonical = canonicalWorkResult(workResult);
+export function formatTaskResult(workResult) {
   return (
-    `${RESULT_DETAILS_OPEN}\n${RESULT_SUMMARY}\n\n${RESULT_MARKER}\n\n` +
-    `${canonical.summary}\n\n` +
-    `\`\`\`json\n${JSON.stringify(canonical, null, 2)}\n\`\`\`\n` +
-    `${RESULT_DETAILS_CLOSE}\n`
+    `${RESULT_MARKER}\n\n\`\`\`json\n` +
+    `${JSON.stringify(canonicalWorkResult(workResult), null, 2)}\n\`\`\`\n`
   );
 }
 
-function inspectResultComment(body) {
-  if (typeof body !== "string") {
+function looksLikeStructuredResult(body) {
+  return (
+    typeof body === "string" &&
+    (STRUCTURED_MARKERS.some((marker) => body.includes(marker)) ||
+      /<summary>\s*WorkGraph(?: Task)? Result\s*<\/summary>/i.test(body) ||
+      (/```[ \t]*json\b/i.test(body) &&
+        body.includes('"assignmentId"') &&
+        body.includes('"taskType"') &&
+        body.includes('"result"')))
+  );
+}
+
+function inspectTaskResult(body) {
+  if (!looksLikeStructuredResult(body)) {
     return null;
   }
-  const normalizedBody = body.replaceAll("\r\n", "\n");
-  const firstActualNewline = normalizedBody.indexOf("\n");
-  const firstLiteralNewline = normalizedBody.indexOf("\\n");
-  const usesLiteralNewlines =
-    (normalizedBody.startsWith("<details") ||
-      normalizedBody.startsWith(RESULT_MARKER)) &&
-    firstLiteralNewline >= 0 &&
-    (firstActualNewline < 0 || firstLiteralNewline < firstActualNewline);
-  const inspectedBody = usesLiteralNewlines
-    ? normalizedBody.replaceAll("\\n", "\n")
-    : normalizedBody;
-  const lines = inspectedBody.split("\n");
-  const looksLikeResult =
-    lines.includes(RESULT_MARKER) ||
-    (lines[0]?.startsWith("<details") && lines[1] === RESULT_SUMMARY);
-  if (!looksLikeResult) {
-    return null;
-  }
-
-  const fences = lines
-    .map((line, index) => (line.startsWith("```") ? index : -1))
-    .filter((index) => index >= 0);
-  const open = fences.length >= 2 ? fences[0] : -1;
-  const closeOffset = lines
-    .slice(open + 1)
-    .findIndex((line) => line === "```");
-  const close = open >= 0 && closeOffset >= 0 ? open + 1 + closeOffset : -1;
-
-  let payload = null;
-  let assignmentId = null;
-  let payloadIsValid = false;
-  if (open >= 0 && close >= 0) {
-    try {
-      payload = JSON.parse(lines.slice(open + 1, close).join("\n"));
-      if (isObject(payload) && typeof payload.assignmentId === "string") {
-        assignmentId = payload.assignmentId;
-      }
-      validateWorkResult(payload);
-      payloadIsValid = true;
-    } catch {
-      // Keep the parsed assignment ID so a malformed retry candidate cannot
-      // silently cause a second Result comment.
-    }
-  }
-  assignmentId ??= extractAssignmentId(normalizedBody);
-
-  const humanSummary =
-    open >= 7 && lines[open - 1] === ""
-      ? lines.slice(5, open - 1).join("\n")
+  const match =
+    typeof body === "string"
+      ? body.match(
+          /^WorkGraphTaskResult\/v1\n\n```json\n([\s\S]+)\n```\n$/,
+        )
       : null;
-  const envelopeIsCanonical =
-    !usesLiteralNewlines &&
-    lines[0] === RESULT_DETAILS_OPEN &&
-    lines[1] === RESULT_SUMMARY &&
-    lines[2] === "" &&
-    lines[3] === RESULT_MARKER &&
-    lines[4] === "" &&
-    lines.filter((line) => line === RESULT_MARKER).length === 1 &&
-    typeof humanSummary === "string" &&
-    humanSummary.trim().length > 0 &&
-    fences.length === 2 &&
-    lines[open] === "```json" &&
-    close === lines.length - 3 &&
-    lines[close + 1] === RESULT_DETAILS_CLOSE &&
-    lines[close + 2] === "";
-
+  if (match === null) {
+    return { canonical: false, payload: null };
+  }
+  let payload;
+  try {
+    payload = JSON.parse(match[1]);
+    validateWorkResult(payload);
+  } catch {
+    return { canonical: false, payload: null };
+  }
   return {
-    assignmentId,
-    envelopeIsCanonical,
-    humanSummary,
+    canonical: body === formatTaskResult(payload),
     payload,
-    payloadIsValid,
   };
 }
 
@@ -579,23 +597,39 @@ function apiBaseUrl() {
   return GITHUB_API_URL;
 }
 
+function positiveIntegerEnvironment(name) {
+  const value = Number(process.env[name] ?? "");
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new ReporterError(`${name} must be a positive integer`);
+  }
+  return value;
+}
+
 function loadConfig() {
   const token = process.env.WORKGRAPH_TOKEN ?? "";
-  const reporterUserId = Number(
-    process.env.WORKGRAPH_REPORTER_USER_ID ?? "",
-  );
+  const taskTypeId = process.env.WORKGRAPH_TASK_TYPE_ID ?? "";
   if (token.length === 0) {
     throw new ReporterError(
       "WORKGRAPH_TOKEN is not configured from the " +
         "COPILOT_MCP_WORKGRAPH_TOKEN Agents secret",
     );
   }
-  if (!Number.isSafeInteger(reporterUserId) || reporterUserId <= 0) {
+  if (taskTypeId.length === 0) {
     throw new ReporterError(
-      "WORKGRAPH_REPORTER_USER_ID must be a positive integer",
+      "WORKGRAPH_TASK_TYPE_ID must be the exact WorkGraphTask Issue Type ID",
     );
   }
-  return { token, reporterUserId, apiUrl: apiBaseUrl() };
+  return {
+    token,
+    taskTypeId,
+    taskCreatorUserId: positiveIntegerEnvironment(
+      "WORKGRAPH_TASK_CREATOR_USER_ID",
+    ),
+    reporterUserId: positiveIntegerEnvironment(
+      "WORKGRAPH_REPORTER_USER_ID",
+    ),
+    apiUrl: apiBaseUrl(),
+  };
 }
 
 class GitHubClient {
@@ -603,17 +637,17 @@ class GitHubClient {
     this.config = config;
   }
 
-  async request(method, path, payload, { ambiguousWrite = false } = {}) {
+  async request(method, requestPath, payload, { ambiguousWrite = false } = {}) {
     let response;
     try {
-      response = await fetch(`${this.config.apiUrl}${path}`, {
+      response = await fetch(`${this.config.apiUrl}${requestPath}`, {
         method,
         headers: {
           Accept: "application/vnd.github+json",
           Authorization: `Bearer ${this.config.token}`,
           "Content-Type": "application/json",
-          "User-Agent": "drasi-workgraph-result-reporter",
-          "X-GitHub-Api-Version": "2022-11-28",
+          "User-Agent": "drasi-workgraph-task-reporter",
+          "X-GitHub-Api-Version": "2026-03-10",
         },
         body: payload === undefined ? undefined : JSON.stringify(payload),
         signal: AbortSignal.timeout(30_000),
@@ -623,7 +657,7 @@ class GitHubClient {
         error instanceof Error ? error.message : "unknown network error";
       if (ambiguousWrite) {
         throw new AmbiguousCreateError(
-          `result comment creation is ambiguous: ${message}`,
+          `task comment creation is ambiguous: ${message}`,
         );
       }
       throw new ReporterError(`GitHub API request failed: ${message}`);
@@ -635,14 +669,14 @@ class GitHubClient {
     } catch {
       if (ambiguousWrite) {
         throw new AmbiguousCreateError(
-          "result comment creation response is ambiguous",
+          "task comment creation response is ambiguous",
         );
       }
       throw new ReporterError("GitHub API response could not be read");
     }
     if (!response.ok && ambiguousWrite && response.status >= 500) {
       throw new AmbiguousCreateError(
-        `result comment creation returned HTTP ${response.status}`,
+        `task comment creation returned HTTP ${response.status}`,
       );
     }
 
@@ -653,7 +687,7 @@ class GitHubClient {
       } catch {
         if (ambiguousWrite) {
           throw new AmbiguousCreateError(
-            "result comment creation response is ambiguous",
+            "task comment creation response is ambiguous",
           );
         }
         throw new ReporterError("GitHub API response is not valid JSON");
@@ -682,13 +716,21 @@ class GitHubClient {
     );
   }
 
-  async listComments(issueNumber) {
+  async getParent(taskIssueNumber) {
+    return this.request(
+      "GET",
+      `/repos/${REPOSITORY_OWNER}/${REPOSITORY_NAME}/issues/` +
+        `${taskIssueNumber}/parent`,
+    );
+  }
+
+  async listComments(taskIssueNumber) {
     const comments = [];
     for (let page = 1; page <= 100; page += 1) {
       const batch = await this.request(
         "GET",
         `/repos/${REPOSITORY_OWNER}/${REPOSITORY_NAME}/issues/` +
-          `${issueNumber}/comments?per_page=100&page=${page}`,
+          `${taskIssueNumber}/comments?per_page=100&page=${page}`,
       );
       if (!Array.isArray(batch)) {
         throw new ReporterError("GitHub comments response is not an array");
@@ -698,16 +740,16 @@ class GitHubClient {
         return comments;
       }
     }
-    throw new ReporterError("result reconciliation exceeded 100 pages");
+    throw new ReporterError("task comment reconciliation exceeded 100 pages");
   }
 
-  async createComment(issueNumber, body) {
+  async createComment(taskIssueNumber, body, ambiguousWrite = false) {
     return this.request(
       "POST",
       `/repos/${REPOSITORY_OWNER}/${REPOSITORY_NAME}/issues/` +
-        `${issueNumber}/comments`,
+        `${taskIssueNumber}/comments`,
       { body },
-      { ambiguousWrite: true },
+      { ambiguousWrite },
     );
   }
 }
@@ -725,101 +767,172 @@ function validateIdentity(identity, config) {
   }
 }
 
-function validateIssue(issue, issueNumber) {
+function issueTypeId(issueType) {
+  if (!isObject(issueType)) {
+    return null;
+  }
+  if (typeof issueType.id === "string") {
+    return issueType.id;
+  }
+  if (typeof issueType.node_id === "string") {
+    return issueType.node_id;
+  }
+  return null;
+}
+
+function validateTaskIssue(issue, input, config) {
   if (
     !isObject(issue) ||
     issue.pull_request !== undefined ||
-    issue.number !== issueNumber ||
-    typeof issue.node_id !== "string" ||
-    issue.node_id.length === 0
+    issue.number !== input.taskIssueNumber ||
+    issue.node_id !== input.taskIssueNodeId
   ) {
     throw new ReporterError(
-      "the fixed-repository destination is not the requested Issue",
+      "the fixed-repository task is not the requested non-PR Issue",
     );
+  }
+  if (
+    issue.type?.name !== TASK_TYPE_NAME ||
+    issueTypeId(issue.type) !== config.taskTypeId
+  ) {
+    throw new ReporterError(
+      "task Issue does not have the configured exact WorkGraphTask type ID and name",
+    );
+  }
+  if (issue.user?.id !== config.taskCreatorUserId) {
+    throw new ReporterError(
+      "task Issue creator does not match WORKGRAPH_TASK_CREATOR_USER_ID",
+    );
+  }
+  if (!["open", "closed"].includes(issue.state)) {
+    throw new ReporterError("task Issue has an invalid state");
   }
 }
 
+function validateParentIssue(parent, input) {
+  if (
+    !isObject(parent) ||
+    parent.pull_request !== undefined ||
+    parent.number !== input.parentIssueNumber ||
+    parent.node_id !== input.parentIssueNodeId
+  ) {
+    throw new ReporterError(
+      "native parent relation does not match the requested non-PR parent Issue",
+    );
+  }
+  if (
+    parent.repository_url !== undefined &&
+    parent.repository_url !==
+      `${GITHUB_API_URL}/repos/${REPOSITORY_OWNER}/${REPOSITORY_NAME}`
+  ) {
+    throw new ReporterError("native parent Issue is not in the fixed repository");
+  }
+}
+
+function validateTaskContext(task, parent, input, config, workResult) {
+  validateTaskIssue(task, input, config);
+  validateParentIssue(parent, input);
+  const assignment = parseAssignmentBody(task.body);
+  reconcileAssignment(assignment, parent.node_id, workResult);
+  return assignment;
+}
+
 function findExistingResult(comments, workResult, identity) {
-  const matches = [];
+  const candidates = [];
   for (const comment of comments) {
     if (!isObject(comment)) {
       continue;
     }
-    const inspected = inspectResultComment(comment.body);
-    if (inspected?.assignmentId === workResult.assignmentId) {
-      matches.push({ comment, inspected });
+    const inspected = inspectTaskResult(comment.body);
+    if (inspected !== null) {
+      candidates.push({ comment, inspected });
     }
   }
-  if (matches.length > 1) {
-    const allSchemaValid = matches.every(
-      ({ inspected }) => inspected.payloadIsValid,
-    );
+  if (candidates.length > 1) {
     throw new ReporterError(
-      allSchemaValid
-        ? "multiple schema-valid Result comments already exist for assignmentId"
-        : "multiple Result comment candidates already exist for assignmentId",
+      "multiple structured Result comment candidates exist on the task",
     );
   }
-  if (matches.length === 0) {
+  if (candidates.length === 0) {
     return null;
   }
 
-  const match = matches[0];
-  if (!match.inspected.payloadIsValid) {
+  const candidate = candidates[0];
+  if (!candidate.inspected.canonical) {
     throw new ReporterError(
-      "a malformed Result payload already exists for assignmentId",
+      "a malformed structured Result comment candidate exists on the task",
     );
   }
-  if (!match.inspected.envelopeIsCanonical) {
+  if (candidate.comment.user?.id !== identity.id) {
     throw new ReporterError(
-      "a malformed Result comment envelope already exists for assignmentId",
-    );
-  }
-  if (match.comment.user?.id !== identity.id) {
-    throw new ReporterError(
-      "a schema-valid Result comment for assignmentId exists from a " +
-        "different author",
+      "a canonical Result comment exists from a different author",
     );
   }
   const expected = canonicalWorkResult(workResult);
-  const expectedBody = formatResultComment(workResult);
   if (
-    !isDeepStrictEqual(match.inspected.payload, expected) ||
-    match.inspected.humanSummary !== expected.summary ||
-    match.comment.body !== expectedBody
+    !isDeepStrictEqual(candidate.inspected.payload, expected) ||
+    candidate.comment.body !== formatTaskResult(workResult)
   ) {
     throw new ReporterError(
-      "the authenticated Result comment for assignmentId conflicts with " +
-        "the requested result",
+      "the authenticated Result comment conflicts with the requested result",
     );
   }
-  return match.comment;
+  return candidate.comment;
 }
 
-function requireCommentNodeId(comment) {
+function requireCommentNodeId(comment, label) {
   if (
     !isObject(comment) ||
     typeof comment.node_id !== "string" ||
     comment.node_id.length === 0
   ) {
-    throw new ReporterError("Result comment has no node ID");
+    throw new ReporterError(`${label} comment has no node ID`);
   }
   return comment.node_id;
 }
 
-class ResultReporter {
+class TaskReporter {
   constructor(config, client) {
     this.config = config;
     this.client = client;
   }
 
-  async report(input) {
+  async loadContext(input, workResult) {
     const identity = await this.client.getIdentity();
     validateIdentity(identity, this.config);
-    const issue = await this.client.getIssue(input.issueNumber);
-    validateIssue(issue, input.issueNumber);
+    const task = await this.client.getIssue(input.taskIssueNumber);
+    const parent = await this.client.getParent(input.taskIssueNumber);
+    const assignment = validateTaskContext(
+      task,
+      parent,
+      input,
+      this.config,
+      workResult,
+    );
+    return { identity, task, assignment };
+  }
 
-    let comments = await this.client.listComments(input.issueNumber);
+  async reportProgress(input) {
+    const { task } = await this.loadContext(input);
+    if (task.state !== "open") {
+      throw new ReporterError("progress can be posted only to an open task Issue");
+    }
+    const comment = await this.client.createComment(
+      input.taskIssueNumber,
+      input.progress,
+    );
+    return {
+      taskIssueNodeId: input.taskIssueNodeId,
+      commentNodeId: requireCommentNodeId(comment, "progress"),
+    };
+  }
+
+  async submitResult(input) {
+    const { identity, task, assignment } = await this.loadContext(
+      input,
+      input.workResult,
+    );
+    let comments = await this.client.listComments(input.taskIssueNumber);
     let comment = findExistingResult(
       comments,
       input.workResult,
@@ -827,14 +940,23 @@ class ResultReporter {
     );
     let reconciled = comment !== null;
     if (comment === null) {
-      const body = formatResultComment(input.workResult);
+      if (task.state !== "open") {
+        throw new ReporterError(
+          "a closed task Issue has no authenticated canonical Result",
+        );
+      }
+      const body = formatTaskResult(input.workResult);
       try {
-        comment = await this.client.createComment(input.issueNumber, body);
+        comment = await this.client.createComment(
+          input.taskIssueNumber,
+          body,
+          true,
+        );
       } catch (error) {
         if (!(error instanceof AmbiguousCreateError)) {
           throw error;
         }
-        comments = await this.client.listComments(input.issueNumber);
+        comments = await this.client.listComments(input.taskIssueNumber);
         comment = findExistingResult(
           comments,
           input.workResult,
@@ -842,8 +964,8 @@ class ResultReporter {
         );
         if (comment === null) {
           throw new ReporterError(
-            "result comment creation was ambiguous and no authenticated " +
-              "canonical Result was found",
+            "Result creation was ambiguous and no authenticated canonical " +
+              "Result was found",
           );
         }
         reconciled = true;
@@ -855,7 +977,7 @@ class ResultReporter {
         typeof comment.node_id !== "string" ||
         comment.node_id.length === 0
       ) {
-        comments = await this.client.listComments(input.issueNumber);
+        comments = await this.client.listComments(input.taskIssueNumber);
         comment = findExistingResult(
           comments,
           input.workResult,
@@ -863,7 +985,7 @@ class ResultReporter {
         );
         if (comment === null) {
           throw new ReporterError(
-            "GitHub did not confirm the authenticated canonical Result comment",
+            "GitHub did not confirm the authenticated canonical Result",
           );
         }
         reconciled = true;
@@ -871,9 +993,11 @@ class ResultReporter {
     }
 
     return {
-      assignmentId: input.workResult.assignmentId,
-      taskType: input.workResult.taskType,
-      commentNodeId: requireCommentNodeId(comment),
+      taskIssueNodeId: input.taskIssueNodeId,
+      parentIssueNodeId: input.parentIssueNodeId,
+      assignmentId: assignment.assignmentId,
+      taskType: assignment.taskType,
+      commentNodeId: requireCommentNodeId(comment, "Result"),
       reconciled,
     };
   }
@@ -884,11 +1008,11 @@ const NON_EMPTY_STRING = {
   minLength: 1,
   pattern: "[\\s\\S]*\\S[\\s\\S]*",
 };
-const VALIDATION_PROFILE_NAME = {
-  type: "string",
-  minLength: 1,
-  maxLength: MAX_VALIDATION_PROFILE_NAME_LENGTH,
-  pattern: VALIDATION_PROFILE_NAME_PATTERN.source,
+const ISSUE_REFERENCE_PROPERTIES = {
+  taskIssueNumber: { type: "integer", minimum: 1 },
+  taskIssueNodeId: NON_EMPTY_STRING,
+  parentIssueNumber: { type: "integer", minimum: 1 },
+  parentIssueNodeId: NON_EMPTY_STRING,
 };
 
 function strictObject(properties) {
@@ -898,28 +1022,6 @@ function strictObject(properties) {
     required: Object.keys(properties),
     properties,
   };
-}
-
-function assignmentSchema(taskType) {
-  const validation = taskType === "issue-validation";
-  return strictObject({
-    assignmentId: NON_EMPTY_STRING,
-    agentProfile: NON_EMPTY_STRING,
-    priority: { type: "integer", minimum: 0 },
-    taskType: { const: taskType },
-    task: validation
-      ? strictObject({
-          validationProfile: VALIDATION_PROFILE_NAME,
-        })
-      : strictObject({
-          riskProfile: NON_EMPTY_STRING,
-          dimensions: {
-            type: "array",
-            minItems: 1,
-            items: NON_EMPTY_STRING,
-          },
-        }),
-  });
 }
 
 function workResultSchema(taskType) {
@@ -955,21 +1057,33 @@ function workResultSchema(taskType) {
   });
 }
 
-const TOOL = {
-  name: "report_result",
-  description:
-    "Publish or reconcile one strict WorkGraphResult/v1 conversation " +
-    "comment for an issue-validation or issue-risk-profile assignment.",
-  inputSchema: strictObject({
-    issueNumber: { type: "integer", minimum: 1 },
-    assignment: {
-      oneOf: TASK_TYPES.map((taskType) => assignmentSchema(taskType)),
-    },
-    workResult: {
-      oneOf: TASK_TYPES.map((taskType) => workResultSchema(taskType)),
-    },
-  }),
-};
+const TOOLS = [
+  {
+    name: "report_progress",
+    description:
+      "Post bounded ordinary progress text to one validated WorkGraphTask.",
+    inputSchema: strictObject({
+      ...ISSUE_REFERENCE_PROPERTIES,
+      progress: {
+        type: "string",
+        minLength: 1,
+        maxLength: MAX_PROGRESS_BYTES,
+      },
+    }),
+  },
+  {
+    name: "submit_task_result",
+    description:
+      "Publish or reconcile one strict WorkGraphTaskResult/v1 comment on a " +
+      "validated WorkGraphTask without closing any Issue.",
+    inputSchema: strictObject({
+      ...ISSUE_REFERENCE_PROPERTIES,
+      workResult: {
+        oneOf: TASK_TYPES.map((taskType) => workResultSchema(taskType)),
+      },
+    }),
+  },
+];
 
 function toolResult(result) {
   return {
@@ -994,31 +1108,42 @@ async function handleRequest(message) {
           message.params?.protocolVersion ?? "2025-06-18",
         capabilities: { tools: { listChanged: false } },
         serverInfo: {
-          name: "drasi-workgraph-result-reporter",
-          version: "1.0.0",
+          name: "drasi-workgraph-task-reporter",
+          version: "2.0.0",
         },
       };
     case "ping":
       return {};
     case "tools/list":
-      return { tools: [TOOL] };
+      return { tools: TOOLS };
     case "tools/call": {
-      if (message.params?.name !== TOOL.name) {
+      const tool = TOOLS.find(
+        (candidate) => candidate.name === message.params?.name,
+      );
+      if (tool === undefined) {
         return toolError(new ReporterError("unknown tool"));
       }
       try {
-        validateInput(message.params.arguments);
+        if (tool.name === "report_progress") {
+          validateProgressInput(message.params.arguments);
+        } else {
+          validateResultInputShape(message.params.arguments);
+        }
         const config = loadConfig();
-        const reporter = new ResultReporter(
+        const reporter = new TaskReporter(
           config,
           new GitHubClient(config),
         );
-        return toolResult(await reporter.report(message.params.arguments));
+        const result =
+          tool.name === "report_progress"
+            ? await reporter.reportProgress(message.params.arguments)
+            : await reporter.submitResult(message.params.arguments);
+        return toolResult(result);
       } catch (error) {
         return toolError(
           error instanceof ReporterError
             ? error
-            : new ReporterError("Result reporter failed"),
+            : new ReporterError("WorkGraphTask reporter failed"),
         );
       }
     }
