@@ -635,13 +635,12 @@ function positiveIntegerEnvironment(name) {
 }
 
 function loadConfig() {
-  const token = process.env.WORKGRAPH_TOKEN ?? "";
+  const token = process.env.COPILOT_MCP_WORKGRAPH_TOKEN ?? "";
   const taskIssueTypeId =
-    process.env.WORKGRAPH_TASK_ISSUE_TYPE_ID ?? "";
+    process.env.COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID ?? "";
   if (token.length === 0) {
     throw new ReporterError(
-      "WORKGRAPH_TOKEN is not configured from the " +
-        "COPILOT_MCP_WORKGRAPH_TOKEN Agents secret",
+      "COPILOT_MCP_WORKGRAPH_TOKEN is not configured",
     );
   }
   if (
@@ -649,7 +648,7 @@ function loadConfig() {
     taskIssueTypeId.length > MAX_IDENTIFIER_LENGTH
   ) {
     throw new ReporterError(
-      "WORKGRAPH_TASK_ISSUE_TYPE_ID must be the bounded exact " +
+      "COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID must be the bounded exact " +
         "WorkGraphTask GraphQL Issue Type node ID",
     );
   }
@@ -657,10 +656,10 @@ function loadConfig() {
     token,
     taskIssueTypeId,
     launcherUserId: positiveIntegerEnvironment(
-      "WORKGRAPH_LAUNCHER_USER_ID",
+      "COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID",
     ),
     reporterUserId: positiveIntegerEnvironment(
-      "WORKGRAPH_REPORTER_USER_ID",
+      "COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID",
     ),
     apiUrl: apiBaseUrl(),
   };
@@ -796,7 +795,7 @@ function validateIdentity(identity, config) {
   ) {
     throw new ReporterError(
       "GitHub token identity does not match " +
-        `WORKGRAPH_REPORTER_USER_ID ${config.reporterUserId}`,
+        `COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID ${config.reporterUserId}`,
     );
   }
 }
@@ -822,7 +821,8 @@ function validateTaskIssue(issue, input, config) {
   }
   if (issue.user?.id !== config.launcherUserId) {
     throw new ReporterError(
-      "task Issue creator does not match WORKGRAPH_LAUNCHER_USER_ID",
+      "task Issue creator does not match " +
+        "COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID",
     );
   }
   if (!["open", "closed"].includes(issue.state)) {

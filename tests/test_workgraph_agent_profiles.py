@@ -82,12 +82,8 @@ class WorkGraphAgentProfilesTest(unittest.TestCase):
                 ]:
                     self.assertIn(setting, frontmatter)
                 self.assertIn(
-                    "WORKGRAPH_TASK_ISSUE_TYPE_ID: "
+                    "COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID: "
                     "IT_kwDOCX0YF84CKGIJ",
-                    frontmatter,
-                )
-                self.assertNotIn(
-                    "COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID",
                     frontmatter,
                 )
                 self.assertNotIn("github/add_issue_comment", frontmatter)
@@ -186,9 +182,9 @@ class WorkGraphAgentProfilesTest(unittest.TestCase):
     def test_reporter_requires_exact_type_and_identities(self):
         for value in [
             'const TASK_TYPE_NAME = "WorkGraphTask"',
-            "WORKGRAPH_TASK_ISSUE_TYPE_ID",
-            "WORKGRAPH_LAUNCHER_USER_ID",
-            "WORKGRAPH_REPORTER_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID",
+            "COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID",
         ]:
             self.assertIn(value, self.reporter)
         self.assertIn("exact WorkGraphTask type ID and name", self.reporter)

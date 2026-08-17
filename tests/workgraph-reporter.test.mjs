@@ -309,12 +309,12 @@ async function runMcp(
       ...process.env,
       NODE_ENV: "test",
       WORKGRAPH_TEST_GITHUB_API_URL: apiUrl,
-      WORKGRAPH_TOKEN: "test-token",
-      WORKGRAPH_TASK_ISSUE_TYPE_ID:
+      COPILOT_MCP_WORKGRAPH_TOKEN: "test-token",
+      COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID:
         config.taskIssueTypeId ?? TASK_TYPE_ID,
-      WORKGRAPH_LAUNCHER_USER_ID:
+      COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID:
         config.launcherUserId ?? String(CREATOR_USER_ID),
-      WORKGRAPH_REPORTER_USER_ID:
+      COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID:
         config.reporterUserId ?? String(REPORTER_USER_ID),
     },
     stdio: ["pipe", "pipe", "pipe"],
