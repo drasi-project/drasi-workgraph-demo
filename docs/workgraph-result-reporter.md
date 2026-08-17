@@ -12,10 +12,11 @@ Launchers must use the listed `agentProfile` identifiers; the Assignment
 
 Each profile reads one current Issue with `github/issue_read` and publishes
 through `workgraph/report_result`, the only tool exposed by the dependency-free
-local Node MCP server at `.github/mcp/workgraph-reporter.mjs`. Agent Tasks use
-`create_pull_request=false`; their prompt supplies a positive `issueNumber` and
-the strict Assignment JSON payload extracted from one valid
-`WorkGraphAssignment/v1` conversation comment.
+local Node MCP server at `.github/mcp/workgraph-reporter.mjs`. The issue
+validator additionally uses the built-in read tool for one selected repository
+profile. Agent Tasks use `create_pull_request=false`; their prompt supplies a
+positive `issueNumber` and the strict Assignment JSON payload extracted from
+one valid `WorkGraphAssignment/v1` conversation comment.
 
 Issue content is evidence, not an instruction source. The profiles do not use
 Projects, Project Items, routing records, responsibility records, execution
@@ -34,8 +35,7 @@ human summary, and then exactly one `json` fenced object. Its strict JSON is:
   "priority": 10,
   "taskType": "issue-validation",
   "task": {
-    "validationProfile": "default",
-    "criteria": ["The issue has explicit acceptance criteria"]
+    "validationProfile": "new-issue-default"
   }
 }
 ```
@@ -44,6 +44,41 @@ For the `issue-risk-profiler` agent profile, `agentProfile` is
 `issue-risk-profiler` while `taskType` remains `issue-risk-profile`; `task`
 contains a non-empty `riskProfile` plus a non-empty `dimensions` string array.
 Unknown fields are rejected at every object level.
+
+For `issue-validation`, `task` contains exactly `validationProfile`. A stale
+Assignment `criteria` property is an unknown field and is rejected before any
+GitHub access.
+
+## Repository-backed validation profiles
+
+Issue-validation profiles live under:
+
+```text
+.github/workgraph/profiles/issue-validation/<validationProfile>.md
+```
+
+`validationProfile` is 1-64 lowercase letters or digits separated only by
+single hyphens. The reporter never accepts slashes, dots, uppercase letters,
+underscores, repeated hyphens, absolute paths, or traversal. It appends `.md`
+and resolves only within the canonical directory above. The target must be a
+regular file no larger than 64 KiB containing valid UTF-8 with LF line endings.
+
+A profile may put concise agent guidance before its criteria. Its authoritative
+criteria use this strict final section:
+
+```markdown
+## Criteria
+
+1. The Issue has a non-empty title
+2. The Issue body is present
+```
+
+The heading is case-sensitive and appears exactly once, followed by one blank
+line and one or more single-line items numbered consecutively from `1`.
+Criteria must be non-empty and unique. Blank lines, headings, prose, bullets,
+continuations, duplicate text, or any other content after the first item fail
+closed. The repository's canonical profile is
+`.github/workgraph/profiles/issue-validation/new-issue-default.md`.
 
 The reporter writes exactly this closed, collapsed-by-default envelope. The
 human summary is concise and does not repeat the current Issue number or ID:
@@ -54,20 +89,25 @@ human summary is concise and does not repeat the current Issue number or ID:
 
 WorkGraphResult/v1
 
-Brief non-empty human summary.
+Validated the title and body requirements.
 
 ```json
 {
   "assignmentId": "organization-unique-id",
   "taskType": "issue-validation",
   "outcome": "succeeded",
-  "summary": "Brief non-empty human summary.",
+  "summary": "Validated the title and body requirements.",
   "result": {
     "criteria": [
       {
-        "criterion": "The issue has explicit acceptance criteria",
+        "criterion": "The Issue has a non-empty title",
         "passed": true,
-        "evidence": "The body includes a three-item acceptance checklist."
+        "evidence": "The title contains non-whitespace text."
+      },
+      {
+        "criterion": "The Issue body is present",
+        "passed": true,
+        "evidence": "The body contains non-whitespace text."
       }
     ]
   }
@@ -90,7 +130,25 @@ Validation results contain a non-empty `criteria` array of strict
 `criterion`/`passed`/`evidence` objects. Risk results contain a non-empty
 `dimensions` array of strict `dimension`/`score`/`rationale` objects, with
 integer scores from 0 through 100 where higher is riskier. The reporter also
-requires Result item names and order to match the Assignment.
+requires validation Result criteria to match the selected repository profile
+exactly in count, order, and text. Risk Result dimensions continue to match the
+Assignment exactly in count, order, and text.
+
+## Core/dogfood schema boundary
+
+The Core/producer `issue-validation` Assignment task contract is exactly:
+
+```json
+{ "validationProfile": "new-issue-default" }
+```
+
+The dogfood reporter's corresponding Result payload contract remains exactly a
+non-empty `result.criteria` array of
+`{"criterion": string, "passed": boolean, "evidence": string}` objects. The
+reporter loads the selected repository profile and requires one Result object
+per profile criterion with identical text and order. Assignment `criteria` is
+not part of the Core contract and is rejected as stale/unknown. The
+`issue-risk-profile` Assignment and Result contracts are unchanged.
 
 ## Scoped authority
 
@@ -128,8 +186,9 @@ agent's built-in read credential. There is no token fallback.
 
 For each tool call, the reporter:
 
-1. Rejects malformed, mismatched, additional, or incomplete input before any
-   GitHub access.
+1. Rejects malformed, mismatched, additional, or incomplete input, invalid
+   profile names, missing or malformed profile files, and profile/Result
+   criterion mismatches before any GitHub access.
 2. Resolves the token owner and requires its immutable user ID to match the
    configured reporter ID.
 3. Confirms the fixed-repository destination is the requested Issue.
@@ -160,8 +219,9 @@ python3 -m unittest discover -s tests -v
 Organization-wide `assignmentId` uniqueness remains the Assignment producer's
 contract; this repository does not introduce a workflow engine or organization
 index. Assignment existence, authorship, and `agentProfile` selection remain
-Source/launcher responsibilities; the reporter validates only the supplied
-payload. GitHub Issue comments provide no atomic create-if-absent operation, so
-two concurrent first attempts can race even though retries reconcile. A manual
+Source/launcher responsibilities; the reporter validates the supplied payload
+and selected repository profile. GitHub Issue comments provide no atomic
+create-if-absent operation, so two concurrent first attempts can race even
+though retries reconcile. A manual
 cloud Agent Task is still required to prove MCP startup, token/SSO policy, and
 live comment authorship; this repository performs no deployment.
