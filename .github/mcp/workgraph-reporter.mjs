@@ -21,6 +21,7 @@ const STRUCTURED_MARKERS = [
 const TASK_TYPES = ["issue-validation", "issue-risk-profile"];
 const OUTCOMES = ["succeeded", "failed", "blocked"];
 const MAX_PROGRESS_BYTES = 4096;
+const MAX_IDENTIFIER_LENGTH = 256;
 const REPORTER_FILE_PATH = fileURLToPath(import.meta.url);
 const REPOSITORY_ROOT = path.resolve(
   path.dirname(REPORTER_FILE_PATH),
@@ -89,6 +90,15 @@ function requireExactKeys(value, expectedKeys, label) {
 function requireNonEmptyString(value, label) {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw new ReporterError(`${label} must be a non-empty string`);
+  }
+}
+
+function requireBoundedIdentifier(value, label) {
+  requireNonEmptyString(value, label);
+  if (value.length > MAX_IDENTIFIER_LENGTH) {
+    throw new ReporterError(
+      `${label} must not exceed ${MAX_IDENTIFIER_LENGTH} characters`,
+    );
   }
 }
 
@@ -440,7 +450,7 @@ function validateIssueReferences(input, expectedKeys) {
     }
   }
   for (const key of ["taskIssueNodeId", "parentIssueNodeId"]) {
-    requireNonEmptyString(input[key], `arguments.${key}`);
+    requireBoundedIdentifier(input[key], `arguments.${key}`);
   }
   if (input.taskIssueNumber === input.parentIssueNumber) {
     throw new ReporterError("task and parent Issue numbers must differ");
@@ -451,8 +461,16 @@ function validateIssueReferences(input, expectedKeys) {
 }
 
 function validateProgressInput(input) {
-  validateIssueReferences(input, [...ISSUE_REFERENCE_KEYS, "progress"]);
-  requirePlainText(input.progress, "arguments.progress", MAX_PROGRESS_BYTES);
+  validateIssueReferences(input, [
+    ...ISSUE_REFERENCE_KEYS,
+    "assignmentId",
+    "message",
+  ]);
+  requireBoundedIdentifier(
+    input.assignmentId,
+    "arguments.assignmentId",
+  );
+  requirePlainText(input.message, "arguments.message", MAX_PROGRESS_BYTES);
 }
 
 function validateResultInputShape(input) {
@@ -460,10 +478,21 @@ function validateResultInputShape(input) {
   validateWorkResult(input.workResult);
 }
 
-function reconcileAssignment(assignment, parentNodeId, workResult) {
-  if (assignment.assignmentId !== parentNodeId) {
+function reconcileAssignment(
+  assignment,
+  parentNodeId,
+  assertedAssignmentId,
+  workResult,
+) {
+  const expectedAssignmentId = `${assignment.taskType}:${parentNodeId}`;
+  if (assignment.assignmentId !== expectedAssignmentId) {
     throw new ReporterError(
-      "assignment.assignmentId must equal the authoritative parent node ID",
+      "assignment.assignmentId must equal taskType:authoritativeParentNodeId",
+    );
+  }
+  if (assertedAssignmentId !== assignment.assignmentId) {
+    throw new ReporterError(
+      "supplied assignmentId must match assignment.assignmentId",
     );
   }
   if (workResult !== undefined) {
@@ -607,23 +636,28 @@ function positiveIntegerEnvironment(name) {
 
 function loadConfig() {
   const token = process.env.WORKGRAPH_TOKEN ?? "";
-  const taskTypeId = process.env.WORKGRAPH_TASK_TYPE_ID ?? "";
+  const taskIssueTypeId =
+    process.env.WORKGRAPH_TASK_ISSUE_TYPE_ID ?? "";
   if (token.length === 0) {
     throw new ReporterError(
       "WORKGRAPH_TOKEN is not configured from the " +
         "COPILOT_MCP_WORKGRAPH_TOKEN Agents secret",
     );
   }
-  if (taskTypeId.length === 0) {
+  if (
+    taskIssueTypeId.length === 0 ||
+    taskIssueTypeId.length > MAX_IDENTIFIER_LENGTH
+  ) {
     throw new ReporterError(
-      "WORKGRAPH_TASK_TYPE_ID must be the exact WorkGraphTask Issue Type ID",
+      "WORKGRAPH_TASK_ISSUE_TYPE_ID must be the bounded exact " +
+        "WorkGraphTask GraphQL Issue Type node ID",
     );
   }
   return {
     token,
-    taskTypeId,
-    taskCreatorUserId: positiveIntegerEnvironment(
-      "WORKGRAPH_TASK_CREATOR_USER_ID",
+    taskIssueTypeId,
+    launcherUserId: positiveIntegerEnvironment(
+      "WORKGRAPH_LAUNCHER_USER_ID",
     ),
     reporterUserId: positiveIntegerEnvironment(
       "WORKGRAPH_REPORTER_USER_ID",
@@ -767,19 +801,6 @@ function validateIdentity(identity, config) {
   }
 }
 
-function issueTypeId(issueType) {
-  if (!isObject(issueType)) {
-    return null;
-  }
-  if (typeof issueType.id === "string") {
-    return issueType.id;
-  }
-  if (typeof issueType.node_id === "string") {
-    return issueType.node_id;
-  }
-  return null;
-}
-
 function validateTaskIssue(issue, input, config) {
   if (
     !isObject(issue) ||
@@ -793,15 +814,15 @@ function validateTaskIssue(issue, input, config) {
   }
   if (
     issue.type?.name !== TASK_TYPE_NAME ||
-    issueTypeId(issue.type) !== config.taskTypeId
+    issue.type?.id !== config.taskIssueTypeId
   ) {
     throw new ReporterError(
       "task Issue does not have the configured exact WorkGraphTask type ID and name",
     );
   }
-  if (issue.user?.id !== config.taskCreatorUserId) {
+  if (issue.user?.id !== config.launcherUserId) {
     throw new ReporterError(
-      "task Issue creator does not match WORKGRAPH_TASK_CREATOR_USER_ID",
+      "task Issue creator does not match WORKGRAPH_LAUNCHER_USER_ID",
     );
   }
   if (!["open", "closed"].includes(issue.state)) {
@@ -829,11 +850,23 @@ function validateParentIssue(parent, input) {
   }
 }
 
-function validateTaskContext(task, parent, input, config, workResult) {
+function validateTaskContext(
+  task,
+  parent,
+  input,
+  config,
+  assertedAssignmentId,
+  workResult,
+) {
   validateTaskIssue(task, input, config);
   validateParentIssue(parent, input);
   const assignment = parseAssignmentBody(task.body);
-  reconcileAssignment(assignment, parent.node_id, workResult);
+  reconcileAssignment(
+    assignment,
+    parent.node_id,
+    assertedAssignmentId,
+    workResult,
+  );
   return assignment;
 }
 
@@ -907,6 +940,7 @@ class TaskReporter {
       parent,
       input,
       this.config,
+      workResult?.assignmentId ?? input.assignmentId,
       workResult,
     );
     return { identity, task, assignment };
@@ -919,7 +953,7 @@ class TaskReporter {
     }
     const comment = await this.client.createComment(
       input.taskIssueNumber,
-      input.progress,
+      input.message,
     );
     return {
       taskIssueNodeId: input.taskIssueNodeId,
@@ -1008,11 +1042,15 @@ const NON_EMPTY_STRING = {
   minLength: 1,
   pattern: "[\\s\\S]*\\S[\\s\\S]*",
 };
+const BOUNDED_IDENTIFIER = {
+  ...NON_EMPTY_STRING,
+  maxLength: MAX_IDENTIFIER_LENGTH,
+};
 const ISSUE_REFERENCE_PROPERTIES = {
   taskIssueNumber: { type: "integer", minimum: 1 },
-  taskIssueNodeId: NON_EMPTY_STRING,
+  taskIssueNodeId: BOUNDED_IDENTIFIER,
   parentIssueNumber: { type: "integer", minimum: 1 },
-  parentIssueNodeId: NON_EMPTY_STRING,
+  parentIssueNodeId: BOUNDED_IDENTIFIER,
 };
 
 function strictObject(properties) {
@@ -1027,7 +1065,7 @@ function strictObject(properties) {
 function workResultSchema(taskType) {
   const validation = taskType === "issue-validation";
   return strictObject({
-    assignmentId: NON_EMPTY_STRING,
+    assignmentId: BOUNDED_IDENTIFIER,
     taskType: { const: taskType },
     outcome: { type: "string", enum: OUTCOMES },
     summary: NON_EMPTY_STRING,
@@ -1064,7 +1102,8 @@ const TOOLS = [
       "Post bounded ordinary progress text to one validated WorkGraphTask.",
     inputSchema: strictObject({
       ...ISSUE_REFERENCE_PROPERTIES,
-      progress: {
+      assignmentId: BOUNDED_IDENTIFIER,
+      message: {
         type: "string",
         minLength: 1,
         maxLength: MAX_PROGRESS_BYTES,

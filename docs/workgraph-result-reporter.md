@@ -29,7 +29,7 @@ task body. For issue validation, the complete body is:
 
 ```json
 {
-  "assignmentId": "I_parent_node_id",
+  "assignmentId": "issue-validation:I_parent_node_id",
   "agentProfile": "issue-validator",
   "priority": 10,
   "taskType": "issue-validation",
@@ -45,9 +45,10 @@ non-empty `dimensions` string array. Unknown fields are rejected at every
 object level. Profile/taskType mappings are exact.
 
 The native GitHub parent relation is authoritative. `assignmentId` is
-deterministic and must equal the authoritative parent Issue node ID. Supplied
-task and parent Issue numbers and node IDs are reconciliation assertions, not
-alternative sources of truth.
+deterministically `${taskType}:${parent.node_id}`, using the authoritative
+parent Issue GraphQL node ID verbatim, never its number. Supplied task and
+parent Issue numbers, node IDs, and assignment ID are bounded reconciliation
+assertions, not alternative selectors or sources of truth.
 
 ## Repository-backed validation profiles
 
@@ -91,10 +92,32 @@ Both inputs identify the task and parent with:
 }
 ```
 
-`report_progress` adds only `progress`. It accepts non-empty ordinary text up
-to 4096 UTF-8 bytes on an open task. It rejects carriage returns, current and
-legacy WorkGraph markers, Markdown fences, and `details`/`summary` tags.
-Progress is nonterminal and is never written to the parent.
+Their exact strict signatures are:
+
+```text
+report_progress({
+  taskIssueNumber,
+  taskIssueNodeId,
+  parentIssueNumber,
+  parentIssueNodeId,
+  assignmentId,
+  message
+})
+submit_task_result({
+  taskIssueNumber,
+  taskIssueNodeId,
+  parentIssueNumber,
+  parentIssueNodeId,
+  workResult
+})
+```
+
+`report_progress` adds the Assignment `assignmentId` and `message`. It accepts
+non-empty ordinary message text up to 4096 UTF-8 bytes on an open task. It
+rejects carriage returns, current and legacy WorkGraph markers, Markdown
+fences, and `details`/`summary` tags. The reporter verifies the supplied
+assignment ID against both the raw body and deterministic derivation. Progress
+is nonterminal and is never written to the parent.
 
 `submit_task_result` adds only `workResult`. It fetches the current raw task
 body and revalidates the fixed repository, task number/node ID, non-PR state,
@@ -113,7 +136,7 @@ WorkGraphTaskResult/v1
 
 ```json
 {
-  "assignmentId": "I_parent_node_id",
+  "assignmentId": "issue-validation:I_parent_node_id",
   "taskType": "issue-validation",
   "outcome": "succeeded",
   "summary": "Validated the title and body requirements.",
@@ -153,13 +176,15 @@ Configure these values under **Settings → Secrets and variables → Agents**:
 | Kind | Name | Purpose |
 | --- | --- | --- |
 | Secret | `COPILOT_MCP_WORKGRAPH_TOKEN` | Fixed-repository task reporter token |
-| Variable | `COPILOT_MCP_WORKGRAPH_TASK_TYPE_ID` | Immutable ID of the exact `WorkGraphTask` Issue Type |
-| Variable | `COPILOT_MCP_WORKGRAPH_TASK_CREATOR_USER_ID` | Expected immutable numeric task creator ID |
+| Variable | `COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID` | Exact GraphQL node ID of the `WorkGraphTask` Issue Type |
+| Variable | `COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID` | Expected immutable numeric task creator/launcher database ID |
 | Variable | `COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID` | Expected immutable numeric reporter token owner ID |
 
 The MCP process receives these as `WORKGRAPH_TOKEN`,
-`WORKGRAPH_TASK_TYPE_ID`, `WORKGRAPH_TASK_CREATOR_USER_ID`, and
-`WORKGRAPH_REPORTER_USER_ID`. Every check fails closed.
+`WORKGRAPH_TASK_ISSUE_TYPE_ID`, `WORKGRAPH_LAUNCHER_USER_ID`, and
+`WORKGRAPH_REPORTER_USER_ID`. Numeric user IDs are positive integers. The
+configured GraphQL Issue Type node ID must equal `task.type.id`; the code
+constant `WorkGraphTask` must equal `task.type.name`. Every check fails closed.
 
 For this prototype, the configured creator and reporter IDs may intentionally
 be the same stable bot identity. They remain separate configuration checks so

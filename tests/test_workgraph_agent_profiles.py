@@ -77,8 +77,8 @@ class WorkGraphAgentProfilesTest(unittest.TestCase):
                 )
                 for setting in [
                     "secrets.COPILOT_MCP_WORKGRAPH_TOKEN",
-                    "vars.COPILOT_MCP_WORKGRAPH_TASK_TYPE_ID",
-                    "vars.COPILOT_MCP_WORKGRAPH_TASK_CREATOR_USER_ID",
+                    "vars.COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID",
+                    "vars.COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID",
                     "vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID",
                 ]:
                     self.assertIn(setting, frontmatter)
@@ -93,7 +93,10 @@ class WorkGraphAgentProfilesTest(unittest.TestCase):
                 self.assertIn("taskIssueNodeId", profile)
                 self.assertIn("method: get_parent", profile)
                 self.assertIn("native parent relation is authoritative", profile)
-                self.assertIn('"assignmentId": "<parent node ID>"', profile)
+                self.assertRegex(
+                    profile,
+                    rf'"assignmentId": "{task_type}:<parent node ID>"',
+                )
                 self.assertIn(
                     f'"taskType": "{task_type}"',
                     profile,
@@ -175,22 +178,24 @@ class WorkGraphAgentProfilesTest(unittest.TestCase):
     def test_reporter_requires_exact_type_and_identities(self):
         for value in [
             'const TASK_TYPE_NAME = "WorkGraphTask"',
-            "WORKGRAPH_TASK_TYPE_ID",
-            "WORKGRAPH_TASK_CREATOR_USER_ID",
+            "WORKGRAPH_TASK_ISSUE_TYPE_ID",
+            "WORKGRAPH_LAUNCHER_USER_ID",
             "WORKGRAPH_REPORTER_USER_ID",
         ]:
             self.assertIn(value, self.reporter)
         self.assertIn("exact WorkGraphTask type ID and name", self.reporter)
         self.assertIn(
-            "assignment.assignmentId must equal the authoritative parent node ID",
+            "assignment.assignmentId must equal "
+            "taskType:authoritativeParentNodeId",
             self.reporter,
         )
+        self.assertIn('"assignmentId"', self.reporter)
+        self.assertIn('"message"', self.reporter)
 
     def test_progress_and_retry_guards_are_documented(self):
         for text in [
             "4096 UTF-8 bytes",
             "carriage returns",
-            "Markdown fences",
             "legacy WorkGraph markers",
             "multiple structured",
             "foreign-authored",
@@ -200,6 +205,7 @@ class WorkGraphAgentProfilesTest(unittest.TestCase):
             "open or closed",
         ]:
             self.assertIn(text, self.doc)
+        self.assertRegex(self.doc, r"Markdown\s+fences")
         self.assertRegex(self.doc, r"Ordinary\s+progress is ignored")
 
     def test_shared_prototype_identity_is_explicit(self):

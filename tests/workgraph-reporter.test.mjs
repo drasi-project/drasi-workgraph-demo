@@ -29,6 +29,8 @@ const PARENT_NODE_ID = "I_parent";
 const TASK_TYPE_ID = "IT_workgraph_task";
 const REPORTER_USER_ID = 42;
 const CREATOR_USER_ID = 84;
+const VALIDATION_ASSIGNMENT_ID = `issue-validation:${PARENT_NODE_ID}`;
+const RISK_ASSIGNMENT_ID = `issue-risk-profile:${PARENT_NODE_ID}`;
 const VALIDATION_PROFILE_NAME = "new-issue-default";
 const VALIDATION_CRITERIA = [
   "The Issue has a non-empty title",
@@ -36,7 +38,7 @@ const VALIDATION_CRITERIA = [
 ];
 
 const VALIDATION_ASSIGNMENT = {
-  assignmentId: PARENT_NODE_ID,
+  assignmentId: VALIDATION_ASSIGNMENT_ID,
   agentProfile: "issue-validator",
   priority: 10,
   taskType: "issue-validation",
@@ -45,7 +47,7 @@ const VALIDATION_ASSIGNMENT = {
   },
 };
 const VALIDATION_RESULT = {
-  assignmentId: PARENT_NODE_ID,
+  assignmentId: VALIDATION_ASSIGNMENT_ID,
   taskType: "issue-validation",
   outcome: "succeeded",
   summary: "Validated the title and body requirements.",
@@ -65,7 +67,7 @@ const VALIDATION_RESULT = {
   },
 };
 const RISK_ASSIGNMENT = {
-  assignmentId: PARENT_NODE_ID,
+  assignmentId: RISK_ASSIGNMENT_ID,
   agentProfile: "issue-risk-profiler",
   priority: 4,
   taskType: "issue-risk-profile",
@@ -75,7 +77,7 @@ const RISK_ASSIGNMENT = {
   },
 };
 const RISK_RESULT = {
-  assignmentId: PARENT_NODE_ID,
+  assignmentId: RISK_ASSIGNMENT_ID,
   taskType: "issue-risk-profile",
   outcome: "succeeded",
   summary: "Scored both requested risk dimensions.",
@@ -98,7 +100,7 @@ const EXPECTED_VALIDATION_COMMENT = `WorkGraphTaskResult/v1
 
 \`\`\`json
 {
-  "assignmentId": "I_parent",
+  "assignmentId": "issue-validation:I_parent",
   "taskType": "issue-validation",
   "outcome": "succeeded",
   "summary": "Validated the title and body requirements.",
@@ -147,10 +149,11 @@ function submitInput(workResult = VALIDATION_RESULT) {
   };
 }
 
-function progressInput(progress = "Reviewed the parent Issue fields.") {
+function progressInput(message = "Reviewed the parent Issue fields.") {
   return {
     ...issueReferences(),
-    progress,
+    assignmentId: VALIDATION_ASSIGNMENT_ID,
+    message,
   };
 }
 
@@ -307,9 +310,10 @@ async function runMcp(
       NODE_ENV: "test",
       WORKGRAPH_TEST_GITHUB_API_URL: apiUrl,
       WORKGRAPH_TOKEN: "test-token",
-      WORKGRAPH_TASK_TYPE_ID: config.taskTypeId ?? TASK_TYPE_ID,
-      WORKGRAPH_TASK_CREATOR_USER_ID:
-        config.creatorUserId ?? String(CREATOR_USER_ID),
+      WORKGRAPH_TASK_ISSUE_TYPE_ID:
+        config.taskIssueTypeId ?? TASK_TYPE_ID,
+      WORKGRAPH_LAUNCHER_USER_ID:
+        config.launcherUserId ?? String(CREATOR_USER_ID),
       WORKGRAPH_REPORTER_USER_ID:
         config.reporterUserId ?? String(REPORTER_USER_ID),
     },
@@ -407,16 +411,36 @@ test("exposes only the two narrow task reporter tools", async () => {
     );
     for (const tool of tools) {
       assert.equal(tool.inputSchema.additionalProperties, false);
-      assert.deepEqual(
-        Object.keys(tool.inputSchema.properties).slice(0, 4),
-        [
-          "taskIssueNumber",
-          "taskIssueNodeId",
-          "parentIssueNumber",
-          "parentIssueNodeId",
-        ],
-      );
     }
+    assert.deepEqual(
+      Object.keys(tools[0].inputSchema.properties),
+      [
+        "taskIssueNumber",
+        "taskIssueNodeId",
+        "parentIssueNumber",
+        "parentIssueNodeId",
+        "assignmentId",
+        "message",
+      ],
+    );
+    assert.deepEqual(
+      Object.keys(tools[1].inputSchema.properties),
+      [
+        "taskIssueNumber",
+        "taskIssueNodeId",
+        "parentIssueNumber",
+        "parentIssueNodeId",
+        "workResult",
+      ],
+    );
+    assert.equal(
+      tools[0].inputSchema.properties.assignmentId.maxLength,
+      256,
+    );
+    assert.equal(
+      tools[0].inputSchema.properties.taskIssueNodeId.maxLength,
+      256,
+    );
     const serialized = JSON.stringify(tools);
     for (const forbidden of [
       "repository",
@@ -476,7 +500,7 @@ test("creates exact issue-validation Result bytes on the task only", async () =>
   assert.deepEqual(response.structuredContent, {
     taskIssueNodeId: TASK_NODE_ID,
     parentIssueNodeId: PARENT_NODE_ID,
-    assignmentId: PARENT_NODE_ID,
+    assignmentId: VALIDATION_ASSIGNMENT_ID,
     taskType: "issue-validation",
     commentNodeId: "IC_created_1",
     reconciled: false,
@@ -533,6 +557,24 @@ test("posts bounded ordinary progress on the task only", async () => {
     "comment",
   ]);
   assertNoForbiddenMutation(state);
+});
+
+test("progress cross-checks its assignment ID after resolving the parent", async () => {
+  const { response, state } = await callReporter(
+    {},
+    "report_progress",
+    {
+      ...progressInput(),
+      assignmentId: "issue-validation:I_other",
+    },
+  );
+  assert.equal(response.isError, true);
+  assert.match(
+    response.content[0].text,
+    /supplied assignmentId must match assignment.assignmentId/,
+  );
+  assert.deepEqual(state.operations, ["identity", "task", "parent"]);
+  assert.equal(state.postAttempts, 0);
 });
 
 test("rejects progress control content before GitHub access", async (t) => {
@@ -596,7 +638,7 @@ test("validates all task identity, type, body, and parent boundaries", async (t)
       options: {
         taskOverrides: { user: { id: 999, login: "other" } },
       },
-      pattern: /TASK_CREATOR_USER_ID/,
+      pattern: /LAUNCHER_USER_ID/,
     },
     {
       name: "body is fenced",
@@ -641,7 +683,7 @@ test("validates all task identity, type, body, and parent boundaries", async (t)
           assignmentId: "I_wrong_parent",
         },
       },
-      pattern: /must equal the authoritative parent node ID/,
+      pattern: /must equal taskType:authoritativeParentNodeId/,
     },
     {
       name: "parent is a pull request",
@@ -687,18 +729,28 @@ test("validates reporter configuration and identity", async (t) => {
   const cases = [
     {
       name: "wrong configured type ID",
-      config: { taskTypeId: "IT_wrong" },
+      config: { taskIssueTypeId: "IT_wrong" },
       pattern: /exact WorkGraphTask type ID and name/,
     },
     {
       name: "wrong configured creator ID",
-      config: { creatorUserId: "999" },
-      pattern: /TASK_CREATOR_USER_ID/,
+      config: { launcherUserId: "999" },
+      pattern: /LAUNCHER_USER_ID/,
     },
     {
       name: "wrong configured reporter ID",
       config: { reporterUserId: "999" },
       pattern: /REPORTER_USER_ID/,
+    },
+    {
+      name: "non-positive launcher ID",
+      config: { launcherUserId: "0" },
+      pattern: /LAUNCHER_USER_ID must be a positive integer/,
+    },
+    {
+      name: "empty Issue Type ID",
+      config: { taskIssueTypeId: "" },
+      pattern: /TASK_ISSUE_TYPE_ID/,
     },
     {
       name: "wrong authenticated reporter",
@@ -731,7 +783,10 @@ test("rejects malformed and unreconciled typed Results", async (t) => {
     },
     {
       name: "task type mismatch",
-      result: RISK_RESULT,
+      result: {
+        ...RISK_RESULT,
+        assignmentId: VALIDATION_ASSIGNMENT_ID,
+      },
       pattern: /must match assignment.taskType/,
     },
     {

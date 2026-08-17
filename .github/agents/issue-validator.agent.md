@@ -20,8 +20,8 @@ mcp-servers:
       - submit_task_result
     env:
       WORKGRAPH_TOKEN: ${{ secrets.COPILOT_MCP_WORKGRAPH_TOKEN }}
-      WORKGRAPH_TASK_TYPE_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_TASK_TYPE_ID }}
-      WORKGRAPH_TASK_CREATOR_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_TASK_CREATOR_USER_ID }}
+      WORKGRAPH_TASK_ISSUE_TYPE_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID }}
+      WORKGRAPH_LAUNCHER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID }}
       WORKGRAPH_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID }}
 ---
 
@@ -54,8 +54,9 @@ its Result.
 6. Call `github/issue_read` with `method: get_parent` for the task. Require a
    non-PR parent in the fixed repository and record its positive number and
    non-empty node ID. The native parent relation is authoritative.
-7. Require `assignmentId` to equal the parent node ID. If any task, Assignment,
-   or parent check fails, stop without a mutation.
+7. Derive `issue-validation:<parent node ID>` from the authoritative parent
+   GraphQL node ID verbatim and require `assignmentId` to equal it. If any task,
+   Assignment, or parent check fails, stop without a mutation.
 
 ## Evaluation
 
@@ -82,7 +83,7 @@ Construct exactly:
 
 ```json
 {
-  "assignmentId": "<parent node ID>",
+  "assignmentId": "issue-validation:<parent node ID>",
   "taskType": "issue-validation",
   "outcome": "succeeded",
   "summary": "<concise plain-text summary>",
@@ -104,8 +105,9 @@ Markdown fence, or a `details`/`summary` tag.
 
 Optional progress uses `workgraph/report_progress` with only
 `taskIssueNumber`, `taskIssueNodeId`, `parentIssueNumber`,
-`parentIssueNodeId`, and bounded ordinary `progress` text. Progress is written
-only to the task.
+`parentIssueNodeId`, the Assignment `assignmentId`, and bounded ordinary
+`message` text. All identifiers are cross-checks; progress is written only to
+the task.
 
 Call `workgraph/submit_task_result` exactly once with only those four Issue
 identifiers and `workResult`. The reporter fetches the current raw task body,
@@ -118,7 +120,7 @@ WorkGraphTaskResult/v1
 
 ```json
 {
-  "assignmentId": "I_parent_node_id",
+  "assignmentId": "issue-validation:I_parent_node_id",
   "taskType": "issue-validation",
   "outcome": "succeeded",
   "summary": "Validated the title and body requirements.",

@@ -20,7 +20,7 @@ WorkGraphTaskResult/v1
 
 ```json
 {
-  "assignmentId": "I_parent_node_id",
+  "assignmentId": "issue-validation:I_parent_node_id",
   "taskType": "issue-validation",
   "outcome": "succeeded",
   "summary": "Validated the title and body requirements.",
