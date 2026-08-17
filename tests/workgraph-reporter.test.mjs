@@ -20,7 +20,7 @@ const ISSUE_NUMBER = 7;
 
 const VALIDATION_ASSIGNMENT = {
   assignmentId: "assignment-validation-001",
-  agentProfile: "issue-validation",
+  agentProfile: "issue-validator",
   priority: 10,
   taskType: "issue-validation",
   task: {
@@ -55,7 +55,7 @@ const VALIDATION_RESULT = {
 
 const RISK_ASSIGNMENT = {
   assignmentId: "assignment-risk-001",
-  agentProfile: "issue-risk-profile",
+  agentProfile: "issue-risk-profiler",
   priority: 4,
   taskType: "issue-risk-profile",
   task: {

@@ -2,10 +2,13 @@
 
 The repository defines exactly two GitHub Copilot agent profiles:
 
-| Profile | Assignment task type |
-| --- | --- |
-| `.github/agents/issue-validation.agent.md` | `issue-validation` |
-| `.github/agents/issue-risk-profile.agent.md` | `issue-risk-profile` |
+| Agent profile file | `agentProfile` | Assignment `taskType` |
+| --- | --- | --- |
+| `.github/agents/issue-validator.agent.md` | `issue-validator` | `issue-validation` |
+| `.github/agents/issue-risk-profiler.agent.md` | `issue-risk-profiler` | `issue-risk-profile` |
+
+Launchers must use the listed `agentProfile` identifiers; the Assignment
+`taskType` values remain unchanged.
 
 Each profile reads one current Issue with `github/issue_read` and publishes
 through `workgraph/report_result`, the only tool exposed by the dependency-free
@@ -27,7 +30,7 @@ human summary, and then exactly one `json` fenced object. Its strict JSON is:
 ```json
 {
   "assignmentId": "organization-unique-id",
-  "agentProfile": "issue-validation",
+  "agentProfile": "issue-validator",
   "priority": 10,
   "taskType": "issue-validation",
   "task": {
@@ -37,10 +40,10 @@ human summary, and then exactly one `json` fenced object. Its strict JSON is:
 }
 ```
 
-For `issue-risk-profile`, `taskType` is `issue-risk-profile`, `agentProfile`
-remains a non-empty launcher-selected profile identifier, and `task` contains a
-non-empty `riskProfile` plus a non-empty `dimensions` string array. Unknown
-fields are rejected at every object level.
+For the `issue-risk-profiler` agent profile, `agentProfile` is
+`issue-risk-profiler` while `taskType` remains `issue-risk-profile`; `task`
+contains a non-empty `riskProfile` plus a non-empty `dimensions` string array.
+Unknown fields are rejected at every object level.
 
 The reporter writes exactly:
 

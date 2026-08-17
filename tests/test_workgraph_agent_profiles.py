@@ -7,6 +7,10 @@ ROOT = Path(__file__).resolve().parents[1]
 AGENTS = ROOT / ".github" / "agents"
 REPORTER = ROOT / ".github" / "mcp" / "workgraph-reporter.mjs"
 DOC = ROOT / "docs" / "workgraph-result-reporter.md"
+PROFILE_TASK_TYPES = {
+    "issue-validator": "issue-validation",
+    "issue-risk-profiler": "issue-risk-profile",
+}
 
 
 class WorkGraphAgentProfilesTest(unittest.TestCase):
@@ -19,10 +23,17 @@ class WorkGraphAgentProfilesTest(unittest.TestCase):
         cls.reporter = REPORTER.read_text(encoding="utf-8")
         cls.doc = DOC.read_text(encoding="utf-8")
 
-    def test_exactly_two_repository_defined_profiles_exist(self):
+    def test_exactly_two_repository_defined_profile_files_exist(self):
         self.assertEqual(
             set(self.profiles),
-            {"issue-validation", "issue-risk-profile"},
+            set(PROFILE_TASK_TYPES),
+        )
+        self.assertEqual(
+            {path.name for path in AGENTS.glob("*.agent.md")},
+            {
+                "issue-validator.agent.md",
+                "issue-risk-profiler.agent.md",
+            },
         )
 
     def test_profiles_are_user_invocable_and_least_privileged(self):
@@ -61,7 +72,8 @@ class WorkGraphAgentProfilesTest(unittest.TestCase):
                 self.assertNotIn("github/projects_write", frontmatter)
 
     def test_profiles_lock_assignment_and_result_envelopes(self):
-        for name, profile in self.profiles.items():
+        for name in PROFILE_TASK_TYPES:
+            profile = self.profiles[name]
             with self.subTest(profile=name):
                 self.assertIn("WorkGraphAssignment/v1", profile)
                 self.assertIn("WorkGraphResult/v1", profile)
@@ -79,8 +91,17 @@ class WorkGraphAgentProfilesTest(unittest.TestCase):
                 )
                 self.assertIn("current Issue fields", profile)
 
+    def test_profiles_preserve_assignment_task_types(self):
+        for name, task_type in PROFILE_TASK_TYPES.items():
+            profile = self.profiles[name]
+            with self.subTest(profile=name):
+                self.assertEqual(
+                    set(re.findall(r'"taskType": "([^"]+)"', profile)),
+                    {task_type},
+                )
+
     def test_validation_profile_has_typed_contract(self):
-        profile = self.profiles["issue-validation"]
+        profile = self.profiles["issue-validator"]
         self.assertIn("validationProfile", profile)
         self.assertIn("criteria", profile)
         self.assertIn('"criterion"', profile)
@@ -91,7 +112,7 @@ class WorkGraphAgentProfilesTest(unittest.TestCase):
         )
 
     def test_risk_profile_has_typed_contract(self):
-        profile = self.profiles["issue-risk-profile"]
+        profile = self.profiles["issue-risk-profiler"]
         self.assertIn("riskProfile", profile)
         self.assertIn("dimensions", profile)
         self.assertIn('"dimension"', profile)
