@@ -8,6 +8,9 @@ const GITHUB_API_URL = "https://api.github.com";
 const REPOSITORY_OWNER = "drasi-project";
 const REPOSITORY_NAME = "drasi-workgraph-demo";
 const RESULT_MARKER = "WorkGraphResult/v1";
+const RESULT_DETAILS_OPEN = "<details>";
+const RESULT_SUMMARY = "<summary>WorkGraph Result</summary>";
+const RESULT_DETAILS_CLOSE = "</details>";
 const TASK_TYPES = ["issue-validation", "issue-risk-profile"];
 const OUTCOMES = ["succeeded", "failed", "blocked"];
 const INPUT_KEYS = ["issueNumber", "assignment", "workResult"];
@@ -31,6 +34,21 @@ class AmbiguousCreateError extends ReporterError {}
 
 function isObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function extractAssignmentId(text) {
+  const match = text.match(
+    /"assignmentId"\s*:\s*("(?:\\.|[^"\\])*")/,
+  );
+  if (match === null) {
+    return null;
+  }
+  try {
+    const value = JSON.parse(match[1]);
+    return typeof value === "string" ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 function requireExactKeys(value, expectedKeys, label) {
@@ -57,12 +75,19 @@ function requireNonEmptyString(value, label) {
 
 function requirePublishableSummary(value, label) {
   requireNonEmptyString(value, label);
+  const lines = value.split("\n");
   if (
     value.includes("\r") ||
-    value.split("\n").some((line) => line.startsWith("```"))
+    lines.some(
+      (line) =>
+        line.startsWith("```") ||
+        line.includes(RESULT_MARKER) ||
+        /<\/?(?:details|summary)\b/i.test(line),
+    )
   ) {
     throw new ReporterError(
-      `${label} must be human-readable text without carriage returns or fence lines`,
+      `${label} must be human-readable text without carriage returns, ` +
+        "fence lines, Result markers, or details/summary tags",
     );
   }
 }
@@ -263,51 +288,90 @@ function canonicalWorkResult(workResult) {
 function formatResultComment(workResult) {
   const canonical = canonicalWorkResult(workResult);
   return (
-    `${RESULT_MARKER}\n${canonical.summary}\n` +
-    `\`\`\`json\n${JSON.stringify(canonical, null, 2)}\n\`\`\``
+    `${RESULT_DETAILS_OPEN}\n${RESULT_SUMMARY}\n\n${RESULT_MARKER}\n\n` +
+    `${canonical.summary}\n\n` +
+    `\`\`\`json\n${JSON.stringify(canonical, null, 2)}\n\`\`\`\n` +
+    `${RESULT_DETAILS_CLOSE}\n`
   );
 }
 
-function parseResultComment(body) {
+function inspectResultComment(body) {
   if (typeof body !== "string") {
     return null;
   }
-  const lines = body.replaceAll("\r\n", "\n").split("\n");
-  if (lines.shift() !== RESULT_MARKER) {
-    return null;
-  }
-  const open = lines.findIndex((line) => line.startsWith("```"));
-  if (open < 0 || lines[open] !== "```json") {
-    return null;
-  }
-  const closeOffset = lines
-    .slice(open + 1)
-    .findIndex((line) => line === "```");
-  if (closeOffset < 0) {
-    return null;
-  }
-  const close = open + 1 + closeOffset;
-  const tail = lines.slice(close + 1);
-  if (
-    tail.some(
-      (line) => line.trim().length > 0 || line.startsWith("```"),
-    )
-  ) {
-    return null;
-  }
-  const humanSummary = lines.slice(0, open).join("\n");
-  if (humanSummary.trim().length === 0) {
+  const normalizedBody = body.replaceAll("\r\n", "\n");
+  const firstActualNewline = normalizedBody.indexOf("\n");
+  const firstLiteralNewline = normalizedBody.indexOf("\\n");
+  const usesLiteralNewlines =
+    (normalizedBody.startsWith("<details") ||
+      normalizedBody.startsWith(RESULT_MARKER)) &&
+    firstLiteralNewline >= 0 &&
+    (firstActualNewline < 0 || firstLiteralNewline < firstActualNewline);
+  const inspectedBody = usesLiteralNewlines
+    ? normalizedBody.replaceAll("\\n", "\n")
+    : normalizedBody;
+  const lines = inspectedBody.split("\n");
+  const looksLikeResult =
+    lines.includes(RESULT_MARKER) ||
+    (lines[0]?.startsWith("<details") && lines[1] === RESULT_SUMMARY);
+  if (!looksLikeResult) {
     return null;
   }
 
-  let payload;
-  try {
-    payload = JSON.parse(lines.slice(open + 1, close).join("\n"));
-    validateWorkResult(payload);
-  } catch {
-    return null;
+  const fences = lines
+    .map((line, index) => (line.startsWith("```") ? index : -1))
+    .filter((index) => index >= 0);
+  const open = fences.length >= 2 ? fences[0] : -1;
+  const closeOffset = lines
+    .slice(open + 1)
+    .findIndex((line) => line === "```");
+  const close = open >= 0 && closeOffset >= 0 ? open + 1 + closeOffset : -1;
+
+  let payload = null;
+  let assignmentId = null;
+  let payloadIsValid = false;
+  if (open >= 0 && close >= 0) {
+    try {
+      payload = JSON.parse(lines.slice(open + 1, close).join("\n"));
+      if (isObject(payload) && typeof payload.assignmentId === "string") {
+        assignmentId = payload.assignmentId;
+      }
+      validateWorkResult(payload);
+      payloadIsValid = true;
+    } catch {
+      // Keep the parsed assignment ID so a malformed retry candidate cannot
+      // silently cause a second Result comment.
+    }
   }
-  return { humanSummary, payload };
+  assignmentId ??= extractAssignmentId(normalizedBody);
+
+  const humanSummary =
+    open >= 7 && lines[open - 1] === ""
+      ? lines.slice(5, open - 1).join("\n")
+      : null;
+  const envelopeIsCanonical =
+    !usesLiteralNewlines &&
+    lines[0] === RESULT_DETAILS_OPEN &&
+    lines[1] === RESULT_SUMMARY &&
+    lines[2] === "" &&
+    lines[3] === RESULT_MARKER &&
+    lines[4] === "" &&
+    lines.filter((line) => line === RESULT_MARKER).length === 1 &&
+    typeof humanSummary === "string" &&
+    humanSummary.trim().length > 0 &&
+    fences.length === 2 &&
+    lines[open] === "```json" &&
+    close === lines.length - 3 &&
+    lines[close + 1] === RESULT_DETAILS_CLOSE &&
+    lines[close + 2] === "";
+
+  return {
+    assignmentId,
+    envelopeIsCanonical,
+    humanSummary,
+    payload,
+    payloadIsValid,
+  };
 }
 
 function apiBaseUrl() {
@@ -495,14 +559,19 @@ function findExistingResult(comments, workResult, identity) {
     if (!isObject(comment)) {
       continue;
     }
-    const parsed = parseResultComment(comment.body);
-    if (parsed?.payload.assignmentId === workResult.assignmentId) {
-      matches.push({ comment, parsed });
+    const inspected = inspectResultComment(comment.body);
+    if (inspected?.assignmentId === workResult.assignmentId) {
+      matches.push({ comment, inspected });
     }
   }
   if (matches.length > 1) {
+    const allSchemaValid = matches.every(
+      ({ inspected }) => inspected.payloadIsValid,
+    );
     throw new ReporterError(
-      "multiple schema-valid Result comments already exist for assignmentId",
+      allSchemaValid
+        ? "multiple schema-valid Result comments already exist for assignmentId"
+        : "multiple Result comment candidates already exist for assignmentId",
     );
   }
   if (matches.length === 0) {
@@ -510,6 +579,16 @@ function findExistingResult(comments, workResult, identity) {
   }
 
   const match = matches[0];
+  if (!match.inspected.payloadIsValid) {
+    throw new ReporterError(
+      "a malformed Result payload already exists for assignmentId",
+    );
+  }
+  if (!match.inspected.envelopeIsCanonical) {
+    throw new ReporterError(
+      "a malformed Result comment envelope already exists for assignmentId",
+    );
+  }
   if (match.comment.user?.id !== identity.id) {
     throw new ReporterError(
       "a schema-valid Result comment for assignmentId exists from a " +
@@ -519,8 +598,8 @@ function findExistingResult(comments, workResult, identity) {
   const expected = canonicalWorkResult(workResult);
   const expectedBody = formatResultComment(workResult);
   if (
-    !isDeepStrictEqual(match.parsed.payload, expected) ||
-    match.parsed.humanSummary !== expected.summary ||
+    !isDeepStrictEqual(match.inspected.payload, expected) ||
+    match.inspected.humanSummary !== expected.summary ||
     match.comment.body !== expectedBody
   ) {
     throw new ReporterError(
