@@ -176,7 +176,6 @@ Configure these values under **Settings → Secrets and variables → Agents**:
 | Kind | Name | Purpose |
 | --- | --- | --- |
 | Secret | `COPILOT_MCP_WORKGRAPH_TOKEN` | Fixed-repository task reporter token |
-| Variable | `COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID` | Exact GraphQL node ID of the `WorkGraphTask` Issue Type |
 | Variable | `COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID` | Expected immutable numeric task creator/launcher database ID |
 | Variable | `COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID` | Expected immutable numeric reporter token owner ID |
 
@@ -185,6 +184,9 @@ The MCP process receives these as `WORKGRAPH_TOKEN`,
 `WORKGRAPH_REPORTER_USER_ID`. Numeric user IDs are positive integers. The
 configured GraphQL Issue Type node ID must equal `task.type.id`; the code
 constant `WorkGraphTask` must equal `task.type.name`. Every check fails closed.
+Both repository agent profiles pin `WORKGRAPH_TASK_ISSUE_TYPE_ID` directly to
+the deployed organization Issue Type node ID `IT_kwDOCX0YF84CKGIJ`; it is not
+an Agents variable.
 
 For this prototype, the configured creator and reporter IDs may intentionally
 be the same stable bot identity. They remain separate configuration checks so

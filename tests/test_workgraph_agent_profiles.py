@@ -77,11 +77,19 @@ class WorkGraphAgentProfilesTest(unittest.TestCase):
                 )
                 for setting in [
                     "secrets.COPILOT_MCP_WORKGRAPH_TOKEN",
-                    "vars.COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID",
                     "vars.COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID",
                     "vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID",
                 ]:
                     self.assertIn(setting, frontmatter)
+                self.assertIn(
+                    "WORKGRAPH_TASK_ISSUE_TYPE_ID: "
+                    "IT_kwDOCX0YF84CKGIJ",
+                    frontmatter,
+                )
+                self.assertNotIn(
+                    "COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID",
+                    frontmatter,
+                )
                 self.assertNotIn("github/add_issue_comment", frontmatter)
                 self.assertNotIn("github/issue_write", frontmatter)
 
