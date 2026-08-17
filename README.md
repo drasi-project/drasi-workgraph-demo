@@ -1,34 +1,26 @@
 # drasi-workgraph-demo
-WorkGraph workflow prototype
 
-The minimal GitHub WorkGraph prototype defines exactly two Copilot agent
-profiles:
+WorkGraph workflow prototype with two Copilot agent profiles:
 
-- `.github/agents/issue-validator.agent.md` (`agentProfile`:
-  `issue-validator`, `taskType`: `issue-validation`)
-- `.github/agents/issue-risk-profiler.agent.md` (`agentProfile`:
-  `issue-risk-profiler`, `taskType`: `issue-risk-profile`)
+- `issue-validator` / `issue-validation`
+- `issue-risk-profiler` / `issue-risk-profile`
 
-Both use the scoped, retry-safe Result comment capability documented in
-[`docs/workgraph-result-reporter.md`](docs/workgraph-result-reporter.md).
-Issue validation selects repository criteria with the exact Assignment task
-`{ "validationProfile": "new-issue-default" }`. The profile is
-`.github/workgraph/profiles/issue-validation/new-issue-default.md`; Assignment
-payloads do not duplicate its criteria.
+Each agent receives a native child Issue whose exact Issue Type is
+`WorkGraphTask`, reads its raw strict WorkGraphAssignment JSON body, follows
+GitHub's authoritative parent relation, works only on the parent content, and
+writes progress or one Result only to the task. Agents never write, label, or
+close the parent and never close the task; WorkGraph machinery closes the task
+after accepting its Result.
 
-Result comments use this collapsed-by-default shape:
+The dependency-free reporter exposes only `report_progress` and
+`submit_task_result`. Result comments have exact canonical bytes:
 
 ````text
-<details>
-<summary>WorkGraph Result</summary>
-
-WorkGraphResult/v1
-
-Validated the title and body requirements.
+WorkGraphTaskResult/v1
 
 ```json
 {
-  "assignmentId": "organization-unique-id",
+  "assignmentId": "issue-validation:I_parent_node_id",
   "taskType": "issue-validation",
   "outcome": "succeeded",
   "summary": "Validated the title and body requirements.",
@@ -48,5 +40,8 @@ Validated the title and body requirements.
   }
 }
 ```
-</details>
 ````
+
+See
+[`docs/workgraph-result-reporter.md`](docs/workgraph-result-reporter.md) for
+the strict task, identity, retry, progress, and Result contracts.

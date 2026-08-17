@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import test from "node:test";
 import {
+  formatTaskResult,
   loadIssueValidationProfile,
   parseIssueValidationProfile,
   resolveIssueValidationProfilePath,
@@ -21,15 +22,24 @@ const REPORTER = path.join(
   "mcp",
   "workgraph-reporter.mjs",
 );
+const TASK_NUMBER = 17;
+const TASK_NODE_ID = "I_task";
+const PARENT_NUMBER = 7;
+const PARENT_NODE_ID = "I_parent";
+const TASK_TYPE_ID = "IT_workgraph_task";
+const TASK_TYPE_DATABASE_ID = 36200969;
+const REPORTER_USER_ID = 42;
+const CREATOR_USER_ID = 84;
+const VALIDATION_ASSIGNMENT_ID = `issue-validation:${PARENT_NODE_ID}`;
+const RISK_ASSIGNMENT_ID = `issue-risk-profile:${PARENT_NODE_ID}`;
 const VALIDATION_PROFILE_NAME = "new-issue-default";
 const VALIDATION_CRITERIA = [
   "The Issue has a non-empty title",
   "The Issue body is present",
 ];
-const ISSUE_NUMBER = 7;
 
 const VALIDATION_ASSIGNMENT = {
-  assignmentId: "assignment-validation-001",
+  assignmentId: VALIDATION_ASSIGNMENT_ID,
   agentProfile: "issue-validator",
   priority: 10,
   taskType: "issue-validation",
@@ -37,9 +47,8 @@ const VALIDATION_ASSIGNMENT = {
     validationProfile: VALIDATION_PROFILE_NAME,
   },
 };
-
 const VALIDATION_RESULT = {
-  assignmentId: "assignment-validation-001",
+  assignmentId: VALIDATION_ASSIGNMENT_ID,
   taskType: "issue-validation",
   outcome: "succeeded",
   summary: "Validated the title and body requirements.",
@@ -58,17 +67,41 @@ const VALIDATION_RESULT = {
     ],
   },
 };
-
-const EXPECTED_VALIDATION_COMMENT = `<details>
-<summary>WorkGraph Result</summary>
-
-WorkGraphResult/v1
-
-Validated the title and body requirements.
+const RISK_ASSIGNMENT = {
+  assignmentId: RISK_ASSIGNMENT_ID,
+  agentProfile: "issue-risk-profiler",
+  priority: 4,
+  taskType: "issue-risk-profile",
+  task: {
+    riskProfile: "delivery",
+    dimensions: ["Security impact", "Rollback complexity"],
+  },
+};
+const RISK_RESULT = {
+  assignmentId: RISK_ASSIGNMENT_ID,
+  taskType: "issue-risk-profile",
+  outcome: "succeeded",
+  summary: "Scored both requested risk dimensions.",
+  result: {
+    dimensions: [
+      {
+        dimension: "Security impact",
+        score: 75,
+        rationale: "The change affects authorization checks.",
+      },
+      {
+        dimension: "Rollback complexity",
+        score: 25,
+        rationale: "The issue describes a feature-flag rollback.",
+      },
+    ],
+  },
+};
+const EXPECTED_VALIDATION_COMMENT = `WorkGraphTaskResult/v1
 
 \`\`\`json
 {
-  "assignmentId": "assignment-validation-001",
+  "assignmentId": "issue-validation:I_parent",
   "taskType": "issue-validation",
   "outcome": "succeeded",
   "summary": "Validated the title and body requirements.",
@@ -88,56 +121,41 @@ Validated the title and body requirements.
   }
 }
 \`\`\`
-</details>
 `;
 
-const RISK_ASSIGNMENT = {
-  assignmentId: "assignment-risk-001",
-  agentProfile: "issue-risk-profiler",
-  priority: 4,
-  taskType: "issue-risk-profile",
-  task: {
-    riskProfile: "delivery",
-    dimensions: ["Security impact", "Rollback complexity"],
-  },
-};
-
-const RISK_RESULT = {
-  assignmentId: "assignment-risk-001",
-  taskType: "issue-risk-profile",
-  outcome: "succeeded",
-  summary: "Scored both requested risk dimensions.",
-  result: {
-    dimensions: [
-      {
-        dimension: "Security impact",
-        score: 75,
-        rationale: "The change affects authorization checks.",
-      },
-      {
-        dimension: "Rollback complexity",
-        score: 25,
-        rationale: "The issue describes a feature-flag rollback.",
-      },
-    ],
-  },
-};
-
-function inputFor(assignment, workResult) {
+function issueReferences() {
   return {
-    issueNumber: ISSUE_NUMBER,
+    taskIssueNumber: TASK_NUMBER,
+    taskIssueNodeId: TASK_NODE_ID,
+    parentIssueNumber: PARENT_NUMBER,
+    parentIssueNodeId: PARENT_NODE_ID,
+  };
+}
+
+function resultInput(
+  assignment = VALIDATION_ASSIGNMENT,
+  workResult = VALIDATION_RESULT,
+) {
+  return {
+    ...issueReferences(),
+    workResult,
     assignment,
+  };
+}
+
+function submitInput(workResult = VALIDATION_RESULT) {
+  return {
+    ...issueReferences(),
     workResult,
   };
 }
 
-function resultComment(workResult) {
-  return (
-    `<details>\n<summary>WorkGraph Result</summary>\n\n` +
-    `WorkGraphResult/v1\n\n${workResult.summary}\n\n` +
-    `\`\`\`json\n${JSON.stringify(workResult, null, 2)}\n\`\`\`\n` +
-    `</details>\n`
-  );
+function progressInput(message = "Reviewed the parent Issue fields.") {
+  return {
+    ...issueReferences(),
+    assignmentId: VALIDATION_ASSIGNMENT_ID,
+    message,
+  };
 }
 
 function profileMarkdown(criteriaLines) {
@@ -161,23 +179,50 @@ function sendJson(response, status, body) {
 }
 
 async function startFakeGitHub({
+  assignment = VALIDATION_ASSIGNMENT,
+  taskOverrides = {},
+  parentOverrides = {},
   existingComments = [],
   commentMode = "success",
-  identityId = 42,
-  issueIsPullRequest = false,
+  identityId = REPORTER_USER_ID,
 } = {}) {
   const state = {
     comments: [...existingComments],
     operations: [],
     postAttempts: 0,
+    requests: [],
+  };
+  const task = {
+    node_id: TASK_NODE_ID,
+    number: TASK_NUMBER,
+    state: "open",
+    title: "WorkGraph task",
+    body: `${JSON.stringify(assignment, null, 2)}\n`,
+    user: { id: CREATOR_USER_ID, login: "workgraph-core" },
+    type: {
+      id: TASK_TYPE_DATABASE_ID,
+      node_id: TASK_TYPE_ID,
+      name: "WorkGraphTask",
+    },
+    ...taskOverrides,
+  };
+  const parent = {
+    node_id: PARENT_NODE_ID,
+    number: PARENT_NUMBER,
+    state: "open",
+    title: "Example parent",
+    body: "Acceptance criteria:\n- [ ] Complete",
+    repository_url:
+      "https://api.github.com/repos/drasi-project/drasi-workgraph-demo",
+    ...parentOverrides,
   };
   const server = createServer(async (request, response) => {
+    const url = new URL(request.url, "http://localhost");
+    state.requests.push({ method: request.method, path: url.pathname });
     if (request.headers.authorization !== "Bearer test-token") {
       sendJson(response, 401, { message: "bad token" });
       return;
     }
-    const url = new URL(request.url, "http://localhost");
-
     if (request.method === "GET" && url.pathname === "/user") {
       state.operations.push("identity");
       sendJson(response, 200, {
@@ -189,23 +234,23 @@ async function startFakeGitHub({
     if (
       request.method === "GET" &&
       url.pathname ===
-        `/repos/drasi-project/drasi-workgraph-demo/issues/${ISSUE_NUMBER}`
+        `/repos/drasi-project/drasi-workgraph-demo/issues/${TASK_NUMBER}`
     ) {
-      state.operations.push("issue");
-      sendJson(response, 200, {
-        node_id: "I_example",
-        number: ISSUE_NUMBER,
-        title: "Example issue",
-        body: "Acceptance criteria:\n- [ ] Complete",
-        ...(issueIsPullRequest
-          ? { pull_request: { url: "https://example.test/pull/7" } }
-          : {}),
-      });
+      state.operations.push("task");
+      sendJson(response, 200, task);
       return;
     }
     if (
       request.method === "GET" &&
-      url.pathname.endsWith(`/issues/${ISSUE_NUMBER}/comments`)
+      url.pathname.endsWith(`/issues/${TASK_NUMBER}/parent`)
+    ) {
+      state.operations.push("parent");
+      sendJson(response, 200, parent);
+      return;
+    }
+    if (
+      request.method === "GET" &&
+      url.pathname.endsWith(`/issues/${TASK_NUMBER}/comments`)
     ) {
       state.operations.push("comments");
       sendJson(response, 200, state.comments);
@@ -213,20 +258,20 @@ async function startFakeGitHub({
     }
     if (
       request.method === "POST" &&
-      url.pathname.endsWith(`/issues/${ISSUE_NUMBER}/comments`)
+      url.pathname.endsWith(`/issues/${TASK_NUMBER}/comments`)
     ) {
       state.postAttempts += 1;
       const payload = await requestBody(request);
+      const comment = {
+        node_id: `IC_created_${state.postAttempts}`,
+        user: { id: identityId, login: "workgraph-reporter" },
+        body: payload.body,
+      };
       if (commentMode === "failure") {
         state.operations.push("comment-failure");
         sendJson(response, 422, { message: "comment rejected" });
         return;
       }
-      const comment = {
-        node_id: "IC_created",
-        user: { id: identityId, login: "workgraph-reporter" },
-        body: payload.body,
-      };
       state.comments.push(comment);
       if (commentMode === "ambiguous") {
         state.operations.push("comment-ambiguous");
@@ -261,7 +306,7 @@ async function startFakeGitHub({
 async function runMcp(
   messages,
   apiUrl,
-  { reporterUserId = "42" } = {},
+  config = {},
 ) {
   const child = spawn(process.execPath, [REPORTER], {
     cwd: ROOT,
@@ -269,8 +314,13 @@ async function runMcp(
       ...process.env,
       NODE_ENV: "test",
       WORKGRAPH_TEST_GITHUB_API_URL: apiUrl,
-      WORKGRAPH_TOKEN: "test-token",
-      WORKGRAPH_REPORTER_USER_ID: reporterUserId,
+      COPILOT_MCP_WORKGRAPH_TOKEN: "test-token",
+      COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID:
+        config.taskIssueTypeId ?? TASK_TYPE_ID,
+      COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID:
+        config.launcherUserId ?? String(CREATOR_USER_ID),
+      COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID:
+        config.reporterUserId ?? String(REPORTER_USER_ID),
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -297,9 +347,7 @@ async function runMcp(
     .map((line) => JSON.parse(line));
 }
 
-function protocolMessages(
-  input = inputFor(VALIDATION_ASSIGNMENT, VALIDATION_RESULT),
-) {
+function protocolMessages(name = "submit_task_result", input = submitInput()) {
   return [
     {
       jsonrpc: "2.0",
@@ -313,79 +361,98 @@ function protocolMessages(
       jsonrpc: "2.0",
       id: 4,
       method: "tools/call",
-      params: { name: "report_result", arguments: input },
+      params: { name, arguments: input },
     },
   ];
 }
 
-async function runCall(options = {}) {
-  const fake = await startFakeGitHub(options);
+async function callReporter(fakeOptions, name, input, config) {
+  const fake = await startFakeGitHub(fakeOptions);
   try {
     const responses = await runMcp(
-      protocolMessages(options.input),
+      protocolMessages(name, input),
       fake.apiUrl,
-      options.config,
+      config,
     );
-    return { fake, responses };
-  } catch (error) {
+    return { response: responses[3].result, state: fake.state };
+  } finally {
     await fake.close();
-    throw error;
   }
 }
 
-test("exposes one strict typed report_result tool", async () => {
+function assertNoForbiddenMutation(state) {
+  for (const request of state.requests) {
+    assert.notEqual(request.method, "PATCH");
+    assert.notEqual(request.method, "PUT");
+    assert.notEqual(request.method, "DELETE");
+    assert.equal(
+      request.method === "POST" &&
+        !request.path.endsWith(`/issues/${TASK_NUMBER}/comments`),
+      false,
+    );
+  }
+}
+
+test("exposes only the two narrow task reporter tools", async () => {
+  const { response } = await callReporter(
+    {},
+    "submit_task_result",
+    submitInput(),
+  );
+  assert.equal(response.isError, false);
+
   const fake = await startFakeGitHub();
   try {
     const responses = await runMcp(protocolMessages(), fake.apiUrl);
     assert.equal(
       responses[0].result.serverInfo.name,
-      "drasi-workgraph-result-reporter",
+      "drasi-workgraph-task-reporter",
     );
     assert.deepEqual(responses[1].result, {});
     const tools = responses[2].result.tools;
-    assert.deepEqual(tools.map((tool) => tool.name), ["report_result"]);
-    const schema = tools[0].inputSchema;
-    assert.equal(schema.additionalProperties, false);
-    assert.deepEqual(Object.keys(schema.properties).sort(), [
-      "assignment",
-      "issueNumber",
-      "workResult",
-    ]);
-    assert.equal(schema.properties.assignment.oneOf.length, 2);
-    assert.equal(schema.properties.workResult.oneOf.length, 2);
-    const validationAssignmentSchema =
-      schema.properties.assignment.oneOf.find(
-        (entry) =>
-          entry.properties.taskType.const === "issue-validation",
-      );
     assert.deepEqual(
-      Object.keys(
-        validationAssignmentSchema.properties.task.properties,
-      ),
-      ["validationProfile"],
+      tools.map((tool) => tool.name),
+      ["report_progress", "submit_task_result"],
+    );
+    for (const tool of tools) {
+      assert.equal(tool.inputSchema.additionalProperties, false);
+    }
+    assert.deepEqual(
+      Object.keys(tools[0].inputSchema.properties),
+      [
+        "taskIssueNumber",
+        "taskIssueNodeId",
+        "parentIssueNumber",
+        "parentIssueNodeId",
+        "assignmentId",
+        "message",
+      ],
+    );
+    assert.deepEqual(
+      Object.keys(tools[1].inputSchema.properties),
+      [
+        "taskIssueNumber",
+        "taskIssueNodeId",
+        "parentIssueNumber",
+        "parentIssueNodeId",
+        "workResult",
+      ],
     );
     assert.equal(
-      validationAssignmentSchema.properties.task.additionalProperties,
-      false,
+      tools[0].inputSchema.properties.assignmentId.maxLength,
+      256,
     );
-    assert.deepEqual(
-      validationAssignmentSchema.properties.task.properties
-        .validationProfile,
-      {
-        type: "string",
-        minLength: 1,
-        maxLength: 64,
-        pattern: "^[a-z0-9]+(?:-[a-z0-9]+)*$",
-      },
+    assert.equal(
+      tools[0].inputSchema.properties.taskIssueNodeId.maxLength,
+      256,
     );
-    const serialized = JSON.stringify(schema);
+    const serialized = JSON.stringify(tools);
     for (const forbidden of [
       "repository",
       "commentBody",
       "graphql",
-      "projectItemNodeId",
-      "routeId",
-      "executionId",
+      "state_reason",
+      "report_result",
     ]) {
       assert.equal(serialized.includes(forbidden), false);
     }
@@ -394,7 +461,7 @@ test("exposes one strict typed report_result tool", async () => {
   }
 });
 
-test("loads the canonical repository-backed validation profile", () => {
+test("loads and strictly parses the repository validation profile", () => {
   assert.equal(
     resolveIssueValidationProfilePath(VALIDATION_PROFILE_NAME),
     path.join(
@@ -410,30 +477,6 @@ test("loads the canonical repository-backed validation profile", () => {
     loadIssueValidationProfile(VALIDATION_PROFILE_NAME),
     VALIDATION_CRITERIA,
   );
-  assert.throws(
-    () => loadIssueValidationProfile("missing-profile"),
-    /profile "missing-profile" does not exist/,
-  );
-});
-
-test("rejects invalid and traversal validation profile names", () => {
-  for (const validationProfile of [
-    "",
-    "New-Issue-Default",
-    "new_issue_default",
-    "new--issue",
-    "new-issue-default.md",
-    "../new-issue-default",
-    "nested/new-issue-default",
-  ]) {
-    assert.throws(
-      () => resolveIssueValidationProfilePath(validationProfile),
-      /validationProfile must be 1-64 lowercase letters/,
-    );
-  }
-});
-
-test("parses only strict final numbered Criteria sections", (t) => {
   assert.deepEqual(
     parseIssueValidationProfile(
       profileMarkdown([
@@ -443,293 +486,375 @@ test("parses only strict final numbered Criteria sections", (t) => {
     ),
     VALIDATION_CRITERIA,
   );
-
-  const cases = [
-    {
-      name: "missing section",
-      source: "# Test profile\n\n## Guidance\n\nNo criteria.\n",
-      pattern: /missing the ## Criteria section/,
-    },
-    {
-      name: "malformed heading",
-      source: "# Test profile\n\n## criteria\n\n1. Criterion\n",
-      pattern: /heading must be exactly "## Criteria"/,
-    },
-    {
-      name: "unexpected criteria-like heading",
-      source:
-        "# Test profile\n\n## Criteria notes\n\nIgnore.\n\n" +
-        "## Criteria\n\n1. Criterion\n",
-      pattern: /heading must be exactly "## Criteria"/,
-    },
-    {
-      name: "indented duplicate heading",
-      source:
-        "# Test profile\n\n   ## Criteria\n\n1. First\n\n" +
-        "## Criteria\n\n1. Second\n",
-      pattern: /heading must be exactly "## Criteria"/,
-    },
-    {
-      name: "empty section",
-      source: "# Test profile\n\n## Criteria\n\n",
-      pattern: /Criteria section must not be empty/,
-    },
-    {
-      name: "empty criterion",
-      source: profileMarkdown(["1. "]),
-      pattern: /unexpected Criteria content/,
-    },
-    {
-      name: "duplicate criteria",
-      source: profileMarkdown(["1. Criterion", "2. Criterion"]),
-      pattern: /duplicate criterion/,
-    },
-    {
-      name: "nonconsecutive numbering",
-      source: profileMarkdown(["1. First", "3. Second"]),
-      pattern: /numbered consecutively from 1/,
-    },
-    {
-      name: "unexpected prose",
-      source: profileMarkdown(["1. Criterion", "Unexpected prose"]),
-      pattern: /unexpected Criteria content/,
-    },
-    {
-      name: "duplicate section",
-      source:
-        "# Test profile\n\n## Criteria\n\n1. First\n\n" +
-        "## Criteria\n\n1. Second\n",
-      pattern: /exactly one Criteria heading/,
-    },
-    {
-      name: "missing final LF",
-      source: "# Test profile\n\n## Criteria\n\n1. Criterion",
-      pattern: /must end with one LF/,
-    },
-  ];
-  for (const item of cases) {
-    t.test(item.name, () => {
-      assert.throws(
-        () => parseIssueValidationProfile(item.source),
-        item.pattern,
-      );
-    });
-  }
+  assert.throws(
+    () => resolveIssueValidationProfilePath("../profile"),
+    /validationProfile must be 1-64 lowercase letters/,
+  );
+  assert.throws(
+    () => parseIssueValidationProfile("# Profile\n"),
+    /missing the ## Criteria section/,
+  );
 });
 
-test("creates one canonical issue-validation Result", async () => {
-  const fake = await startFakeGitHub();
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl);
-    const result = responses[3].result.structuredContent;
-    assert.deepEqual(result, {
-      assignmentId: VALIDATION_ASSIGNMENT.assignmentId,
-      taskType: "issue-validation",
-      commentNodeId: "IC_created",
-      reconciled: false,
-    });
-    assert.deepEqual(fake.state.operations, [
-      "identity",
-      "issue",
-      "comments",
-      "comment",
-    ]);
-    assert.equal(fake.state.postAttempts, 1);
-    const body = fake.state.comments[0].body;
-    assert.equal(body, EXPECTED_VALIDATION_COMMENT);
-    assert.equal((body.match(/^```/gm) ?? []).length, 2);
-    const lines = body.split("\n");
-    assert.deepEqual(lines.slice(0, 7), [
-      "<details>",
-      "<summary>WorkGraph Result</summary>",
-      "",
-      "WorkGraphResult/v1",
-      "",
-      VALIDATION_RESULT.summary,
-      "",
-    ]);
-    assert.equal(lines.at(-3), "```");
-    assert.equal(lines.at(-2), "</details>");
-    assert.equal(lines.at(-1), "");
-    assert.equal(body.includes("<details open>"), false);
-    assert.equal(body.includes("<details open=\"open\">"), false);
-    assert.equal(body.includes(`Issue #${ISSUE_NUMBER}`), false);
-    const payload = JSON.parse(
-      body.match(/```json\n([\s\S]+)\n```\n<\/details>\n$/)[1],
-    );
-    assert.deepEqual(payload, VALIDATION_RESULT);
-    assert.deepEqual(Object.keys(payload).sort(), [
-      "assignmentId",
-      "outcome",
-      "result",
-      "summary",
-      "taskType",
-    ]);
-  } finally {
-    await fake.close();
-  }
+test("creates exact issue-validation Result bytes on the task only", async () => {
+  const { response, state } = await callReporter(
+    {},
+    "submit_task_result",
+    submitInput(),
+  );
+  assert.deepEqual(response.structuredContent, {
+    taskIssueNodeId: TASK_NODE_ID,
+    parentIssueNodeId: PARENT_NODE_ID,
+    assignmentId: VALIDATION_ASSIGNMENT_ID,
+    taskType: "issue-validation",
+    commentNodeId: "IC_created_1",
+    reconciled: false,
+  });
+  assert.equal(state.comments[0].body, EXPECTED_VALIDATION_COMMENT);
+  assert.equal(state.comments[0].body, formatTaskResult(VALIDATION_RESULT));
+  assert.equal(state.comments[0].body.endsWith("```\n"), true);
+  assert.equal(state.comments[0].body.includes("<details"), false);
+  assert.deepEqual(state.operations, [
+    "identity",
+    "task",
+    "parent",
+    "comments",
+    "comment",
+  ]);
+  assertNoForbiddenMutation(state);
 });
 
-test("creates one canonical issue-risk-profile Result", async () => {
-  const fake = await startFakeGitHub();
-  try {
-    const input = inputFor(RISK_ASSIGNMENT, RISK_RESULT);
-    const responses = await runMcp(protocolMessages(input), fake.apiUrl);
-    const result = responses[3].result.structuredContent;
-    assert.equal(result.taskType, "issue-risk-profile");
-    assert.equal(result.reconciled, false);
-    assert.equal(fake.state.postAttempts, 1);
-    assert.equal(fake.state.comments[0].body, resultComment(RISK_RESULT));
-    const payload = JSON.parse(
-      fake.state.comments[0].body.match(
-        /```json\n([\s\S]+)\n```\n<\/details>\n$/,
+test("creates exact issue-risk-profile Result bytes", async () => {
+  const { response, state } = await callReporter(
+    { assignment: RISK_ASSIGNMENT },
+    "submit_task_result",
+    submitInput(RISK_RESULT),
+  );
+  assert.equal(response.structuredContent.taskType, "issue-risk-profile");
+  assert.equal(state.comments[0].body, formatTaskResult(RISK_RESULT));
+  assert.deepEqual(
+    JSON.parse(
+      state.comments[0].body.match(
+        /^WorkGraphTaskResult\/v1\n\n```json\n([\s\S]+)\n```\n$/,
       )[1],
-    );
-    assert.deepEqual(payload.result.dimensions, RISK_RESULT.result.dimensions);
-    assert.equal(payload.result.dimensions[0].score, 75);
-  } finally {
-    await fake.close();
+    ).result.dimensions,
+    RISK_RESULT.result.dimensions,
+  );
+  assertNoForbiddenMutation(state);
+});
+
+test("posts bounded ordinary progress on the task only", async () => {
+  const progress = "Reviewed the parent Issue fields.\nScoring dimensions.";
+  const { response, state } = await callReporter(
+    {},
+    "report_progress",
+    progressInput(progress),
+  );
+  assert.deepEqual(response.structuredContent, {
+    taskIssueNodeId: TASK_NODE_ID,
+    commentNodeId: "IC_created_1",
+  });
+  assert.equal(state.comments[0].body, progress);
+  assert.deepEqual(state.operations, [
+    "identity",
+    "task",
+    "parent",
+    "comment",
+  ]);
+  assertNoForbiddenMutation(state);
+});
+
+test("progress cross-checks its assignment ID after resolving the parent", async () => {
+  const { response, state } = await callReporter(
+    {},
+    "report_progress",
+    {
+      ...progressInput(),
+      assignmentId: "issue-validation:I_other",
+    },
+  );
+  assert.equal(response.isError, true);
+  assert.match(
+    response.content[0].text,
+    /supplied assignmentId must match assignment.assignmentId/,
+  );
+  assert.deepEqual(state.operations, ["identity", "task", "parent"]);
+  assert.equal(state.postAttempts, 0);
+});
+
+test("rejects progress control content before GitHub access", async (t) => {
+  const cases = [
+    ["carriage return", "one\r\ntwo"],
+    ["current Result marker", "WorkGraphTaskResult/v1"],
+    ["legacy Result marker", "WorkGraphResult/v1"],
+    ["legacy Assignment marker", "WorkGraphAssignment/v1"],
+    ["fence", "```json\n{}\n```"],
+    ["tilde fence", "~~~json\n{}\n~~~"],
+    ["details", "<details>text</details>"],
+    ["summary", "<summary>text</summary>"],
+    ["oversized", "x".repeat(4097)],
+  ];
+  for (const [name, progress] of cases) {
+    await t.test(name, async () => {
+      const { response, state } = await callReporter(
+        {},
+        "report_progress",
+        progressInput(progress),
+      );
+      assert.equal(response.isError, true);
+      assert.deepEqual(state.operations, []);
+      assert.equal(state.postAttempts, 0);
+    });
   }
 });
 
-test("rejects additional input before GitHub access", async () => {
-  const fake = await startFakeGitHub();
-  try {
-    const input = {
-      ...inputFor(VALIDATION_ASSIGNMENT, VALIDATION_RESULT),
-      repository: "other/repository",
-    };
-    const responses = await runMcp(protocolMessages(input), fake.apiUrl);
-    assert.equal(responses[3].result.isError, true);
-    assert.match(responses[3].result.content[0].text, /extra=.*repository/);
-    assert.deepEqual(fake.state.operations, []);
-  } finally {
-    await fake.close();
-  }
-});
-
-test("rejects malformed typed Assignments before GitHub access", async (t) => {
+test("validates all task identity, type, body, and parent boundaries", async (t) => {
   const cases = [
     {
-      name: "empty agent profile",
-      assignment: {
-        ...VALIDATION_ASSIGNMENT,
-        agentProfile: " ",
-      },
-      pattern: /agentProfile must be a non-empty string/,
+      name: "task is a pull request",
+      options: { taskOverrides: { pull_request: { url: "x" } } },
+      pattern: /requested non-PR Issue/,
     },
     {
-      name: "empty validation profile",
-      assignment: {
-        ...VALIDATION_ASSIGNMENT,
-        task: {
-          ...VALIDATION_ASSIGNMENT.task,
-          validationProfile: " ",
+      name: "task number mismatch",
+      options: { taskOverrides: { number: 99 } },
+      pattern: /requested non-PR Issue/,
+    },
+    {
+      name: "task node mismatch",
+      options: { taskOverrides: { node_id: "I_other" } },
+      pattern: /requested non-PR Issue/,
+    },
+    {
+      name: "type name mismatch",
+      options: {
+        taskOverrides: {
+          type: {
+            id: TASK_TYPE_DATABASE_ID,
+            node_id: TASK_TYPE_ID,
+            name: "Task",
+          },
         },
       },
-      pattern: /validationProfile must be 1-64 lowercase letters/,
+      pattern: /exact WorkGraphTask type ID and name/,
     },
     {
-      name: "traversal validation profile",
-      assignment: {
-        ...VALIDATION_ASSIGNMENT,
-        task: {
-          validationProfile: "../new-issue-default",
+      name: "type node ID mismatch",
+      options: {
+        taskOverrides: {
+          type: {
+            id: TASK_TYPE_DATABASE_ID,
+            node_id: "IT_other",
+            name: "WorkGraphTask",
+          },
         },
       },
-      pattern: /validationProfile must be 1-64 lowercase letters/,
+      pattern: /exact WorkGraphTask type ID and name/,
     },
     {
-      name: "missing validation profile",
-      assignment: {
-        ...VALIDATION_ASSIGNMENT,
-        task: {
-          validationProfile: "missing-profile",
+      name: "type node ID missing",
+      options: {
+        taskOverrides: {
+          type: { id: TASK_TYPE_DATABASE_ID, name: "WorkGraphTask" },
         },
       },
-      pattern: /profile "missing-profile" does not exist/,
+      pattern: /exact WorkGraphTask type ID and name/,
     },
     {
-      name: "stale Assignment criteria",
-      assignment: {
-        ...VALIDATION_ASSIGNMENT,
-        task: {
-          ...VALIDATION_ASSIGNMENT.task,
-          criteria: VALIDATION_CRITERIA,
+      name: "creator mismatch",
+      options: {
+        taskOverrides: { user: { id: 999, login: "other" } },
+      },
+      pattern: /LAUNCHER_USER_ID/,
+    },
+    {
+      name: "body is fenced",
+      options: {
+        taskOverrides: {
+          body: `\`\`\`json\n${JSON.stringify(VALIDATION_ASSIGNMENT)}\n\`\`\``,
         },
       },
-      pattern: /extra=.*criteria/,
+      pattern: /only raw WorkGraphAssignment JSON/,
     },
     {
-      name: "extra task field",
-      assignment: {
-        ...RISK_ASSIGNMENT,
-        task: { ...RISK_ASSIGNMENT.task, route: "legacy" },
+      name: "body has prose",
+      options: {
+        taskOverrides: {
+          body: `Assignment:\n${JSON.stringify(VALIDATION_ASSIGNMENT)}`,
+        },
       },
-      pattern: /extra=.*route/,
-      workResult: RISK_RESULT,
+      pattern: /not valid WorkGraphAssignment JSON/,
+    },
+    {
+      name: "body has unknown field",
+      options: {
+        assignment: { ...VALIDATION_ASSIGNMENT, parent: PARENT_NUMBER },
+      },
+      pattern: /extra=.*parent/,
+    },
+    {
+      name: "profile mapping mismatch",
+      options: {
+        assignment: {
+          ...VALIDATION_ASSIGNMENT,
+          agentProfile: "issue-risk-profiler",
+        },
+      },
+      pattern: /agentProfile does not match/,
+    },
+    {
+      name: "assignment not bound to parent",
+      options: {
+        assignment: {
+          ...VALIDATION_ASSIGNMENT,
+          assignmentId: "I_wrong_parent",
+        },
+      },
+      pattern: /must equal taskType:authoritativeParentNodeId/,
+    },
+    {
+      name: "parent is a pull request",
+      options: { parentOverrides: { pull_request: { url: "x" } } },
+      pattern: /requested non-PR parent Issue/,
+    },
+    {
+      name: "parent number mismatch",
+      options: { parentOverrides: { number: 88 } },
+      pattern: /requested non-PR parent Issue/,
+    },
+    {
+      name: "parent node mismatch",
+      options: { parentOverrides: { node_id: "I_other" } },
+      pattern: /requested non-PR parent Issue/,
+    },
+    {
+      name: "parent repository mismatch",
+      options: {
+        parentOverrides: {
+          repository_url: "https://api.github.com/repos/other/repository",
+        },
+      },
+      pattern: /not in the fixed repository/,
     },
   ];
   for (const item of cases) {
     await t.test(item.name, async () => {
-      const fake = await startFakeGitHub();
-      try {
-        const responses = await runMcp(
-          protocolMessages(
-            inputFor(
-              item.assignment,
-              item.workResult ?? VALIDATION_RESULT,
-            ),
-          ),
-          fake.apiUrl,
-        );
-        assert.equal(responses[3].result.isError, true);
-        assert.match(responses[3].result.content[0].text, item.pattern);
-        assert.deepEqual(fake.state.operations, []);
-      } finally {
-        await fake.close();
-      }
+      const { response, state } = await callReporter(
+        item.options,
+        "submit_task_result",
+        submitInput(),
+      );
+      assert.equal(response.isError, true);
+      assert.match(response.content[0].text, item.pattern);
+      assert.equal(state.postAttempts, 0);
+      assertNoForbiddenMutation(state);
     });
   }
 });
 
-test("rejects malformed typed Results before GitHub access", async (t) => {
+test("validates reporter configuration and identity", async (t) => {
   const cases = [
     {
-      name: "empty evidence",
-      assignment: VALIDATION_ASSIGNMENT,
-      workResult: {
+      name: "wrong configured type ID",
+      config: { taskIssueTypeId: "IT_wrong" },
+      pattern: /exact WorkGraphTask type ID and name/,
+    },
+    {
+      name: "wrong configured creator ID",
+      config: { launcherUserId: "999" },
+      pattern: /LAUNCHER_USER_ID/,
+    },
+    {
+      name: "wrong configured reporter ID",
+      config: { reporterUserId: "999" },
+      pattern: /REPORTER_USER_ID/,
+    },
+    {
+      name: "non-positive launcher ID",
+      config: { launcherUserId: "0" },
+      pattern: /LAUNCHER_USER_ID must be a positive integer/,
+    },
+    {
+      name: "empty Issue Type ID",
+      config: { taskIssueTypeId: "" },
+      pattern: /TASK_ISSUE_TYPE_ID/,
+    },
+    {
+      name: "wrong authenticated reporter",
+      options: { identityId: 999 },
+      pattern: /REPORTER_USER_ID/,
+    },
+  ];
+  for (const item of cases) {
+    await t.test(item.name, async () => {
+      const { response, state } = await callReporter(
+        item.options ?? {},
+        "submit_task_result",
+        submitInput(),
+        item.config,
+      );
+      assert.equal(response.isError, true);
+      assert.match(response.content[0].text, item.pattern);
+      assert.equal(state.postAttempts, 0);
+      assertNoForbiddenMutation(state);
+    });
+  }
+});
+
+test("rejects malformed and unreconciled typed Results", async (t) => {
+  const cases = [
+    {
+      name: "assignment ID mismatch",
+      result: { ...VALIDATION_RESULT, assignmentId: "I_other" },
+      pattern: /must match assignment.assignmentId/,
+    },
+    {
+      name: "task type mismatch",
+      result: {
+        ...RISK_RESULT,
+        assignmentId: VALIDATION_ASSIGNMENT_ID,
+      },
+      pattern: /must match assignment.taskType/,
+    },
+    {
+      name: "profile criterion mismatch",
+      result: {
         ...VALIDATION_RESULT,
         result: {
           criteria: [
             {
               ...VALIDATION_RESULT.result.criteria[0],
-              evidence: "",
+              criterion: "Different criterion",
             },
             VALIDATION_RESULT.result.criteria[1],
           ],
         },
       },
-      pattern: /evidence must be a non-empty string/,
+      pattern: /must exactly match the validation profile/,
     },
     {
-      name: "non-integer score",
+      name: "dimension order mismatch",
       assignment: RISK_ASSIGNMENT,
-      workResult: {
+      result: {
         ...RISK_RESULT,
         result: {
-          dimensions: [
-            { ...RISK_RESULT.result.dimensions[0], score: 50.5 },
-            RISK_RESULT.result.dimensions[1],
-          ],
+          dimensions: [...RISK_RESULT.result.dimensions].reverse(),
         },
       },
-      pattern: /score must be an integer between 0 and 100/,
+      pattern: /must exactly match the Assignment dimensions/,
     },
     {
-      name: "score above 100",
+      name: "summary has marker",
+      result: {
+        ...VALIDATION_RESULT,
+        summary: "Includes WorkGraphTaskResult/v1",
+      },
+      pattern: /structured markers/,
+    },
+    {
+      name: "invalid risk score",
       assignment: RISK_ASSIGNMENT,
-      workResult: {
+      result: {
         ...RISK_RESULT,
         result: {
           dimensions: [
@@ -738,504 +863,238 @@ test("rejects malformed typed Results before GitHub access", async (t) => {
           ],
         },
       },
-      pattern: /score must be an integer between 0 and 100/,
-    },
-    {
-      name: "summary contains the Result marker",
-      assignment: VALIDATION_ASSIGNMENT,
-      workResult: {
-        ...VALIDATION_RESULT,
-        summary: "Do not repeat WorkGraphResult/v1 in the summary.",
-      },
-      pattern: /Result markers/,
+      pattern: /integer between 0 and 100/,
     },
   ];
   for (const item of cases) {
     await t.test(item.name, async () => {
-      const fake = await startFakeGitHub();
-      try {
-        const responses = await runMcp(
-          protocolMessages(inputFor(item.assignment, item.workResult)),
-          fake.apiUrl,
-        );
-        assert.equal(responses[3].result.isError, true);
-        assert.match(responses[3].result.content[0].text, item.pattern);
-        assert.deepEqual(fake.state.operations, []);
-      } finally {
-        await fake.close();
-      }
+      const { response, state } = await callReporter(
+        { assignment: item.assignment ?? VALIDATION_ASSIGNMENT },
+        "submit_task_result",
+        submitInput(item.result),
+      );
+      assert.equal(response.isError, true);
+      assert.match(response.content[0].text, item.pattern);
+      assert.equal(state.postAttempts, 0);
+      assertNoForbiddenMutation(state);
     });
   }
 });
 
-test("requires Result criteria to exactly match the profile", async (t) => {
-  const cases = [
-    {
-      name: "criterion text mismatch",
-      criteria: [
-        {
-          ...VALIDATION_RESULT.result.criteria[0],
-          criterion: "The Issue has a title",
-        },
-        VALIDATION_RESULT.result.criteria[1],
-      ],
-      pattern:
-        /criteria must exactly match the validation profile .* in order/,
-    },
-    {
-      name: "criterion order mismatch",
-      criteria: [...VALIDATION_RESULT.result.criteria].reverse(),
-      pattern:
-        /criteria must exactly match the validation profile .* in order/,
-    },
-    {
-      name: "criterion omission",
-      criteria: VALIDATION_RESULT.result.criteria.slice(0, 1),
-      pattern:
-        /criteria must exactly match the validation profile .* in order/,
-    },
-    {
-      name: "duplicate criterion",
-      criteria: [
-        VALIDATION_RESULT.result.criteria[0],
-        VALIDATION_RESULT.result.criteria[0],
-      ],
-      pattern: /must not contain duplicate criteria/,
-    },
-  ];
-
-  for (const item of cases) {
-    await t.test(item.name, async () => {
-      const fake = await startFakeGitHub();
-      try {
-        const workResult = {
-          ...VALIDATION_RESULT,
-          result: { criteria: item.criteria },
-        };
-        const responses = await runMcp(
-          protocolMessages(
-            inputFor(VALIDATION_ASSIGNMENT, workResult),
-          ),
-          fake.apiUrl,
-        );
-        assert.equal(responses[3].result.isError, true);
-        assert.match(
-          responses[3].result.content[0].text,
-          item.pattern,
-        );
-        assert.deepEqual(fake.state.operations, []);
-      } finally {
-        await fake.close();
-      }
-    });
-  }
-});
-
-test("reconciles one authenticated canonical Result", async () => {
+test("ignores ordinary task progress and adopts one exact authenticated Result", async () => {
   const existing = {
-    node_id: "IC_existing",
-    user: { id: 42, login: "workgraph-reporter" },
-    body: resultComment(VALIDATION_RESULT),
+    node_id: "IC_result",
+    user: { id: REPORTER_USER_ID, login: "workgraph-reporter" },
+    body: formatTaskResult(VALIDATION_RESULT),
   };
-  const fake = await startFakeGitHub({ existingComments: [existing] });
-  try {
-    const reorderedResult = {
-      result: {
-        criteria: VALIDATION_RESULT.result.criteria.map((entry) => ({
-          evidence: entry.evidence,
-          passed: entry.passed,
-          criterion: entry.criterion,
-        })),
-      },
-      summary: VALIDATION_RESULT.summary,
-      outcome: VALIDATION_RESULT.outcome,
-      taskType: VALIDATION_RESULT.taskType,
-      assignmentId: VALIDATION_RESULT.assignmentId,
-    };
-    const responses = await runMcp(
-      protocolMessages(
-        inputFor(VALIDATION_ASSIGNMENT, reorderedResult),
-      ),
-      fake.apiUrl,
-    );
-    assert.deepEqual(responses[3].result.structuredContent, {
-      assignmentId: VALIDATION_ASSIGNMENT.assignmentId,
-      taskType: "issue-validation",
-      commentNodeId: "IC_existing",
-      reconciled: true,
-    });
-    assert.equal(fake.state.postAttempts, 0);
-  } finally {
-    await fake.close();
-  }
-});
-
-test("rejects malformed Result envelopes instead of duplicating", async (t) => {
-  const canonical = resultComment(VALIDATION_RESULT);
-  const unwrapped =
-    `WorkGraphResult/v1\n${VALIDATION_RESULT.summary}\n` +
-    `\`\`\`json\n${JSON.stringify(VALIDATION_RESULT, null, 2)}\n\`\`\``;
-  const cases = [
+  const { response, state } = await callReporter(
     {
-      name: "unwrapped",
-      body: unwrapped,
+      taskOverrides: { state: "closed" },
+      existingComments: [
+        {
+          node_id: "IC_progress",
+          user: { id: REPORTER_USER_ID, login: "workgraph-reporter" },
+          body: "Reviewed the parent fields.",
+        },
+        existing,
+      ],
     },
-    {
-      name: "open details",
-      body: canonical.replace("<details>", "<details open>"),
-    },
-    {
-      name: "details attributes",
-      body: canonical.replace("<details>", '<details data-kind="result">'),
-    },
-    {
-      name: "mismatched summary label",
-      body: canonical.replace(
-        "<summary>WorkGraph Result</summary>",
-        "<summary>Result</summary>",
-      ),
-    },
-    {
-      name: "missing summary blank line",
-      body: canonical.replace(
-        "<summary>WorkGraph Result</summary>\n\n",
-        "<summary>WorkGraph Result</summary>\n",
-      ),
-    },
-    {
-      name: "missing marker blank line",
-      body: canonical.replace(
-        "WorkGraphResult/v1\n\n",
-        "WorkGraphResult/v1\n",
-      ),
-    },
-    {
-      name: "missing human summary blank line",
-      body: canonical.replace(
-        `${VALIDATION_RESULT.summary}\n\n\`\`\`json`,
-        `${VALIDATION_RESULT.summary}\n\`\`\`json`,
-      ),
-    },
-    {
-      name: "mismatched JSON fence",
-      body: canonical.replace("```json", "```JSON"),
-    },
-    {
-      name: "multiple JSON fences",
-      body: canonical.replace(
-        "\n```\n</details>",
-        "\n```\n```\n</details>",
-      ),
-    },
-    {
-      name: "unclosed details",
-      body: canonical.replace("\n</details>", ""),
-    },
-    {
-      name: "missing final LF",
-      body: canonical.slice(0, -1),
-    },
-    {
-      name: "extra final LF",
-      body: `${canonical}\n`,
-    },
-    {
-      name: "prose after details",
-      body: `${canonical}Unexpected trailing prose.\n`,
-    },
-    {
-      name: "literal backslash-n separators",
-      body: canonical.replaceAll("\n", "\\n"),
-    },
-  ];
-
-  for (const item of cases) {
-    await t.test(item.name, async () => {
-      const fake = await startFakeGitHub({
-        existingComments: [
-          {
-            node_id: "IC_malformed",
-            user: { id: 42, login: "workgraph-reporter" },
-            body: item.body,
-          },
-        ],
-      });
-      try {
-        const responses = await runMcp(protocolMessages(), fake.apiUrl);
-        assert.equal(responses[3].result.isError, true);
-        assert.match(
-          responses[3].result.content[0].text,
-          /malformed Result comment envelope/,
-        );
-        assert.equal(fake.state.postAttempts, 0);
-      } finally {
-        await fake.close();
-      }
-    });
-  }
-});
-
-test("rejects byte-noncanonical bodies instead of duplicating", async (t) => {
-  const compact = resultComment(VALIDATION_RESULT).replace(
-    JSON.stringify(VALIDATION_RESULT, null, 2),
-    JSON.stringify(VALIDATION_RESULT),
+    "submit_task_result",
+    submitInput(),
   );
-  const cases = [
-    { name: "compact JSON", body: compact },
-    {
-      name: "CRLF bytes",
-      body: resultComment(VALIDATION_RESULT).replaceAll("\n", "\r\n"),
-    },
-  ];
-
-  for (const item of cases) {
-    await t.test(item.name, async () => {
-      const fake = await startFakeGitHub({
-        existingComments: [
-          {
-            node_id: "IC_noncanonical",
-            user: { id: 42, login: "workgraph-reporter" },
-            body: item.body,
-          },
-        ],
-      });
-      try {
-        const responses = await runMcp(protocolMessages(), fake.apiUrl);
-        assert.equal(responses[3].result.isError, true);
-        assert.match(
-          responses[3].result.content[0].text,
-          /authenticated Result comment.*conflicts/,
-        );
-        assert.equal(fake.state.postAttempts, 0);
-      } finally {
-        await fake.close();
-      }
-    });
-  }
+  assert.equal(response.structuredContent.reconciled, true);
+  assert.equal(response.structuredContent.commentNodeId, "IC_result");
+  assert.equal(state.postAttempts, 0);
+  assertNoForbiddenMutation(state);
 });
 
-test("rejects a malformed existing Result payload", async () => {
-  const malformed = {
-    ...VALIDATION_RESULT,
-    unexpected: true,
-  };
-  const fake = await startFakeGitHub({
-    existingComments: [
-      {
-        node_id: "IC_malformed_payload",
-        user: { id: 42, login: "workgraph-reporter" },
-        body: resultComment(malformed),
-      },
-    ],
-  });
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl);
-    assert.equal(responses[3].result.isError, true);
-    assert.match(
-      responses[3].result.content[0].text,
-      /malformed Result payload/,
-    );
-    assert.equal(fake.state.postAttempts, 0);
-  } finally {
-    await fake.close();
-  }
-});
-
-test("rejects a human summary that mismatches the Result payload", async () => {
-  const fake = await startFakeGitHub({
-    existingComments: [
-      {
-        node_id: "IC_mismatched_summary",
-        user: { id: 42, login: "workgraph-reporter" },
-        body: resultComment(VALIDATION_RESULT).replace(
-          VALIDATION_RESULT.summary,
-          "A different human summary.",
-        ),
-      },
-    ],
-  });
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl);
-    assert.equal(responses[3].result.isError, true);
-    assert.match(
-      responses[3].result.content[0].text,
-      /authenticated Result comment.*conflicts/,
-    );
-    assert.equal(fake.state.postAttempts, 0);
-  } finally {
-    await fake.close();
-  }
-});
-
-test("fails instead of duplicating a conflicting authenticated Result", async () => {
-  const conflicting = {
+test("rejects malformed, conflicting, foreign, and multiple candidates", async (t) => {
+  const canonical = formatTaskResult(VALIDATION_RESULT);
+  const conflicting = formatTaskResult({
     ...VALIDATION_RESULT,
     summary: "A different valid result.",
-  };
-  const fake = await startFakeGitHub({
-    existingComments: [
-      {
+  });
+  const cases = [
+    {
+      name: "legacy marker",
+      comments: [{
+        node_id: "IC_legacy",
+        user: { id: REPORTER_USER_ID },
+        body: "WorkGraphResult/v1\n",
+      }],
+      pattern: /malformed structured Result/,
+    },
+    {
+      name: "malformed current marker",
+      comments: [{
+        node_id: "IC_malformed",
+        user: { id: REPORTER_USER_ID },
+        body: canonical.slice(0, -1),
+      }],
+      pattern: /malformed structured Result/,
+    },
+    {
+      name: "Result-shaped fence without marker",
+      comments: [{
+        node_id: "IC_unmarked",
+        user: { id: REPORTER_USER_ID },
+        body: canonical.replace("WorkGraphTaskResult/v1\n\n", ""),
+      }],
+      pattern: /malformed structured Result/,
+    },
+    {
+      name: "Result-shaped uppercase fence without marker",
+      comments: [{
+        node_id: "IC_unmarked_uppercase",
+        user: { id: REPORTER_USER_ID },
+        body: canonical
+          .replace("WorkGraphTaskResult/v1\n\n", "")
+          .replace("```json", "```JSON"),
+      }],
+      pattern: /malformed structured Result/,
+    },
+    {
+      name: "Result-shaped tilde fence without marker",
+      comments: [{
+        node_id: "IC_unmarked_tilde",
+        user: { id: REPORTER_USER_ID },
+        body: canonical
+          .replace("WorkGraphTaskResult/v1\n\n", "")
+          .replaceAll("```", "~~~"),
+      }],
+      pattern: /malformed structured Result/,
+    },
+    {
+      name: "conflicting authenticated result",
+      comments: [{
         node_id: "IC_conflict",
-        user: { id: 42, login: "workgraph-reporter" },
-        body: resultComment(conflicting),
-      },
-    ],
-  });
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl);
-    assert.equal(responses[3].result.isError, true);
-    assert.match(
-      responses[3].result.content[0].text,
-      /authenticated Result comment.*conflicts/,
-    );
-    assert.equal(fake.state.postAttempts, 0);
-  } finally {
-    await fake.close();
+        user: { id: REPORTER_USER_ID },
+        body: conflicting,
+      }],
+      pattern: /conflicts with the requested result/,
+    },
+    {
+      name: "foreign canonical result",
+      comments: [{
+        node_id: "IC_foreign",
+        user: { id: 999 },
+        body: canonical,
+      }],
+      pattern: /different author/,
+    },
+    {
+      name: "multiple candidates",
+      comments: [
+        {
+          node_id: "IC_one",
+          user: { id: REPORTER_USER_ID },
+          body: canonical,
+        },
+        {
+          node_id: "IC_two",
+          user: { id: REPORTER_USER_ID },
+          body: canonical,
+        },
+      ],
+      pattern: /multiple structured Result/,
+    },
+  ];
+  for (const item of cases) {
+    await t.test(item.name, async () => {
+      const { response, state } = await callReporter(
+        { existingComments: item.comments },
+        "submit_task_result",
+        submitInput(),
+      );
+      assert.equal(response.isError, true);
+      assert.match(response.content[0].text, item.pattern);
+      assert.equal(state.postAttempts, 0);
+      assertNoForbiddenMutation(state);
+    });
   }
 });
 
-test("fails instead of duplicating another author's valid Result", async () => {
-  const fake = await startFakeGitHub({
-    existingComments: [
-      {
-        node_id: "IC_other",
-        user: { id: 99, login: "other" },
-        body: resultComment(VALIDATION_RESULT),
-      },
-    ],
-  });
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl);
-    assert.equal(responses[3].result.isError, true);
-    assert.match(
-      responses[3].result.content[0].text,
-      /exists from a different author/,
-    );
-    assert.equal(fake.state.postAttempts, 0);
-  } finally {
-    await fake.close();
-  }
+test("rejects a closed task without an exact Result", async () => {
+  const { response, state } = await callReporter(
+    { taskOverrides: { state: "closed" } },
+    "submit_task_result",
+    submitInput(),
+  );
+  assert.equal(response.isError, true);
+  assert.match(response.content[0].text, /closed task Issue has no/);
+  assert.equal(state.postAttempts, 0);
+  assertNoForbiddenMutation(state);
 });
 
-test("rejects multiple valid Results for one assignmentId", async () => {
-  const body = resultComment(VALIDATION_RESULT);
-  const fake = await startFakeGitHub({
-    existingComments: [
-      {
-        node_id: "IC_one",
-        user: { id: 42, login: "workgraph-reporter" },
-        body,
-      },
-      {
-        node_id: "IC_two",
-        user: { id: 42, login: "workgraph-reporter" },
-        body,
-      },
-    ],
-  });
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl);
-    assert.equal(responses[3].result.isError, true);
-    assert.match(
-      responses[3].result.content[0].text,
-      /multiple schema-valid Result comments/,
-    );
-    assert.equal(fake.state.postAttempts, 0);
-  } finally {
-    await fake.close();
-  }
+test("reconciles an ambiguous Result create with one re-list and no second POST", async () => {
+  const { response, state } = await callReporter(
+    { commentMode: "ambiguous" },
+    "submit_task_result",
+    submitInput(),
+  );
+  assert.equal(response.structuredContent.reconciled, true);
+  assert.equal(state.postAttempts, 1);
+  assert.deepEqual(state.operations, [
+    "identity",
+    "task",
+    "parent",
+    "comments",
+    "comment-ambiguous",
+    "comments",
+  ]);
+  assertNoForbiddenMutation(state);
 });
 
-test("reconciles an ambiguous create without a second POST", async () => {
-  const fake = await startFakeGitHub({ commentMode: "ambiguous" });
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl);
-    const result = responses[3].result.structuredContent;
-    assert.equal(result.reconciled, true);
-    assert.equal(result.commentNodeId, "IC_created");
-    assert.equal(fake.state.postAttempts, 1);
-    assert.deepEqual(fake.state.operations, [
-      "identity",
-      "issue",
-      "comments",
-      "comment-ambiguous",
-      "comments",
-    ]);
-  } finally {
-    await fake.close();
-  }
+test("reconciles an unreadable successful response without a second POST", async () => {
+  const { response, state } = await callReporter(
+    { commentMode: "malformed-response" },
+    "submit_task_result",
+    submitInput(),
+  );
+  assert.equal(response.structuredContent.reconciled, true);
+  assert.equal(state.postAttempts, 1);
+  assert.equal(
+    state.operations.filter((operation) => operation === "comments").length,
+    2,
+  );
+  assertNoForbiddenMutation(state);
 });
 
-test("reconciles a malformed successful create response", async () => {
-  const fake = await startFakeGitHub({
-    commentMode: "malformed-response",
-  });
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl);
-    const result = responses[3].result.structuredContent;
-    assert.equal(result.reconciled, true);
-    assert.equal(result.commentNodeId, "IC_created");
-    assert.equal(fake.state.postAttempts, 1);
-    assert.deepEqual(fake.state.operations, [
-      "identity",
-      "issue",
-      "comments",
-      "comment-malformed-response",
-      "comments",
-    ]);
-  } finally {
-    await fake.close();
-  }
+test("does not retry an explicit Result POST failure", async () => {
+  const { response, state } = await callReporter(
+    { commentMode: "failure" },
+    "submit_task_result",
+    submitInput(),
+  );
+  assert.equal(response.isError, true);
+  assert.match(response.content[0].text, /HTTP 422: comment rejected/);
+  assert.equal(state.postAttempts, 1);
+  assert.equal(
+    state.operations.filter((operation) => operation === "comments").length,
+    1,
+  );
+  assertNoForbiddenMutation(state);
 });
 
-test("does not retry an explicit comment rejection", async () => {
-  const fake = await startFakeGitHub({ commentMode: "failure" });
+test("rejects obsolete report_result and additional input before GitHub access", async () => {
+  const fake = await startFakeGitHub();
   try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl);
-    assert.equal(responses[3].result.isError, true);
-    assert.match(
-      responses[3].result.content[0].text,
-      /HTTP 422: comment rejected/,
-    );
-    assert.equal(fake.state.postAttempts, 1);
-    assert.equal(
-      fake.state.operations.filter((entry) => entry === "comments").length,
-      1,
-    );
-  } finally {
-    await fake.close();
-  }
-});
-
-test("rejects a token identity mismatch before Issue access", async () => {
-  const fake = await startFakeGitHub({ identityId: 42 });
-  try {
-    const responses = await runMcp(
-      protocolMessages(),
+    const obsolete = await runMcp(
+      protocolMessages("report_result", submitInput()),
       fake.apiUrl,
-      { reporterUserId: "99" },
     );
-    assert.equal(responses[3].result.isError, true);
-    assert.match(
-      responses[3].result.content[0].text,
-      /does not match WORKGRAPH_REPORTER_USER_ID 99/,
+    assert.equal(obsolete[3].result.isError, true);
+    assert.match(obsolete[3].result.content[0].text, /unknown tool/);
+    const extra = await runMcp(
+      protocolMessages("submit_task_result", {
+        ...submitInput(),
+        repository: "other/repository",
+      }),
+      fake.apiUrl,
     );
-    assert.deepEqual(fake.state.operations, ["identity"]);
-  } finally {
-    await fake.close();
-  }
-});
-
-test("rejects a pull request destination before comment access", async () => {
-  const fake = await startFakeGitHub({ issueIsPullRequest: true });
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl);
-    assert.equal(responses[3].result.isError, true);
-    assert.match(
-      responses[3].result.content[0].text,
-      /destination is not the requested Issue/,
-    );
-    assert.deepEqual(fake.state.operations, ["identity", "issue"]);
+    assert.equal(extra[3].result.isError, true);
+    assert.match(extra[3].result.content[0].text, /extra=.*repository/);
+    assert.deepEqual(fake.state.operations, []);
   } finally {
     await fake.close();
   }
