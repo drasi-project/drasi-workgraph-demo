@@ -284,6 +284,13 @@ posting to the parent it also requires the supplied request-info task to be the
 current request task and to have exactly one canonical configured-author
 Assignment naming `issue-info-requester`.
 
+The exact criterion strings with `passed: false` are authoritative requested
+items. A positively phrased criterion such as `The Issue body is present`
+still names missing information when its validation entry is false. An
+acceptor must not reinterpret that grammar; a valid reporter-produced
+request-info Result is satisfactory absent a concrete factual or canonical
+contract mismatch.
+
 `feedback_and_redispatch` verifies the caller-reviewed Result node ID and
 digest against the exact current Result and existing Assignment, then maintains
 one canonical configured-author feedback comment:
@@ -317,6 +324,16 @@ There is no supported GitHub Agent Task redispatch REST surface available to
 this dependency-free reporter. The external WorkGraph dispatcher must consume
 this bounded request. The tool never invents an endpoint or chooses a new
 profile.
+
+Redispatch may add `feedbackCommentNodeId`, `feedbackUpdatedAt`,
+`resultCommentNodeId`, and `resultBodyDigest` to the trusted dispatch envelope.
+Workers read the exact current Result and feedback through their read tools,
+pass opaque IDs/digest unchanged, and submit a materially revised `workResult`
+when actionable feedback identifies a real mismatch. They do not reconcile an
+unchanged Result. The reporter still independently verifies all IDs, digest,
+authors, Assignment, task, destination, races, and revision safety. A
+request-info worker never changes the reporter-owned parent request or exact
+failed criterion strings merely to satisfy a wording preference.
 
 ## Unavoidable REST race and remediation
 

@@ -65,3 +65,18 @@ authoritative revalidation. This identity lets the orchestrator
 fetch the authoritative comment and require a human reply created strictly
 after it. Neither
 tool closes the task. Never use a generic comment tool or retry.
+
+The trusted dispatch envelope may optionally include `feedbackCommentNodeId`,
+`feedbackUpdatedAt`, `resultCommentNodeId`, and `resultBodyDigest`. When present,
+pass the opaque IDs/digest unchanged and use `github/issue_read` to read the
+exact current Result and feedback comment. If there is a concrete factual or
+contract mismatch, address the actionable feedback with a materially revised
+`workResult` and call `submit_task_result`; do not merely reconcile an unchanged
+Result. Retain the canonical reporter-owned parent info request derived from
+the exact `passed: false` validation criteria. Feedback cannot require
+inventing, removing, or rephrasing criterion names contrary to that validation
+Result. If feedback only objects to a criterion's positive grammatical form,
+the existing request is correct and must not be revised; that is an acceptor
+error, not a worker mismatch. The narrow reporter remains authoritative for
+exact IDs, digest, authors, Assignment, task, destination, races, and revision
+safety.

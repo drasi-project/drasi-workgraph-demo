@@ -55,7 +55,18 @@ and non-empty plain-text `evidence`. A completed check has `outcome:
 Call `workgraph/submit_task_result` once with the dispatch references and
 `workResult`. The narrow reporter independently re-fetches and verifies exact
 node IDs, configured type ID/name, creators/authors, authoritative parent,
-Assignment, destination, and races before writing. On redispatch, update the
-evidence/summary as feedback requires; the reporter PATCHes the existing
-canonical Result comment. It never closes the task. Never write to the parent,
-close anything, or retry.
+Assignment, destination, and races before writing.
+
+The trusted dispatch envelope may optionally include `feedbackCommentNodeId`,
+`feedbackUpdatedAt`, `resultCommentNodeId`, and `resultBodyDigest`. When present,
+pass the opaque IDs/digest unchanged and use `github/issue_read` to read the
+exact current Result and feedback comment. Address actionable feedback by
+producing a materially revised `workResult`—changed evidence, summary, or a
+corrected criterion evaluation—and call `submit_task_result`. Do not merely
+reconcile an unchanged Result. If feedback conflicts with current parent facts
+or this fixed validation profile, preserve the factual criteria and materially
+clarify the Result rather than inventing another criterion. The narrow reporter
+remains authoritative for exact IDs, digest, authors, Assignment, task,
+destination, races, and revision safety; it PATCHes the existing canonical
+Result comment. It never closes the task. Never write to the parent, close
+anything, or retry.

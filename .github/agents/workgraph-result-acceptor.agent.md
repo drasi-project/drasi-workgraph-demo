@@ -44,12 +44,22 @@ Assignment and exact current Result, configured IDs/authors, exact task type,
 profile mapping, destination, and provenance, then returns the typed
 `workResult`, exact `resultCommentNodeId`, and SHA-256 `resultBodyDigest`.
 
+Apply deterministic satisfaction rules. For a `request-info` Result, the
+reporter-owned parent request must list the exact criterion strings whose
+validation entries have `passed: false`. Those exact failed criterion strings
+are the authoritative requested items even when their grammar is positive,
+such as `The Issue body is present`. Never reinterpret a criterion name as a
+claim that the information is already present. Accept a valid reporter-produced
+request-info Result unless there is a concrete factual or canonical-contract
+mismatch: wrong referenced comment, wrong failed-criterion set, noncanonical
+Result, or false evidence. Wording preference alone is not a mismatch.
+
 If satisfactory, call `workgraph/submit_result_acceptance` once with verified
 references, exact current `resultCommentNodeId`, digest formatted
 `sha256:<64 lowercase hex>`, and concise summary. Acceptance has exactly those
 three fields and does not close the task.
 
-If unsatisfactory, submit no Acceptance. Call
+Only when a concrete mismatch exists, submit no Acceptance. Call
 `workgraph/feedback_and_redispatch` once with the exact current Result node ID,
 the reviewed `resultBodyDigest`, and concise actionable feedback. It rejects a
 stale reviewed digest, posts idempotent task feedback bound to the exact
