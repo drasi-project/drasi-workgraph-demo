@@ -2,7 +2,7 @@
 name: issue-orchestrator
 description: Reconciles one parent Issue and advances its strict WorkGraph state.
 target: github-copilot
-user-invocable: false
+user-invocable: true
 disable-model-invocation: true
 tools:
   - github/issue_read
