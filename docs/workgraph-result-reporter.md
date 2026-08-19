@@ -1,145 +1,103 @@
-# WorkGraphTask reporter
+# WorkGraph agent and reporter contract
 
-The repository defines two GitHub Copilot agent profiles:
+This is a breaking, closed contract for `drasi-project/drasi-workgraph-demo`.
+There is no generic task registry, legacy marker support, compatibility parser,
+arbitrary repository selector, arbitrary comment body, or generic mutation
+tool. All parsers reject unknown fields and noncanonical bytes.
 
-| Agent profile | Assignment `taskType` |
-| --- | --- |
-| `issue-validator` | `issue-validation` |
-| `issue-risk-profiler` | `issue-risk-profile` |
+## Task body: `WorkGraphTask/v1`
 
-Both follow one flow: **task → native parent → work → task Result**. They may
-publish ordinary progress only to the task. They never comment on, label,
-close, or otherwise mutate the parent. They do not close the task; WorkGraph
-machinery closes it only after consuming the Result.
+A task is a native child Issue with exact configured Issue Type node ID and
+exact type name `WorkGraphTask`. Its configured launcher identity is verified
+by immutable numeric user ID. The complete body is exactly the marker, one
+blank line, one lowercase `yaml` fence, one of these payloads, the closing
+fence, and one final LF:
 
-## WorkGraphTask contract
+````text
+WorkGraphTask/v1
 
-The launcher supplies the agent with a positive `taskIssueNumber` and its
-non-empty `taskIssueNodeId` in the fixed
-`drasi-project/drasi-workgraph-demo` repository. The task must:
+```yaml
+taskType: validate-issue
+inputs:
+  validationProfile: new-issue-default
+```
+````
 
-1. Be an Issue, not a pull request.
-2. Have the configured exact Issue Type ID and exact name `WorkGraphTask`.
-3. Have the configured immutable numeric creator user ID.
-4. Have a native non-PR parent in the fixed repository.
-5. Have a body containing only one strict WorkGraphAssignment JSON object.
+````text
+WorkGraphTask/v1
 
-There is no marker, envelope, Markdown fence, human summary, or prose in the
-task body. For issue validation, the complete body is:
+```yaml
+taskType: request-info
+inputs:
+  validationResultCommentNodeId: IC_validation_result
+```
+````
+
+The minimal canonical YAML grammar is:
+
+```text
+document       = "taskType: " task-type LF
+                 "inputs:" LF
+                 "  " input-key ": " input-value
+task-type      = "validate-issue" | "request-info"
+input-key      = "validationProfile" | "validationResultCommentNodeId"
+input-value    = "new-issue-default" | node-id
+node-id        = 1*256(ALPHA | DIGIT | "_" | "-")
+```
+
+The key/value pair is fixed by task type. There are no quotes, comments,
+aliases, tags, blank payload lines, alternate indentation, extra fields, or
+generic YAML constructs. The request-info node ID must be non-empty.
+
+The task body schema remains unchanged. Transition correlation is instead an
+exact launcher-generated title:
+
+```text
+WorkGraph: validate-issue parent #<number> start-validation
+WorkGraph: request-info parent #<number> validation-result <Result node ID>
+WorkGraph: validate-issue parent #<number> human-reply <reply node ID>
+```
+
+The fixed parent number plus immutable triggering node ID makes later cycles
+distinct. A retry accepts only one exact open type/creator/title/body match.
+
+## Task comments
+
+All JSON contracts use a lowercase `json` fence, two-space JSON indentation,
+the displayed property order, and exactly one LF after the closing fence.
+
+### Assignment
+
+Assignment is task-only and has exactly one field:
+
+````text
+WorkGraphTaskAssignment/v1
 
 ```json
 {
-  "assignmentId": "issue-validation:I_parent_node_id",
-  "agentProfile": "issue-validator",
-  "priority": 10,
-  "taskType": "issue-validation",
-  "task": {
-    "validationProfile": "new-issue-default"
-  }
+  "agentProfile": "issue-validator"
 }
 ```
+````
 
-For risk profiling, `agentProfile` is `issue-risk-profiler`, `taskType` is
-`issue-risk-profile`, and `task` has exactly a non-empty `riskProfile` plus a
-non-empty `dimensions` string array. Unknown fields are rejected at every
-object level. Profile/taskType mappings are exact.
+The only other value is `issue-info-requester`. Mapping is fixed:
+`validate-issue` → `issue-validator`; `request-info` →
+`issue-info-requester`. The configured Assignment reporter author is verified.
 
-The native GitHub parent relation is authoritative. `assignmentId` is
-deterministically `${taskType}:${parent.node_id}`, using the authoritative
-parent Issue GraphQL node ID verbatim, never its number. Supplied task and
-parent Issue numbers, node IDs, and assignment ID are bounded reconciliation
-assertions, not alternative selectors or sources of truth.
+### Result
 
-## Repository-backed validation profiles
-
-Issue-validation profiles live at
-`.github/workgraph/profiles/issue-validation/<validationProfile>.md`.
-`validationProfile` is 1-64 lowercase letters or digits separated only by
-single hyphens. The reporter resolves only a regular file inside that
-directory, no larger than 64 KiB, containing valid UTF-8 with LF endings.
-
-Its authoritative final criteria section is:
-
-```markdown
-## Criteria
-
-1. The Issue has a non-empty title
-2. The Issue body is present
-```
-
-The heading appears exactly once and is followed by one blank line and one or
-more unique, single-line items numbered consecutively from `1`. No content
-follows the list. Result criteria must match this profile exactly in count,
-order, and text. Risk Result dimensions must likewise match the Assignment.
-
-## Narrow tools
-
-The local Node MCP server at `.github/mcp/workgraph-reporter.mjs` exposes only:
-
-```text
-workgraph/report_progress
-workgraph/submit_task_result
-```
-
-Both inputs identify the task and parent with:
-
-```json
-{
-  "taskIssueNumber": 17,
-  "taskIssueNodeId": "I_task_node_id",
-  "parentIssueNumber": 7,
-  "parentIssueNodeId": "I_parent_node_id"
-}
-```
-
-Their exact strict signatures are:
-
-```text
-report_progress({
-  taskIssueNumber,
-  taskIssueNodeId,
-  parentIssueNumber,
-  parentIssueNodeId,
-  assignmentId,
-  message
-})
-submit_task_result({
-  taskIssueNumber,
-  taskIssueNodeId,
-  parentIssueNumber,
-  parentIssueNodeId,
-  workResult
-})
-```
-
-`report_progress` adds the Assignment `assignmentId` and `message`. It accepts
-non-empty ordinary message text up to 4096 UTF-8 bytes on an open task. It
-rejects carriage returns, current and legacy WorkGraph markers, Markdown
-fences, and `details`/`summary` tags. The reporter verifies the supplied
-assignment ID against both the raw body and deterministic derivation. Progress
-is nonterminal and is never written to the parent.
-
-`submit_task_result` adds only `workResult`. It fetches the current raw task
-body and revalidates the fixed repository, task number/node ID, non-PR state,
-exact configured type ID/name, creator ID, strict Assignment, authoritative
-non-PR parent number/node ID, deterministic `assignmentId`, profile mapping,
-criteria/dimensions, reporter identity, and strict Result. The caller cannot
-choose a repository, body, author, REST method, GraphQL document, state
-transition, label, or close operation.
-
-## Exact Result bytes
-
-The only structured task Result is:
+Common Result fields are exactly `taskType`, `outcome`, `summary`, and
+`result`. There is no `assignmentId`. Outcome is `succeeded`, `failed`, or
+`blocked`. A completed validation is `succeeded` even when criteria fail.
 
 ````text
 WorkGraphTaskResult/v1
 
 ```json
 {
-  "assignmentId": "issue-validation:I_parent_node_id",
-  "taskType": "issue-validation",
+  "taskType": "validate-issue",
   "outcome": "succeeded",
-  "summary": "Validated the title and body requirements.",
+  "summary": "Validated both required fields.",
   "result": {
     "criteria": [
       {
@@ -149,8 +107,8 @@ WorkGraphTaskResult/v1
       },
       {
         "criterion": "The Issue body is present",
-        "passed": true,
-        "evidence": "The body contains non-whitespace text."
+        "passed": false,
+        "evidence": "The body is empty."
       }
     ]
   }
@@ -158,66 +116,200 @@ WorkGraphTaskResult/v1
 ```
 ````
 
-The bytes are exactly `WorkGraphTaskResult/v1`, one blank line, a lowercase
-`json` fence, the strict Result serialized with two-space indentation, the
-closing fence, and exactly one final LF. There are no details tags, human
-summary outside the JSON, or trailing prose.
+The criteria array has exactly two entries in repository-profile order. Every
+entry has exactly `criterion`, boolean `passed`, and non-empty plain-text
+`evidence`.
 
-Common Result fields are exactly `assignmentId`, `taskType`, `outcome`,
-`summary`, and `result`. `outcome` is `succeeded`, `failed`, or `blocked`.
-Validation results contain strict `criterion`/`passed`/`evidence` objects.
-Risk results contain strict `dimension`/`score`/`rationale` objects with integer
-scores from 0 through 100.
+A request-info Result records the exact parent comment and its creation time,
+needed to require a later human reply:
 
-## Identity and configuration
+````text
+WorkGraphTaskResult/v1
 
-Configure these values under **Settings → Secrets and variables → Agents**:
+```json
+{
+  "taskType": "request-info",
+  "outcome": "succeeded",
+  "summary": "Requested the missing issue information.",
+  "result": {
+    "parentInfoCommentNodeId": "IC_parent_info",
+    "parentInfoCommentCreatedAt": "2026-08-18T22:00:00Z"
+  }
+}
+```
+````
 
-| Kind | Name | Purpose |
-| --- | --- | --- |
-| Secret | `COPILOT_MCP_WORKGRAPH_TOKEN` | Fixed-repository task reporter token |
-| Variable | `COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID` | Expected immutable numeric task creator/launcher database ID |
-| Variable | `COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID` | Expected immutable numeric reporter token owner ID |
+`parentInfoCommentCreatedAt` is an RFC 3339 UTC whole-second timestamp. The
+reporter verifies both fields against the configured-author parent comment.
 
-The MCP process receives exactly `COPILOT_MCP_WORKGRAPH_TOKEN`,
-`COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID`,
-`COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID`, and
-`COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID`; there are no shorter process aliases.
-Numeric user IDs are positive integers. The configured GraphQL Issue Type node
-ID must equal `task.type.node_id`; the code constant `WorkGraphTask` must equal
-`task.type.name`. Every check fails closed. Both repository agent profiles pin
-`COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID` directly to the deployed
-organization Issue Type node ID `IT_kwDOCX0YF84CKGIJ`; it is not an Agents
-variable.
+The Result reporter POSTs when no Result exists and PATCHes the one canonical
+configured-author Result comment when requested canonical content changes.
+It rejects multiple, malformed, foreign-authored, wrong-task, or already
+accepted Results. It never changes Issue state and never closes the task.
+Immediately before PATCH it re-lists task comments and re-fetches the exact
+Result REST comment, rejecting a changed Result or any Acceptance. Immediately
+after PATCH it re-lists and fails closed if an Acceptance appeared or the
+Result does not exactly match the requested revision.
 
-For this prototype, the configured creator and reporter IDs may intentionally
-be the same stable bot identity. They remain separate configuration checks so
-production deployments can use distinct least-privilege identities without a
-protocol change.
+### Acceptance
 
-The token needs repository metadata read plus Issues read/write only for the
-fixed repository. The runtime uses GET requests and task-comment POST requests.
-It has no PATCH, close, label, parent-comment, edit, or delete route.
+````text
+WorkGraphTaskResultAcceptance/v1
 
-## Retry and reconciliation
+```json
+{
+  "resultCommentNodeId": "IC_result",
+  "resultBodyDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "summary": "Result is satisfactory."
+}
+```
+````
 
-For `submit_task_result`, the reporter scans all task comments. Ordinary
-progress is ignored. Structured candidates are considered task-wide rather
-than selected by `assignmentId`:
+The digest is SHA-256 over the exact UTF-8 bytes of the current Result comment,
+including its final LF. Acceptance must target the exact current Result node ID
+and lowercase digest. A stale digest, revised body, wrong target, wrong author,
+or conflicting Acceptance fails closed. Result and Acceptance are separate;
+neither reporter closes a task. An external WorkGraph runtime may close the
+task only after consuming Acceptance.
 
-1. No candidate causes exactly one task-comment POST while the task is open.
-2. One byte-exact canonical Result authored by the authenticated reporter is
-   adopted when its payload exactly matches the requested Result.
-3. A malformed, conflicting, foreign-authored, legacy, or multiple structured
-   candidate fails without writing.
-4. An existing exact Result succeeds whether the task is open or closed.
-5. A closed task without an exact Result fails without writing.
-6. An explicit POST failure is returned and is never retried.
-7. An ambiguous or unreadable POST response causes exactly one comment
-   re-list. If the exact authenticated Result is found, it is adopted; if not,
-   the call fails. A second POST is never sent.
+Immediately before an Acceptance POST, the reporter re-lists comments and
+re-fetches the exact current Result, checking its node ID and digest again.
+Immediately after POST it re-lists and verifies that the Result still has the
+digest recorded by the one canonical Acceptance.
 
-The reporter never edits or deletes comments and never closes any Issue.
+## State machine and narrow tools
+
+The only MCP tools are:
+
+```text
+get_result_snapshot
+submit_task_assignment
+submit_task_result
+submit_result_acceptance
+transition_issue
+post_parent_info_request
+feedback_and_redispatch
+```
+
+`get_result_snapshot` is read-only. It verifies the open task, native parent,
+canonical Assignment, and exact current Result, including configured authors
+and task/profile mapping. It returns only the typed `workResult`,
+`resultCommentNodeId`, and SHA-256 `resultBodyDigest`; the acceptor never
+computes or guesses a digest.
+
+All task reporters take verified task and native-parent numbers/node IDs.
+Callers cannot select a repository, HTTP route, author, raw body, label, or
+Issue state.
+
+`transition_issue` re-reads authoritative native children and binds supplied
+task IDs to the unique current task of the required type: the matching child
+with the greatest Issue number. It rejects an older matching closed task and
+every unexpected open sibling. It re-reads the parent immediately before label
+mutation, requires the expected status still to match, and recomputes the
+replacement from those current labels so concurrently added unrelated labels
+are preserved:
+
+- `status:new` + `start-validation`: requires no open child, creates and
+  attaches validation, then replaces only the WorkGraph status label with
+  `status:awaiting-validation`.
+- `status:awaiting-validation` + `advance-validation`: requires a closed child,
+  current configured-author Result, and configured-author Acceptance matching
+  its current digest. Two passed criteria advance to `status:awaiting-triage`;
+  otherwise it creates/attaches request-info and advances to
+  `status:awaiting-need-info`.
+- `status:awaiting-need-info` + `resume-after-human-reply`: requires the
+  accepted, externally closed request-info task and a non-agent human comment
+  created strictly after its recorded parent info comment; it creates/attaches
+  validation and advances to awaiting-validation.
+- `status:awaiting-triage` is an orchestrator no-op.
+
+The tool rejects stale supplied status. Task creation, native child attachment,
+and status replacement are one narrow MCP call and reconcile expected state
+immediately before writing. GitHub REST does not provide a
+transaction spanning those routes, so every task-producing transition uses the
+canonical title/body correlation above. On retry, it first reconciles one
+already attached match, then one exact open unattached fixed-repository match,
+before creating. Multiple candidates, a candidate attached elsewhere, or any
+other open child fail closed. A retry therefore completes a partial
+create/attach/status sequence without creating another task or leaving the
+known correlated task orphaned.
+
+`post_parent_info_request` verifies the request task and referenced current
+validation Result, mentions the parent submitter, lists only failed criteria,
+and reconciles by validation Result comment node ID. It permits later cycles
+for later validation Results but never duplicates the same request. Before
+posting to the parent it also requires the supplied request-info task to be the
+current request task and to have exactly one canonical configured-author
+Assignment naming `issue-info-requester`.
+
+`feedback_and_redispatch` verifies the caller-reviewed Result node ID and
+digest against the exact current Result and existing Assignment, then maintains
+one canonical configured-author feedback comment:
+Feedback is bound to the exact current Result digest.
+
+````text
+WorkGraphTaskFeedback/v1
+
+```json
+{
+  "resultCommentNodeId": "IC_result",
+  "resultBodyDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "feedback": "Clarify the body evidence."
+}
+```
+````
+
+Stale reviewed digests are rejected. After the acceptor reviews a revised
+Result snapshot, the tool PATCHes that same feedback comment with the new
+digest and requested feedback, then returns:
+
+```json
+{
+  "status": "external-dispatch-required",
+  "agentProfile": "issue-validator",
+  "taskIssueNumber": 17
+}
+```
+
+There is no supported GitHub Agent Task redispatch REST surface available to
+this dependency-free reporter. The external WorkGraph dispatcher must consume
+this bounded request. The tool never invents an endpoint or chooses a new
+profile.
+
+## Unavoidable REST race and remediation
+
+The pre/post reconciliation windows are the strongest fail-closed behavior
+available without a GitHub transaction. A Result may still change immediately
+after the final Acceptance check, or an Acceptance may appear immediately
+after the final Result check. Any detected race returns an inconsistent-state
+error and performs no compensating delete; this MCP intentionally exposes no
+delete route.
+
+Manual remediation is required: stop dispatch for the task, inspect the one
+Result and all Acceptance comments, and create a fresh WorkGraph task/cycle
+from the authoritative parent state. Preserve the inconsistent comments as an
+audit trail; do not delete or reinterpret an Acceptance whose digest no longer
+matches.
+
+## Identity and least privilege
+
+Configure immutable positive numeric IDs:
+
+- `COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID`
+- `COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID`
+- `COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID`
+- `COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID`
+- `COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID`
+- `COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID`
+- `COPILOT_MCP_WORKGRAPH_REDISPATCH_REPORTER_USER_ID`
+
+Also configure secret `COPILOT_MCP_WORKGRAPH_TOKEN`. Every profile pins live
+type node ID `IT_kwDOCX0YF84CKGIJ`. Each tool verifies `/user` against its
+configured role and verifies relevant stored comment authors. Roles may map to
+one installation bot in a prototype, but remain separately named provenance
+checks. Tokens need only fixed-repository metadata read and the specific Issue
+comment/task/label routes used by the configured profile. All five profiles are
+non-user-invocable and expose no generic Issue write tool.
 
 ## Validation
 
