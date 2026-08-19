@@ -2,7 +2,7 @@
 
 A strict, breaking WorkGraph Issue workflow prototype for the fixed
 `drasi-project/drasi-workgraph-demo` repository. It defines five
-non-user-invocable profiles:
+REST-launchable profiles:
 
 - `issue-orchestrator`
 - `issue-assigner`

@@ -63,14 +63,14 @@ class WorkGraphProfilesTest(unittest.TestCase):
         cls.doc = DOC.read_text(encoding="utf-8")
         cls.readme = README.read_text(encoding="utf-8")
 
-    def test_exactly_five_non_user_invocable_profiles(self):
+    def test_exactly_five_rest_launchable_profiles(self):
         self.assertEqual(set(self.agents), set(EXPECTED_TOOLS))
         self.assertNotIn("risk-profiler", "\n".join(self.agents.values()))
         for name, content in self.agents.items():
             with self.subTest(name=name):
                 frontmatter = content.split("---", 2)[1]
                 self.assertRegex(frontmatter, rf"(?m)^name: {name}$")
-                self.assertRegex(frontmatter, r"(?m)^user-invocable: false$")
+                self.assertRegex(frontmatter, r"(?m)^user-invocable: true$")
                 self.assertRegex(
                     frontmatter, r"(?m)^disable-model-invocation: true$"
                 )

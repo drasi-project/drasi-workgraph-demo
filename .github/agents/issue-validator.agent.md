@@ -2,7 +2,7 @@
 name: issue-validator
 description: Validates the title and body of a WorkGraphTask's native parent.
 target: github-copilot
-user-invocable: false
+user-invocable: true
 disable-model-invocation: true
 tools:
   - github/issue_read
