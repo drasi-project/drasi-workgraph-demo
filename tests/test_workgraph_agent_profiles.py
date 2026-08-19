@@ -182,9 +182,15 @@ class WorkGraphProfilesTest(unittest.TestCase):
 
     def test_worker_and_acceptor_provenance_rules(self):
         validator = self.agents["issue-validator"]
-        self.assertIn("native parent; that relation is\nauthoritative", validator)
+        self.assertIn(
+            "native parent; that relation is authoritative",
+            " ".join(validator.split()),
+        )
         self.assertIn('outcome:\n"succeeded"', validator)
-        self.assertIn("PATCHes the existing canonical Result", validator)
+        self.assertIn(
+            "PATCHes the existing canonical Result",
+            " ".join(validator.split()),
+        )
 
         requester = self.agents["issue-info-requester"]
         self.assertIn("mentions the parent's submitter", requester)
@@ -196,6 +202,23 @@ class WorkGraphProfilesTest(unittest.TestCase):
         self.assertIn("submit no Acceptance", acceptor)
         self.assertIn("external WorkGraph dispatcher", acceptor)
         self.assertIn("PATCHes the one feedback comment", acceptor)
+
+    def test_dispatch_ids_and_readable_evidence_are_separated(self):
+        self.assertIn("Dispatch and read-tool trust boundary", self.doc)
+        self.assertIn(
+            "`github/issue_read` does not expose Issue node IDs or Issue Type node IDs",
+            self.doc,
+        )
+        self.assertIn("independently re-fetches\nGitHub state", self.doc)
+        for name, profile in self.agents.items():
+            with self.subTest(agent=name):
+                self.assertIn("trusted graph dispatch envelope", profile)
+                self.assertIn(
+                    "Pass opaque node IDs through unchanged",
+                    " ".join(profile.split()),
+                )
+                self.assertIn("Do not stop", profile)
+                self.assertIn("independently", profile)
 
     def test_fail_closed_race_and_feedback_revision_are_documented(self):
         self.assertIn("Unavoidable REST race and remediation", self.doc)

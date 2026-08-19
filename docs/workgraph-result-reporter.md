@@ -216,6 +216,25 @@ All task reporters take verified task and native-parent numbers/node IDs.
 Callers cannot select a repository, HTTP route, author, raw body, label, or
 Issue state.
 
+### Dispatch and read-tool trust boundary
+
+The graph dispatcher supplies positive Issue numbers and opaque GraphQL node
+IDs for the task, parent, and relevant comments. Agents treat those opaque IDs
+as trusted routing references and pass them unchanged to narrow tools.
+`github/issue_read` does not expose Issue node IDs or Issue Type node IDs, so an
+agent must not require those fields from its readable evidence or stop merely
+because they are absent.
+
+Agents use `issue_read` for the fields it exposes: repository and Issue
+numbers, state/labels, title/body, Issue Type name, native parent/children,
+comments, and numeric authors. They parse readable canonical bodies and make
+the workflow decision. Every narrow reporter then independently re-fetches
+GitHub state and rejects any mismatch in supplied node IDs, exact configured
+Issue Type ID/name, creators/comment authors, native parent, current task,
+Assignment/Result/Acceptance, destination, status, or race checks before a
+write. Opaque dispatch IDs are never selectors for a generic route, and no
+agent has a generic write tool.
+
 `transition_issue` re-reads authoritative native children and binds supplied
 task IDs to the unique current task of the required type: the matching child
 with the greatest Issue number. It rejects an older matching closed task and

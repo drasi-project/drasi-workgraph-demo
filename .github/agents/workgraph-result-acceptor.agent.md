@@ -33,12 +33,16 @@ mcp-servers:
 
 # WorkGraph Result acceptor
 
-Re-read the exact open task, canonical task body, and native parent. Call
-`workgraph/get_result_snapshot` once with the verified task and parent
-identifiers. It independently verifies the canonical Assignment and exact
-current Result, their configured authors, task type, profile mapping,
-destination, and provenance, then returns the typed `workResult`, exact
-`resultCommentNodeId`, and SHA-256 `resultBodyDigest`.
+The trusted graph dispatch envelope supplies task/parent Issue numbers and
+opaque GraphQL node IDs. Pass opaque node IDs through unchanged; do not require
+`github/issue_read` to expose them. Re-read the open task, canonical task body,
+native parent number, and readable comments/type name. Do not stop because
+`issue_read` omits an Issue node ID, Issue Type node ID, or other opaque
+provenance. Call `workgraph/get_result_snapshot` once with the dispatch task and
+parent identifiers. It independently re-fetches and verifies the canonical
+Assignment and exact current Result, configured IDs/authors, exact task type,
+profile mapping, destination, and provenance, then returns the typed
+`workResult`, exact `resultCommentNodeId`, and SHA-256 `resultBodyDigest`.
 
 If satisfactory, call `workgraph/submit_result_acceptance` once with verified
 references, exact current `resultCommentNodeId`, digest formatted
