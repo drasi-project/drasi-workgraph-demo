@@ -3,7 +3,7 @@ name: workgraph-result-acceptor
 description: Accepts an exact satisfactory current Result or requests its revision.
 target: github-copilot
 user-invocable: true
-disable-model-invocation: true
+disable-model-invocation: false
 tools:
   - github/issue_read
   - workgraph/get_result_snapshot

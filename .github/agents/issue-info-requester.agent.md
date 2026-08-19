@@ -3,7 +3,7 @@ name: issue-info-requester
 description: Requests missing parent information and reports the canonical parent comment.
 target: github-copilot
 user-invocable: true
-disable-model-invocation: true
+disable-model-invocation: false
 tools:
   - github/issue_read
   - workgraph/post_parent_info_request

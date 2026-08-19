@@ -3,7 +3,7 @@ name: issue-assigner
 description: Assigns one open unassigned WorkGraphTask to its fixed worker profile.
 target: github-copilot
 user-invocable: true
-disable-model-invocation: true
+disable-model-invocation: false
 tools:
   - github/issue_read
   - workgraph/submit_task_assignment

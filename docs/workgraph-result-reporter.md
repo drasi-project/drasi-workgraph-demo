@@ -332,8 +332,10 @@ configured role and verifies relevant stored comment authors. Roles may map to
 one installation bot in a prototype, but remain separately named provenance
 checks. Tokens need only fixed-repository metadata read and the specific Issue
 comment/task/label routes used by the configured profile. All five profiles are
-`user-invocable: true` so the GitHub Agent Task REST API can launch them, while
-`disable-model-invocation: true` prevents model-selected invocation. They
+`user-invocable: true` and `disable-model-invocation: false` so selected GitHub
+Agent Task sessions execute the profile and its narrow tools. This follows the
+observed Agent Task runtime requirement; setting the latter to `true` produced
+completed no-op sessions even when the profile was explicitly selected. They
 expose no generic Issue write tool.
 
 ## Validation

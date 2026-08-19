@@ -72,7 +72,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
                 self.assertRegex(frontmatter, rf"(?m)^name: {name}$")
                 self.assertRegex(frontmatter, r"(?m)^user-invocable: true$")
                 self.assertRegex(
-                    frontmatter, r"(?m)^disable-model-invocation: true$"
+                    frontmatter, r"(?m)^disable-model-invocation: false$"
                 )
                 self.assertIn("target: github-copilot", frontmatter)
                 tools_block = frontmatter.split("tools:", 1)[1].split(
