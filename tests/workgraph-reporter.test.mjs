@@ -459,11 +459,10 @@ test("exact Assignment, validation pass/failure, request-info, and Acceptance by
     outcome: "succeeded",
     summary: "Requested missing information.",
     result: {
-      parentInfoCommentNodeId: "IC_info",
-      parentInfoCommentCreatedAt: "2026-08-18T22:00:00Z",
+      requestCommentNodeId: "IC_info",
     },
   };
-  assert.equal(formatTaskResult(info).includes('"parentInfoCommentCreatedAt"'), true);
+  assert.equal(formatTaskResult(info).includes('"requestCommentNodeId"'), true);
   const acceptance = formatAcceptance({
     resultCommentNodeId: "IC_result",
     resultBodyDigest: resultDigest(formatTaskResult(PASS_RESULT)),
@@ -720,10 +719,8 @@ test("request-info posts one idempotent parent comment and submits typed Result"
         outcome: "succeeded",
         summary: "Requested the missing issue information.",
         result: {
-          parentInfoCommentNodeId:
-            first.result.structuredContent.parentInfoCommentNodeId,
-          parentInfoCommentCreatedAt:
-            first.result.structuredContent.parentInfoCommentCreatedAt,
+          requestCommentNodeId:
+            first.result.structuredContent.requestCommentNodeId,
         },
       };
       const submitted = await runTool(fake, IDS.result, "submit_task_result", {
@@ -894,8 +891,7 @@ test("accepted request-info resumes only from a later human reply", async () => 
     outcome: "succeeded",
     summary: "Requested the missing issue information.",
     result: {
-      parentInfoCommentNodeId: "IC_info",
-      parentInfoCommentCreatedAt: "2026-08-18T22:00:00Z",
+      requestCommentNodeId: "IC_info",
     },
   };
   const infoBody =
@@ -936,7 +932,7 @@ test("accepted request-info resumes only from a later human reply", async () => 
           transition: "resume-after-human-reply",
           taskIssueNumber: TASK_NUMBER,
           taskIssueNodeId: TASK_NODE,
-          parentInfoCommentNodeId: "IC_info",
+          requestCommentNodeId: "IC_info",
           humanReplyCommentNodeId: "IC_human_reply",
         },
       );

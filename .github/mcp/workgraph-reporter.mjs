@@ -134,10 +134,7 @@ function canonicalJson(marker, payload) {
               })),
             }
           : {
-              parentInfoCommentNodeId:
-                payload.result.parentInfoCommentNodeId,
-              parentInfoCommentCreatedAt:
-                payload.result.parentInfoCommentCreatedAt,
+              requestCommentNodeId: payload.result.requestCommentNodeId,
             },
     };
   } else if (marker === ACCEPTANCE_MARKER) {
@@ -262,26 +259,11 @@ function validateResult(value) {
       plain(entry.evidence, `criterion[${index}].evidence`);
     });
   } else {
-    exact(
-      value.result,
-      ["parentInfoCommentNodeId", "parentInfoCommentCreatedAt"],
-      "Result.result",
-    );
+    exact(value.result, ["requestCommentNodeId"], "Result.result");
     identifier(
-      value.result.parentInfoCommentNodeId,
-      "Result.result.parentInfoCommentNodeId",
+      value.result.requestCommentNodeId,
+      "Result.result.requestCommentNodeId",
     );
-    if (
-      typeof value.result.parentInfoCommentCreatedAt !== "string" ||
-      !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(
-        value.result.parentInfoCommentCreatedAt,
-      ) ||
-      Number.isNaN(Date.parse(value.result.parentInfoCommentCreatedAt))
-    ) {
-      throw new WorkGraphError(
-        "Result.result.parentInfoCommentCreatedAt must be an RFC 3339 UTC timestamp",
-      );
-    }
   }
 }
 
@@ -709,12 +691,11 @@ function validateRequestedResult(result, taskPayload) {
 
 async function verifyInfoResult(result, parentComments, taskPayload, cfg) {
   const comment = parentComments.find(
-    (item) => item.node_id === result.result.parentInfoCommentNodeId,
+    (item) => item.node_id === result.result.requestCommentNodeId,
   );
   if (
     !comment ||
     comment.user?.id !== cfg.infoId ||
-    comment.created_at !== result.result.parentInfoCommentCreatedAt ||
     !structured(comment.body, INFO_MARKER) ||
     !comment.body.includes(taskPayload.inputs.validationResultCommentNodeId)
   ) {
@@ -1016,8 +997,7 @@ async function postInfo(input, github, cfg) {
       marked[0].body === body
     ) {
       return {
-        parentInfoCommentNodeId: marked[0].node_id,
-        parentInfoCommentCreatedAt: marked[0].created_at,
+        requestCommentNodeId: marked[0].node_id,
         reconciled: true,
       };
     }
@@ -1036,8 +1016,7 @@ async function postInfo(input, github, cfg) {
     throw new WorkGraphError("parent info request response lacks a canonical timestamp");
   }
   return {
-    parentInfoCommentNodeId: comment.node_id,
-    parentInfoCommentCreatedAt: comment.created_at,
+    requestCommentNodeId: comment.node_id,
     reconciled: false,
   };
 }
@@ -1290,7 +1269,7 @@ async function transitionIssue(input, github, cfg) {
         ? [
             "taskIssueNumber",
             "taskIssueNodeId",
-            "parentInfoCommentNodeId",
+            "requestCommentNodeId",
             "humanReplyCommentNodeId",
           ]
         : []),
@@ -1426,7 +1405,7 @@ async function transitionIssue(input, github, cfg) {
     };
   }
 
-  identifier(input.parentInfoCommentNodeId, "arguments.parentInfoCommentNodeId");
+  identifier(input.requestCommentNodeId, "arguments.requestCommentNodeId");
   identifier(input.humanReplyCommentNodeId, "arguments.humanReplyCommentNodeId");
   const { child, payload } = requireCurrentChild(
     children,
@@ -1441,14 +1420,13 @@ async function transitionIssue(input, github, cfg) {
   const result = oneResult(comments, payload, cfg);
   acceptanceFor(comments, result, cfg);
   if (
-    result.payload.result.parentInfoCommentNodeId !==
-    input.parentInfoCommentNodeId
+    result.payload.result.requestCommentNodeId !== input.requestCommentNodeId
   ) {
     throw new WorkGraphError("supplied parent info comment is not the accepted Result target");
   }
   const parentComments = await github.comments(parent.number);
   const info = parentComments.find(
-    (comment) => comment.node_id === input.parentInfoCommentNodeId,
+    (comment) => comment.node_id === input.requestCommentNodeId,
   );
   const reply = parentComments.find(
     (comment) => comment.node_id === input.humanReplyCommentNodeId,
@@ -1465,7 +1443,6 @@ async function transitionIssue(input, github, cfg) {
   if (
     !info ||
     info.user?.id !== cfg.infoId ||
-    info.created_at !== result.payload.result.parentInfoCommentCreatedAt ||
     !reply ||
     reply.user?.type !== "User" ||
     botIds.has(reply.user?.id) ||
@@ -1680,7 +1657,7 @@ const tools = [
         taskIssueNumber: referenceProperties.taskIssueNumber,
         taskIssueNodeId: referenceProperties.taskIssueNodeId,
         resultCommentNodeId: { type: "string" },
-        parentInfoCommentNodeId: { type: "string" },
+        requestCommentNodeId: { type: "string" },
         humanReplyCommentNodeId: { type: "string" },
       },
       ["parentIssueNumber", "parentIssueNodeId", "expectedStatus", "transition"],

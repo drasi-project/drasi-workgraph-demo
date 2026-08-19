@@ -123,8 +123,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
         self.assertIn("There is no `assignmentId`", self.doc)
         self.assertNotIn('"assignmentId"', self.reporter)
         for field in [
-            "parentInfoCommentNodeId",
-            "parentInfoCommentCreatedAt",
+            "requestCommentNodeId",
             "resultCommentNodeId",
             "resultBodyDigest",
         ]:
@@ -186,7 +185,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
 
         requester = self.agents["issue-info-requester"]
         self.assertIn("mentions the parent's submitter", requester)
-        self.assertIn("parentInfoCommentCreatedAt", requester)
+        self.assertIn("requestCommentNodeId", requester)
 
         acceptor = self.agents["workgraph-result-acceptor"]
         self.assertIn("exact current Result", acceptor)
@@ -213,6 +212,20 @@ class WorkGraphProfilesTest(unittest.TestCase):
         self.assertNotRegex(self.reporter, r'["`]state["`]\s*:')
         self.assertNotIn("closeIssue", self.reporter)
         self.assertIn("external WorkGraph runtime may close", sources)
+
+    def test_core_graph_contract_names_are_exact(self):
+        for value in (
+            "`WorkGraphTask`: `taskType`, `inputs`",
+            "`WorkGraphTaskAssignment`: `agentProfile`",
+            "`WorkGraphTaskResult`: computed `bodyDigest`",
+            "`WorkGraphTaskResultAcceptance`: `resultCommentNodeId`",
+            "`ASSIGNMENT_FOR`",
+            "`RESULT_FOR`",
+            "`ACCEPTS_RESULT`",
+            "`COMMENT_ON`",
+            "`resultBodyDigest` equals that Result node's `bodyDigest`",
+        ):
+            self.assertIn(value, self.doc)
 
     def test_repository_validation_profile_is_unchanged_two_criteria(self):
         self.assertTrue(

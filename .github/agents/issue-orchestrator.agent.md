@@ -55,7 +55,8 @@ Apply exactly this state machine:
 - `status:awaiting-need-info`: only for a human comment created after the
   accepted request-info Result's parent info comment, call once with
   `transition: "resume-after-human-reply"`, request task IDs, and both comment
-  node IDs. This creates validation and advances to awaiting-validation.
+  node IDs (`requestCommentNodeId` and `humanReplyCommentNodeId`). This creates
+  validation and advances to awaiting-validation.
 - `status:awaiting-triage`: no-op.
 
 The transition tool reconciles expected state immediately before writing and

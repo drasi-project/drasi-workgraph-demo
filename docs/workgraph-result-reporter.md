@@ -132,15 +132,14 @@ WorkGraphTaskResult/v1
   "outcome": "succeeded",
   "summary": "Requested the missing issue information.",
   "result": {
-    "parentInfoCommentNodeId": "IC_parent_info",
-    "parentInfoCommentCreatedAt": "2026-08-18T22:00:00Z"
+    "requestCommentNodeId": "IC_parent_info"
   }
 }
 ```
 ````
 
-`parentInfoCommentCreatedAt` is an RFC 3339 UTC whole-second timestamp. The
-reporter verifies both fields against the configured-author parent comment.
+The reporter verifies `requestCommentNodeId` against the configured-author
+parent comment. Resume logic reads that comment's authoritative creation time.
 
 The Result reporter POSTs when no Result exists and PATCHes the one canonical
 configured-author Result comment when requested canonical content changes.
@@ -176,6 +175,22 @@ Immediately before an Acceptance POST, the reporter re-lists comments and
 re-fetches the exact current Result, checking its node ID and digest again.
 Immediately after POST it re-lists and verifies that the Result still has the
 digest recorded by the one canonical Acceptance.
+
+## Core graph projection
+
+The core projection uses the exact specialized properties and relations:
+
+- `WorkGraphTask`: `taskType`, `inputs`
+- `WorkGraphTaskAssignment`: `agentProfile`; `ASSIGNMENT_FOR` → task
+- `WorkGraphTaskResult`: computed `bodyDigest`, plus `taskType`, `outcome`,
+  `summary`, `result`; `RESULT_FOR` → task
+- `WorkGraphTaskResultAcceptance`: `resultCommentNodeId`,
+  `resultBodyDigest`, `summary`; `ACCEPTS_RESULT` → Result
+
+Each specialized comment also has `COMMENT_ON` to its task. Result
+`bodyDigest` is SHA-256 over the exact full marker comment body and is not a
+field in the Result wire JSON. A current Acceptance matches only when its
+`resultBodyDigest` equals that Result node's `bodyDigest`.
 
 ## State machine and narrow tools
 
