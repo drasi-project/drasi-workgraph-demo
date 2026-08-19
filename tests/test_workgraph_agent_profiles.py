@@ -203,6 +203,43 @@ class WorkGraphProfilesTest(unittest.TestCase):
         self.assertIn("external WorkGraph dispatcher", acceptor)
         self.assertIn("PATCHes the one feedback comment", acceptor)
 
+    def test_request_info_acceptance_uses_failed_criteria_deterministically(self):
+        acceptor = self.agents["workgraph-result-acceptor"]
+        normalized = " ".join(acceptor.split())
+        for value in (
+            "exact criterion strings",
+            "passed: false",
+            "authoritative requested items",
+            "The Issue body is present",
+            "Never reinterpret a criterion name",
+            "concrete factual or canonical-contract mismatch",
+            "Wording preference alone is not a mismatch",
+        ):
+            self.assertIn(value, normalized)
+        self.assertIn("positively phrased criterion", self.doc)
+        self.assertIn("acceptor must not reinterpret", self.doc)
+
+    def test_workers_handle_optional_feedback_dispatch(self):
+        for name in ("issue-validator", "issue-info-requester"):
+            profile = self.agents[name]
+            normalized = " ".join(profile.split())
+            with self.subTest(agent=name):
+                for field in (
+                    "feedbackCommentNodeId",
+                    "feedbackUpdatedAt",
+                    "resultCommentNodeId",
+                    "resultBodyDigest",
+                ):
+                    self.assertIn(field, profile)
+                self.assertIn("exact current Result and feedback comment", normalized)
+                self.assertIn("materially revised", normalized)
+                self.assertIn("do not merely reconcile an unchanged", normalized.lower())
+                self.assertIn("narrow reporter remains authoritative", normalized)
+        requester = self.agents["issue-info-requester"]
+        self.assertIn("exact `passed: false` validation criteria", requester)
+        self.assertIn("cannot require\ninventing, removing, or rephrasing", requester)
+        self.assertIn("request-info worker never changes", self.doc)
+
     def test_dispatch_ids_and_readable_evidence_are_separated(self):
         self.assertIn("Dispatch and read-tool trust boundary", self.doc)
         self.assertIn(
