@@ -2,1100 +2,1472 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createServer } from "node:http";
-import { fileURLToPath } from "node:url";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import {
+  formatAcceptance,
+  formatAssignment,
+  formatTask,
   formatTaskResult,
-  loadIssueValidationProfile,
-  parseIssueValidationProfile,
-  resolveIssueValidationProfilePath,
+  parseTask,
+  resultDigest,
 } from "../.github/mcp/workgraph-reporter.mjs";
 
-const ROOT = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "..",
-);
-const REPORTER = path.join(
-  ROOT,
-  ".github",
-  "mcp",
-  "workgraph-reporter.mjs",
-);
-const TASK_NUMBER = 17;
-const TASK_NODE_ID = "I_task";
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const REPORTER = path.join(ROOT, ".github/mcp/workgraph-reporter.mjs");
+const TYPE_ID = "IT_kwDOCX0YF84CKGIJ";
+const IDS = {
+  launcher: 10,
+  assignment: 11,
+  result: 12,
+  acceptance: 13,
+  orchestrator: 14,
+  info: 15,
+  redispatch: 16,
+  submitter: 20,
+  human: 21,
+};
 const PARENT_NUMBER = 7;
-const PARENT_NODE_ID = "I_parent";
-const TASK_TYPE_ID = "IT_workgraph_task";
-const TASK_TYPE_DATABASE_ID = 36200969;
-const REPORTER_USER_ID = 42;
-const CREATOR_USER_ID = 84;
-const VALIDATION_ASSIGNMENT_ID = `issue-validation:${PARENT_NODE_ID}`;
-const RISK_ASSIGNMENT_ID = `issue-risk-profile:${PARENT_NODE_ID}`;
-const VALIDATION_PROFILE_NAME = "new-issue-default";
-const VALIDATION_CRITERIA = [
+const PARENT_NODE = "I_parent";
+const TASK_NUMBER = 17;
+const TASK_NODE = "I_task";
+const CRITERIA = [
   "The Issue has a non-empty title",
   "The Issue body is present",
 ];
-
-const VALIDATION_ASSIGNMENT = {
-  assignmentId: VALIDATION_ASSIGNMENT_ID,
-  agentProfile: "issue-validator",
-  priority: 10,
-  taskType: "issue-validation",
-  task: {
-    validationProfile: VALIDATION_PROFILE_NAME,
-  },
-};
-const VALIDATION_RESULT = {
-  assignmentId: VALIDATION_ASSIGNMENT_ID,
-  taskType: "issue-validation",
+const PASS_RESULT = {
+  taskType: "validate-issue",
   outcome: "succeeded",
-  summary: "Validated the title and body requirements.",
+  summary: "Both required fields are present.",
   result: {
     criteria: [
-      {
-        criterion: VALIDATION_CRITERIA[0],
-        passed: true,
-        evidence: "The title contains non-whitespace text.",
-      },
-      {
-        criterion: VALIDATION_CRITERIA[1],
-        passed: true,
-        evidence: "The body contains non-whitespace text.",
-      },
+      { criterion: CRITERIA[0], passed: true, evidence: "Title is non-empty." },
+      { criterion: CRITERIA[1], passed: true, evidence: "Body is non-empty." },
     ],
   },
 };
-const RISK_ASSIGNMENT = {
-  assignmentId: RISK_ASSIGNMENT_ID,
-  agentProfile: "issue-risk-profiler",
-  priority: 4,
-  taskType: "issue-risk-profile",
-  task: {
-    riskProfile: "delivery",
-    dimensions: ["Security impact", "Rollback complexity"],
-  },
-};
-const RISK_RESULT = {
-  assignmentId: RISK_ASSIGNMENT_ID,
-  taskType: "issue-risk-profile",
-  outcome: "succeeded",
-  summary: "Scored both requested risk dimensions.",
+const FAIL_RESULT = {
+  ...PASS_RESULT,
+  summary: "The issue body is missing.",
   result: {
-    dimensions: [
-      {
-        dimension: "Security impact",
-        score: 75,
-        rationale: "The change affects authorization checks.",
-      },
-      {
-        dimension: "Rollback complexity",
-        score: 25,
-        rationale: "The issue describes a feature-flag rollback.",
-      },
+    criteria: [
+      PASS_RESULT.result.criteria[0],
+      { criterion: CRITERIA[1], passed: false, evidence: "Body is empty." },
     ],
   },
 };
-const EXPECTED_VALIDATION_COMMENT = `WorkGraphTaskResult/v1
 
-\`\`\`json
-{
-  "assignmentId": "issue-validation:I_parent",
-  "taskType": "issue-validation",
-  "outcome": "succeeded",
-  "summary": "Validated the title and body requirements.",
-  "result": {
-    "criteria": [
-      {
-        "criterion": "The Issue has a non-empty title",
-        "passed": true,
-        "evidence": "The title contains non-whitespace text."
-      },
-      {
-        "criterion": "The Issue body is present",
-        "passed": true,
-        "evidence": "The body contains non-whitespace text."
+function taskPayload(taskType = "validate-issue", resultNode = "IC_validation") {
+  return taskType === "validate-issue"
+    ? {
+        taskType,
+        inputs: { validationProfile: "new-issue-default" },
       }
-    ]
-  }
+    : {
+        taskType,
+        inputs: { validationResultCommentNodeId: resultNode },
+      };
 }
-\`\`\`
-`;
 
-function issueReferences() {
+function makeTask({
+  number = TASK_NUMBER,
+  nodeId = TASK_NODE,
+  id = 117,
+  taskType = "validate-issue",
+  resultNode,
+  state = "open",
+  authorId = IDS.launcher,
+} = {}) {
+  const payload = taskPayload(taskType, resultNode);
   return {
-    taskIssueNumber: TASK_NUMBER,
-    taskIssueNodeId: TASK_NODE_ID,
-    parentIssueNumber: PARENT_NUMBER,
-    parentIssueNodeId: PARENT_NODE_ID,
+    id,
+    number,
+    node_id: nodeId,
+    state,
+    title: `WorkGraph: ${taskType}`,
+    body: formatTask(payload),
+    user: { id: authorId, login: "launcher", type: "Bot" },
+    type: { name: "WorkGraphTask", node_id: TYPE_ID },
+    repository_url:
+      "https://api.github.com/repos/drasi-project/drasi-workgraph-demo",
   };
 }
 
-function resultInput(
-  assignment = VALIDATION_ASSIGNMENT,
-  workResult = VALIDATION_RESULT,
-) {
+function makeComment(body, authorId, nodeId, id, createdAt = "2026-08-18T22:00:00Z") {
   return {
-    ...issueReferences(),
-    workResult,
-    assignment,
+    id,
+    node_id: nodeId,
+    body,
+    created_at: createdAt,
+    user: {
+      id: authorId,
+      login: authorId === IDS.submitter ? "submitter" : `actor-${authorId}`,
+      type: authorId === IDS.human || authorId === IDS.submitter ? "User" : "Bot",
+    },
   };
 }
 
-function submitInput(workResult = VALIDATION_RESULT) {
-  return {
-    ...issueReferences(),
-    workResult,
-  };
+function assignmentComment(profile = "issue-validator", author = IDS.assignment) {
+  return makeComment(formatAssignment(profile), author, "IC_assignment", 201);
 }
 
-function progressInput(message = "Reviewed the parent Issue fields.") {
-  return {
-    ...issueReferences(),
-    assignmentId: VALIDATION_ASSIGNMENT_ID,
-    message,
-  };
+function resultComment(result = PASS_RESULT, author = IDS.result, nodeId = "IC_result") {
+  return makeComment(formatTaskResult(result), author, nodeId, 202);
 }
 
-function profileMarkdown(criteriaLines) {
-  return (
-    "# Test profile\n\n## Guidance\n\nUse current Issue fields.\n\n" +
-    `## Criteria\n\n${criteriaLines.join("\n")}\n`
+function acceptanceComment(result = PASS_RESULT, author = IDS.acceptance) {
+  const body = formatTaskResult(result);
+  return makeComment(
+    formatAcceptance({
+      resultCommentNodeId: "IC_result",
+      resultBodyDigest: resultDigest(body),
+      summary: "Result is satisfactory.",
+    }),
+    author,
+    "IC_acceptance",
+    203,
   );
 }
 
-async function requestBody(request) {
+async function jsonBody(request) {
   let body = "";
-  for await (const chunk of request) {
-    body += chunk;
-  }
-  return body.length > 0 ? JSON.parse(body) : null;
+  for await (const chunk of request) body += chunk;
+  return body ? JSON.parse(body) : undefined;
 }
 
-function sendJson(response, status, body) {
+function send(response, status, body) {
   response.writeHead(status, { "Content-Type": "application/json" });
   response.end(JSON.stringify(body));
 }
 
-async function startFakeGitHub({
-  assignment = VALIDATION_ASSIGNMENT,
-  taskOverrides = {},
-  parentOverrides = {},
-  existingComments = [],
-  commentMode = "success",
-  identityId = REPORTER_USER_ID,
+async function fakeGitHub({
+  parentStatus = "status:new",
+  tasks = [makeTask()],
+  children = [TASK_NUMBER],
+  comments = {},
+  parentComments = [],
+  failures = {},
+  incorrectlyTypedCreates = 0,
 } = {}) {
   const state = {
-    comments: [...existingComments],
+    identityId: IDS.result,
     operations: [],
-    postAttempts: 0,
-    requests: [],
-  };
-  const task = {
-    node_id: TASK_NODE_ID,
-    number: TASK_NUMBER,
-    state: "open",
-    title: "WorkGraph task",
-    body: `${JSON.stringify(assignment, null, 2)}\n`,
-    user: { id: CREATOR_USER_ID, login: "workgraph-core" },
-    type: {
-      id: TASK_TYPE_DATABASE_ID,
-      node_id: TASK_TYPE_ID,
-      name: "WorkGraphTask",
-    },
-    ...taskOverrides,
-  };
-  const parent = {
-    node_id: PARENT_NODE_ID,
-    number: PARENT_NUMBER,
-    state: "open",
-    title: "Example parent",
-    body: "Acceptance criteria:\n- [ ] Complete",
-    repository_url:
+    tasks: new Map(tasks.map((item) => [item.number, structuredClone(item)])),
+    children: [...children],
+    comments: new Map(),
+    nextIssue: 30,
+    nextComment: 300,
+    failures: { ...failures },
+    incorrectlyTypedCreates,
+    createPayloads: [],
+    hooks: {},
+    subIssueRepositoryUrl:
       "https://api.github.com/repos/drasi-project/drasi-workgraph-demo",
-    ...parentOverrides,
+    parentIssueReads: 0,
+    parent: {
+      id: 107,
+      number: PARENT_NUMBER,
+      node_id: PARENT_NODE,
+      state: "open",
+      title: "Parent title",
+      body: "Parent body",
+      labels: [{ name: parentStatus }, { name: "kind:demo" }],
+      user: { id: IDS.submitter, login: "submitter", type: "User" },
+      repository_url: "https://api.github.com/repos/drasi-project/drasi-workgraph-demo",
+    },
   };
+  state.comments.set(PARENT_NUMBER, structuredClone(parentComments));
+  for (const task of state.tasks.values()) {
+    state.comments.set(task.number, structuredClone(comments[task.number] ?? []));
+  }
+
+  function fail(operation, timing, response) {
+    if (state.failures[operation] !== timing) return false;
+    delete state.failures[operation];
+    send(response, 500, { message: `${operation} failed ${timing} write` });
+    return true;
+  }
+
   const server = createServer(async (request, response) => {
     const url = new URL(request.url, "http://localhost");
-    state.requests.push({ method: request.method, path: url.pathname });
+    const route = url.pathname;
+    state.operations.push(`${request.method} ${route}`);
     if (request.headers.authorization !== "Bearer test-token") {
-      sendJson(response, 401, { message: "bad token" });
+      send(response, 401, { message: "bad token" });
       return;
     }
-    if (request.method === "GET" && url.pathname === "/user") {
-      state.operations.push("identity");
-      sendJson(response, 200, {
-        id: identityId,
-        login: "workgraph-reporter",
+    if (request.method === "GET" && route === "/user") {
+      send(response, 200, {
+        id: state.identityId,
+        login: `actor-${state.identityId}`,
       });
       return;
     }
-    if (
-      request.method === "GET" &&
-      url.pathname ===
-        `/repos/drasi-project/drasi-workgraph-demo/issues/${TASK_NUMBER}`
-    ) {
-      state.operations.push("task");
-      sendJson(response, 200, task);
+    const issueMatch = route.match(
+      /^\/repos\/drasi-project\/drasi-workgraph-demo\/issues\/(\d+)$/,
+    );
+    if (request.method === "GET" && issueMatch) {
+      const number = Number(issueMatch[1]);
+      if (number === PARENT_NUMBER) {
+        state.parentIssueReads += 1;
+        state.hooks.beforeParentIssueRead?.(state.parentIssueReads, state);
+      }
+      send(
+        response,
+        200,
+        number === PARENT_NUMBER ? state.parent : state.tasks.get(number),
+      );
+      return;
+    }
+    const parentMatch = route.match(/\/issues\/(\d+)\/parent$/);
+    if (request.method === "GET" && parentMatch) {
+      const number = Number(parentMatch[1]);
+      if (state.children.includes(number)) {
+        send(response, 200, state.parent);
+      } else {
+        send(response, 404, { message: "Not Found" });
+      }
+      return;
+    }
+    const commentMatch = route.match(/\/issues\/comments\/(\d+)$/);
+    if (request.method === "GET" && commentMatch) {
+      const id = Number(commentMatch[1]);
+      state.hooks.beforeGetComment?.(id, state);
+      for (const list of state.comments.values()) {
+        const comment = list.find((item) => item.id === id);
+        if (comment) {
+          send(response, 200, comment);
+          return;
+        }
+      }
+      send(response, 404, { message: "Not Found" });
+      return;
+    }
+    const commentsMatch = route.match(/\/issues\/(\d+)\/comments$/);
+    if (request.method === "GET" && commentsMatch) {
+      send(response, 200, state.comments.get(Number(commentsMatch[1])) ?? []);
+      return;
+    }
+    if (request.method === "POST" && commentsMatch) {
+      const number = Number(commentsMatch[1]);
+      const payload = await jsonBody(request);
+      state.hooks.beforePostComment?.(number, payload, state);
+      const comment = makeComment(
+        payload.body,
+        state.identityId,
+        `IC_created_${state.nextComment}`,
+        state.nextComment,
+        `2026-08-18T22:${String(state.nextComment % 60).padStart(2, "0")}:00Z`,
+      );
+      state.nextComment += 1;
+      const list = state.comments.get(number) ?? [];
+      list.push(comment);
+      state.comments.set(number, list);
+      state.hooks.afterPostComment?.(number, comment, state);
+      send(response, 201, comment);
+      return;
+    }
+    const patchMatch = route.match(/\/issues\/comments\/(\d+)$/);
+    if (request.method === "PATCH" && patchMatch) {
+      const id = Number(patchMatch[1]);
+      const payload = await jsonBody(request);
+      state.hooks.beforePatchComment?.(id, payload, state);
+      for (const list of state.comments.values()) {
+        const comment = list.find((item) => item.id === id);
+        if (comment) {
+          comment.body = payload.body;
+          state.hooks.afterPatchComment?.(id, comment, state);
+          send(response, 200, comment);
+          return;
+        }
+      }
+    }
+    const subMatch = route.match(/\/issues\/(\d+)\/sub_issues$/);
+    if (request.method === "GET" && subMatch) {
+      send(
+        response,
+        200,
+        state.children.map((number) => ({
+          number,
+          node_id: state.tasks.get(number).node_id,
+          repository_url: state.subIssueRepositoryUrl,
+        })),
+      );
+      return;
+    }
+    if (request.method === "POST" && subMatch) {
+      if (fail("attach", "before", response)) return;
+      const payload = await jsonBody(request);
+      const child = [...state.tasks.values()].find(
+        (item) => item.id === payload.sub_issue_id,
+      );
+      if (!state.children.includes(child.number)) state.children.push(child.number);
+      if (fail("attach", "after", response)) return;
+      send(response, 201, child);
       return;
     }
     if (
       request.method === "GET" &&
-      url.pathname.endsWith(`/issues/${TASK_NUMBER}/parent`)
+      route === "/repos/drasi-project/drasi-workgraph-demo/issues"
     ) {
-      state.operations.push("parent");
-      sendJson(response, 200, parent);
-      return;
-    }
-    if (
-      request.method === "GET" &&
-      url.pathname.endsWith(`/issues/${TASK_NUMBER}/comments`)
-    ) {
-      state.operations.push("comments");
-      sendJson(response, 200, state.comments);
+      send(response, 200, [
+        state.parent,
+        ...[...state.tasks.values()].filter((task) => task.state === "open"),
+      ]);
       return;
     }
     if (
       request.method === "POST" &&
-      url.pathname.endsWith(`/issues/${TASK_NUMBER}/comments`)
+      route === "/repos/drasi-project/drasi-workgraph-demo/issues"
     ) {
-      state.postAttempts += 1;
-      const payload = await requestBody(request);
-      const comment = {
-        node_id: `IC_created_${state.postAttempts}`,
-        user: { id: identityId, login: "workgraph-reporter" },
-        body: payload.body,
-      };
-      if (commentMode === "failure") {
-        state.operations.push("comment-failure");
-        sendJson(response, 422, { message: "comment rejected" });
-        return;
+      if (fail("create", "before", response)) return;
+      const payload = await jsonBody(request);
+      state.createPayloads.push(payload);
+      const task = makeTask({
+        number: state.nextIssue,
+        nodeId: `I_created_${state.nextIssue}`,
+        id: 1000 + state.nextIssue,
+        taskType: payload.body.includes("request-info")
+          ? "request-info"
+          : "validate-issue",
+        resultNode:
+          payload.body.match(/validationResultCommentNodeId: ([A-Za-z0-9_-]+)/)?.[1],
+      });
+      task.title = payload.title;
+      task.body = payload.body;
+      if (state.incorrectlyTypedCreates > 0) {
+        task.type = null;
+        state.incorrectlyTypedCreates -= 1;
       }
-      state.comments.push(comment);
-      if (commentMode === "ambiguous") {
-        state.operations.push("comment-ambiguous");
-        request.socket.destroy();
-        return;
-      }
-      if (commentMode === "malformed-response") {
-        state.operations.push("comment-malformed-response");
-        response.writeHead(201, { "Content-Type": "application/json" });
-        response.end("not-json");
-        return;
-      }
-      state.operations.push("comment");
-      sendJson(response, 201, comment);
+      state.nextIssue += 1;
+      state.tasks.set(task.number, task);
+      state.comments.set(task.number, []);
+      if (fail("create", "after", response)) return;
+      send(response, 201, task);
       return;
     }
-    sendJson(response, 404, { message: "not found" });
+    const labelsMatch = route.match(/\/issues\/(\d+)\/labels$/);
+    if (request.method === "PUT" && labelsMatch) {
+      if (fail("status", "before", response)) return;
+      const payload = await jsonBody(request);
+      state.parent.labels = payload.labels.map((name) => ({ name }));
+      if (fail("status", "after", response)) return;
+      send(response, 200, state.parent.labels);
+      return;
+    }
+    send(response, 404, { message: `unhandled ${request.method} ${route}` });
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
-  const address = server.address();
   return {
     state,
-    apiUrl: `http://127.0.0.1:${address.port}`,
-    close: () =>
-      new Promise((resolve) => {
-        server.close(resolve);
-      }),
+    api: `http://127.0.0.1:${server.address().port}`,
+    close: () => new Promise((resolve) => server.close(resolve)),
   };
 }
 
-async function runMcp(
-  messages,
-  apiUrl,
-  config = {},
-) {
+function baseInput(task = makeTask()) {
+  return {
+    taskIssueNumber: task.number,
+    taskIssueNodeId: task.node_id,
+    parentIssueNumber: PARENT_NUMBER,
+    parentIssueNodeId: PARENT_NODE,
+  };
+}
+
+async function runTool(fake, actorId, name, input) {
+  fake.state.identityId = actorId;
+  const messages = [
+    { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
+    { jsonrpc: "2.0", method: "notifications/initialized", params: {} },
+    { jsonrpc: "2.0", id: 2, method: "tools/list", params: {} },
+    {
+      jsonrpc: "2.0",
+      id: 3,
+      method: "tools/call",
+      params: { name, arguments: input },
+    },
+  ];
   const child = spawn(process.execPath, [REPORTER], {
     cwd: ROOT,
     env: {
       ...process.env,
       NODE_ENV: "test",
-      WORKGRAPH_TEST_GITHUB_API_URL: apiUrl,
+      WORKGRAPH_TEST_GITHUB_API_URL: fake.api,
       COPILOT_MCP_WORKGRAPH_TOKEN: "test-token",
-      COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID:
-        config.taskIssueTypeId ?? TASK_TYPE_ID,
-      COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID:
-        config.launcherUserId ?? String(CREATOR_USER_ID),
-      COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID:
-        config.reporterUserId ?? String(REPORTER_USER_ID),
+      COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID: TYPE_ID,
+      COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID: String(IDS.launcher),
+      COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID: String(IDS.assignment),
+      COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID: String(IDS.result),
+      COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID: String(IDS.acceptance),
+      COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID: String(IDS.orchestrator),
+      COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID: String(IDS.info),
+      COPILOT_MCP_WORKGRAPH_REDISPATCH_REPORTER_USER_ID: String(IDS.redispatch),
     },
     stdio: ["pipe", "pipe", "pipe"],
   });
   let stdout = "";
   let stderr = "";
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => {
-    stdout += chunk;
-  });
-  child.stderr.on("data", (chunk) => {
-    stderr += chunk;
-  });
-  child.stdin.end(
-    `${messages.map((message) => JSON.stringify(message)).join("\n")}\n`,
-  );
+  child.stdout.on("data", (chunk) => (stdout += chunk));
+  child.stderr.on("data", (chunk) => (stderr += chunk));
+  child.stdin.end(`${messages.map(JSON.stringify).join("\n")}\n`);
   const [code] = await once(child, "close");
   assert.equal(code, 0, stderr);
   assert.equal(stderr, "");
-  return stdout
-    .trim()
-    .split("\n")
-    .filter(Boolean)
-    .map((line) => JSON.parse(line));
+  const responses = stdout.trim().split("\n").map(JSON.parse);
+  return { tools: responses[1].result.tools, result: responses[2].result };
 }
 
-function protocolMessages(name = "submit_task_result", input = submitInput()) {
-  return [
-    {
-      jsonrpc: "2.0",
-      id: 1,
-      method: "initialize",
-      params: { protocolVersion: "2025-06-18" },
-    },
-    { jsonrpc: "2.0", id: 2, method: "ping", params: {} },
-    { jsonrpc: "2.0", id: 3, method: "tools/list", params: {} },
-    {
-      jsonrpc: "2.0",
-      id: 4,
-      method: "tools/call",
-      params: { name, arguments: input },
-    },
-  ];
-}
-
-async function callReporter(fakeOptions, name, input, config) {
-  const fake = await startFakeGitHub(fakeOptions);
+async function withFake(options, callback) {
+  const fake = await fakeGitHub(options);
   try {
-    const responses = await runMcp(
-      protocolMessages(name, input),
-      fake.apiUrl,
-      config,
-    );
-    return { response: responses[3].result, state: fake.state };
+    await callback(fake);
   } finally {
     await fake.close();
   }
 }
 
-function assertNoForbiddenMutation(state) {
-  for (const request of state.requests) {
-    assert.notEqual(request.method, "PATCH");
-    assert.notEqual(request.method, "PUT");
-    assert.notEqual(request.method, "DELETE");
-    assert.equal(
-      request.method === "POST" &&
-        !request.path.endsWith(`/issues/${TASK_NUMBER}/comments`),
-      false,
-    );
-  }
-}
-
-test("exposes only the two narrow task reporter tools", async () => {
-  const { response } = await callReporter(
-    {},
-    "submit_task_result",
-    submitInput(),
+test("exact canonical task YAML supports only the two contracts", () => {
+  const validation = formatTask(taskPayload());
+  assert.equal(
+    validation,
+    "WorkGraphTask/v1\n\n```yaml\ntaskType: validate-issue\ninputs:\n  validationProfile: new-issue-default\n```\n",
   );
-  assert.equal(response.isError, false);
+  assert.deepEqual(parseTask(validation), taskPayload());
+  const request = formatTask(taskPayload("request-info", "IC_validation"));
+  assert.equal(
+    request,
+    "WorkGraphTask/v1\n\n```yaml\ntaskType: request-info\ninputs:\n  validationResultCommentNodeId: IC_validation\n```\n",
+  );
+  assert.deepEqual(parseTask(request), taskPayload("request-info", "IC_validation"));
+  assert.throws(
+    () => parseTask(validation.replace("```yaml", "```yml")),
+    /not canonical/,
+  );
+  assert.throws(
+    () => parseTask(validation.replace("new-issue-default", "other")),
+    /new-issue-default/,
+  );
+});
 
-  const fake = await startFakeGitHub();
-  try {
-    const responses = await runMcp(protocolMessages(), fake.apiUrl);
-    assert.equal(
-      responses[0].result.serverInfo.name,
-      "drasi-workgraph-task-reporter",
-    );
-    assert.deepEqual(responses[1].result, {});
-    const tools = responses[2].result.tools;
+test("exact Assignment, validation pass/failure, request-info, and Acceptance bytes", () => {
+  assert.equal(
+    formatAssignment("issue-validator"),
+    'WorkGraphTaskAssignment/v1\n\n```json\n{\n  "agentProfile": "issue-validator"\n}\n```\n',
+  );
+  for (const result of [PASS_RESULT, FAIL_RESULT]) {
+    const body = formatTaskResult(result);
+    assert.equal(body.startsWith("WorkGraphTaskResult/v1\n\n```json\n{\n"), true);
+    assert.equal(body.includes("assignmentId"), false);
+    assert.equal(body.endsWith("```\n"), true);
+  }
+  const info = {
+    taskType: "request-info",
+    outcome: "succeeded",
+    summary: "Requested missing information.",
+    result: {
+      requestCommentNodeId: "IC_info",
+    },
+  };
+  assert.equal(formatTaskResult(info).includes('"requestCommentNodeId"'), true);
+  const acceptance = formatAcceptance({
+    resultCommentNodeId: "IC_result",
+    resultBodyDigest: resultDigest(formatTaskResult(PASS_RESULT)),
+    summary: "Result is satisfactory.",
+  });
+  assert.match(acceptance, /^WorkGraphTaskResultAcceptance\/v1/);
+});
+
+test("exposes only seven narrow tools and ignores MCP notifications", async () => {
+  await withFake({}, async (fake) => {
+    const { tools } = await runTool(fake, IDS.assignment, "submit_task_assignment", {
+      ...baseInput(),
+      agentProfile: "issue-validator",
+    });
     assert.deepEqual(
       tools.map((tool) => tool.name),
-      ["report_progress", "submit_task_result"],
-    );
-    for (const tool of tools) {
-      assert.equal(tool.inputSchema.additionalProperties, false);
-    }
-    assert.deepEqual(
-      Object.keys(tools[0].inputSchema.properties),
       [
-        "taskIssueNumber",
-        "taskIssueNodeId",
-        "parentIssueNumber",
-        "parentIssueNodeId",
-        "assignmentId",
-        "message",
+        "get_result_snapshot",
+        "submit_task_assignment",
+        "submit_task_result",
+        "submit_result_acceptance",
+        "transition_issue",
+        "post_parent_info_request",
+        "feedback_and_redispatch",
       ],
     );
-    assert.deepEqual(
-      Object.keys(tools[1].inputSchema.properties),
-      [
-        "taskIssueNumber",
-        "taskIssueNodeId",
-        "parentIssueNumber",
-        "parentIssueNodeId",
-        "workResult",
-      ],
+    tools.forEach((tool) =>
+      assert.equal(tool.inputSchema.additionalProperties, false),
     );
-    assert.equal(
-      tools[0].inputSchema.properties.assignmentId.maxLength,
-      256,
-    );
-    assert.equal(
-      tools[0].inputSchema.properties.taskIssueNodeId.maxLength,
-      256,
-    );
-    const serialized = JSON.stringify(tools);
-    for (const forbidden of [
-      "repository",
-      "commentBody",
-      "graphql",
-      "state_reason",
-      "report_result",
-    ]) {
-      assert.equal(serialized.includes(forbidden), false);
-    }
-  } finally {
-    await fake.close();
-  }
-});
-
-test("loads and strictly parses the repository validation profile", () => {
-  assert.equal(
-    resolveIssueValidationProfilePath(VALIDATION_PROFILE_NAME),
-    path.join(
-      ROOT,
-      ".github",
-      "workgraph",
-      "profiles",
-      "issue-validation",
-      `${VALIDATION_PROFILE_NAME}.md`,
-    ),
-  );
-  assert.deepEqual(
-    loadIssueValidationProfile(VALIDATION_PROFILE_NAME),
-    VALIDATION_CRITERIA,
-  );
-  assert.deepEqual(
-    parseIssueValidationProfile(
-      profileMarkdown([
-        `1. ${VALIDATION_CRITERIA[0]}`,
-        `2. ${VALIDATION_CRITERIA[1]}`,
-      ]),
-    ),
-    VALIDATION_CRITERIA,
-  );
-  assert.throws(
-    () => resolveIssueValidationProfilePath("../profile"),
-    /validationProfile must be 1-64 lowercase letters/,
-  );
-  assert.throws(
-    () => parseIssueValidationProfile("# Profile\n"),
-    /missing the ## Criteria section/,
-  );
-});
-
-test("creates exact issue-validation Result bytes on the task only", async () => {
-  const { response, state } = await callReporter(
-    {},
-    "submit_task_result",
-    submitInput(),
-  );
-  assert.deepEqual(response.structuredContent, {
-    taskIssueNodeId: TASK_NODE_ID,
-    parentIssueNodeId: PARENT_NODE_ID,
-    assignmentId: VALIDATION_ASSIGNMENT_ID,
-    taskType: "issue-validation",
-    commentNodeId: "IC_created_1",
-    reconciled: false,
   });
-  assert.equal(state.comments[0].body, EXPECTED_VALIDATION_COMMENT);
-  assert.equal(state.comments[0].body, formatTaskResult(VALIDATION_RESULT));
-  assert.equal(state.comments[0].body.endsWith("```\n"), true);
-  assert.equal(state.comments[0].body.includes("<details"), false);
-  assert.deepEqual(state.operations, [
-    "identity",
-    "task",
-    "parent",
-    "comments",
-    "comment",
-  ]);
-  assertNoForbiddenMutation(state);
 });
 
-test("creates exact issue-risk-profile Result bytes", async () => {
-  const { response, state } = await callReporter(
-    { assignment: RISK_ASSIGNMENT },
-    "submit_task_result",
-    submitInput(RISK_RESULT),
+test("verified Result snapshot supplies the acceptor digest", async () => {
+  await withFake(
+    {
+      comments: {
+        [TASK_NUMBER]: [assignmentComment(), resultComment(PASS_RESULT)],
+      },
+    },
+    async (fake) => {
+      const response = await runTool(
+        fake,
+        IDS.acceptance,
+        "get_result_snapshot",
+        baseInput(),
+      );
+      assert.deepEqual(response.result.structuredContent, {
+        resultCommentNodeId: "IC_result",
+        resultBodyDigest: resultDigest(formatTaskResult(PASS_RESULT)),
+        workResult: PASS_RESULT,
+      });
+      assert.equal(response.result.isError, false);
+    },
   );
-  assert.equal(response.structuredContent.taskType, "issue-risk-profile");
-  assert.equal(state.comments[0].body, formatTaskResult(RISK_RESULT));
-  assert.deepEqual(
-    JSON.parse(
-      state.comments[0].body.match(
-        /^WorkGraphTaskResult\/v1\n\n```json\n([\s\S]+)\n```\n$/,
-      )[1],
-    ).result.dimensions,
-    RISK_RESULT.result.dimensions,
-  );
-  assertNoForbiddenMutation(state);
 });
 
-test("posts bounded ordinary progress on the task only", async () => {
-  const progress = "Reviewed the parent Issue fields.\nScoring dimensions.";
-  const { response, state } = await callReporter(
-    {},
-    "report_progress",
-    progressInput(progress),
-  );
-  assert.deepEqual(response.structuredContent, {
-    taskIssueNodeId: TASK_NODE_ID,
-    commentNodeId: "IC_created_1",
+test("assignment submission is task-only, exact, and idempotent", async () => {
+  await withFake({}, async (fake) => {
+    const input = { ...baseInput(), agentProfile: "issue-validator" };
+    const first = await runTool(
+      fake,
+      IDS.assignment,
+      "submit_task_assignment",
+      input,
+    );
+    assert.equal(first.result.isError, false);
+    const second = await runTool(
+      fake,
+      IDS.assignment,
+      "submit_task_assignment",
+      input,
+    );
+    assert.equal(second.result.structuredContent.reconciled, true);
+    assert.equal(
+      fake.state.comments.get(TASK_NUMBER)[0].body,
+      formatAssignment("issue-validator"),
+    );
+    assert.equal(fake.state.comments.get(PARENT_NUMBER).length, 0);
   });
-  assert.equal(state.comments[0].body, progress);
-  assert.deepEqual(state.operations, [
-    "identity",
-    "task",
-    "parent",
-    "comment",
-  ]);
-  assertNoForbiddenMutation(state);
 });
 
-test("progress cross-checks its assignment ID after resolving the parent", async () => {
-  const { response, state } = await callReporter(
-    {},
-    "report_progress",
+test("assignment rejects wrong target mapping and foreign author", async () => {
+  await withFake(
     {
-      ...progressInput(),
-      assignmentId: "issue-validation:I_other",
+      comments: {
+        [TASK_NUMBER]: [assignmentComment("issue-validator", 999)],
+      },
+    },
+    async (fake) => {
+      let response = await runTool(
+        fake,
+        IDS.assignment,
+        "submit_task_assignment",
+        { ...baseInput(), agentProfile: "issue-validator" },
+      );
+      assert.equal(response.result.isError, true);
+      assert.match(response.result.content[0].text, /foreign/);
+      response = await runTool(
+        fake,
+        IDS.assignment,
+        "submit_task_assignment",
+        { ...baseInput(), agentProfile: "issue-info-requester" },
+      );
+      assert.equal(response.result.isError, true);
+      assert.match(response.result.content[0].text, /does not match taskType/);
     },
   );
-  assert.equal(response.isError, true);
-  assert.match(
-    response.content[0].text,
-    /supplied assignmentId must match assignment.assignmentId/,
+});
+
+test("Result supports validation failure, duplicate reconciliation, and revision PATCH", async () => {
+  await withFake(
+    { comments: { [TASK_NUMBER]: [assignmentComment()] } },
+    async (fake) => {
+      const input = { ...baseInput(), workResult: FAIL_RESULT };
+      const first = await runTool(fake, IDS.result, "submit_task_result", input);
+      assert.equal(first.result.isError, false);
+      assert.equal(first.result.structuredContent.revised, false);
+      const duplicate = await runTool(fake, IDS.result, "submit_task_result", input);
+      assert.equal(duplicate.result.structuredContent.reconciled, true);
+      const revisedResult = {
+        ...FAIL_RESULT,
+        summary: "The issue still needs a body.",
+      };
+      const revised = await runTool(fake, IDS.result, "submit_task_result", {
+        ...baseInput(),
+        workResult: revisedResult,
+      });
+      assert.equal(revised.result.structuredContent.revised, true);
+      assert.equal(
+        fake.state.comments.get(TASK_NUMBER).find((c) => c.node_id.startsWith("IC_created")).body,
+        formatTaskResult(revisedResult),
+      );
+      assert.equal(fake.state.tasks.get(TASK_NUMBER).state, "open");
+      assert.equal(
+        fake.state.operations.some(
+          (op) => op.startsWith("PATCH") && !op.includes("/issues/comments/"),
+        ),
+        false,
+      );
+    },
   );
-  assert.deepEqual(state.operations, ["identity", "task", "parent"]);
-  assert.equal(state.postAttempts, 0);
 });
 
-test("rejects progress control content before GitHub access", async (t) => {
-  const cases = [
-    ["carriage return", "one\r\ntwo"],
-    ["current Result marker", "WorkGraphTaskResult/v1"],
-    ["legacy Result marker", "WorkGraphResult/v1"],
-    ["legacy Assignment marker", "WorkGraphAssignment/v1"],
-    ["fence", "```json\n{}\n```"],
-    ["tilde fence", "~~~json\n{}\n~~~"],
-    ["details", "<details>text</details>"],
-    ["summary", "<summary>text</summary>"],
-    ["oversized", "x".repeat(4097)],
-  ];
-  for (const [name, progress] of cases) {
-    await t.test(name, async () => {
-      const { response, state } = await callReporter(
-        {},
-        "report_progress",
-        progressInput(progress),
+test("Result submits a valid passing validation without closing the task", async () => {
+  await withFake(
+    { comments: { [TASK_NUMBER]: [assignmentComment()] } },
+    async (fake) => {
+      const response = await runTool(fake, IDS.result, "submit_task_result", {
+        ...baseInput(),
+        workResult: PASS_RESULT,
+      });
+      assert.equal(response.result.isError, false);
+      assert.equal(
+        fake.state.comments.get(TASK_NUMBER).at(-1).body,
+        formatTaskResult(PASS_RESULT),
       );
-      assert.equal(response.isError, true);
-      assert.deepEqual(state.operations, []);
-      assert.equal(state.postAttempts, 0);
-    });
-  }
-});
-
-test("validates all task identity, type, body, and parent boundaries", async (t) => {
-  const cases = [
-    {
-      name: "task is a pull request",
-      options: { taskOverrides: { pull_request: { url: "x" } } },
-      pattern: /requested non-PR Issue/,
-    },
-    {
-      name: "task number mismatch",
-      options: { taskOverrides: { number: 99 } },
-      pattern: /requested non-PR Issue/,
-    },
-    {
-      name: "task node mismatch",
-      options: { taskOverrides: { node_id: "I_other" } },
-      pattern: /requested non-PR Issue/,
-    },
-    {
-      name: "type name mismatch",
-      options: {
-        taskOverrides: {
-          type: {
-            id: TASK_TYPE_DATABASE_ID,
-            node_id: TASK_TYPE_ID,
-            name: "Task",
-          },
-        },
-      },
-      pattern: /exact WorkGraphTask type ID and name/,
-    },
-    {
-      name: "type node ID mismatch",
-      options: {
-        taskOverrides: {
-          type: {
-            id: TASK_TYPE_DATABASE_ID,
-            node_id: "IT_other",
-            name: "WorkGraphTask",
-          },
-        },
-      },
-      pattern: /exact WorkGraphTask type ID and name/,
-    },
-    {
-      name: "type node ID missing",
-      options: {
-        taskOverrides: {
-          type: { id: TASK_TYPE_DATABASE_ID, name: "WorkGraphTask" },
-        },
-      },
-      pattern: /exact WorkGraphTask type ID and name/,
-    },
-    {
-      name: "creator mismatch",
-      options: {
-        taskOverrides: { user: { id: 999, login: "other" } },
-      },
-      pattern: /LAUNCHER_USER_ID/,
-    },
-    {
-      name: "body is fenced",
-      options: {
-        taskOverrides: {
-          body: `\`\`\`json\n${JSON.stringify(VALIDATION_ASSIGNMENT)}\n\`\`\``,
-        },
-      },
-      pattern: /only raw WorkGraphAssignment JSON/,
-    },
-    {
-      name: "body has prose",
-      options: {
-        taskOverrides: {
-          body: `Assignment:\n${JSON.stringify(VALIDATION_ASSIGNMENT)}`,
-        },
-      },
-      pattern: /not valid WorkGraphAssignment JSON/,
-    },
-    {
-      name: "body has unknown field",
-      options: {
-        assignment: { ...VALIDATION_ASSIGNMENT, parent: PARENT_NUMBER },
-      },
-      pattern: /extra=.*parent/,
-    },
-    {
-      name: "profile mapping mismatch",
-      options: {
-        assignment: {
-          ...VALIDATION_ASSIGNMENT,
-          agentProfile: "issue-risk-profiler",
-        },
-      },
-      pattern: /agentProfile does not match/,
-    },
-    {
-      name: "assignment not bound to parent",
-      options: {
-        assignment: {
-          ...VALIDATION_ASSIGNMENT,
-          assignmentId: "I_wrong_parent",
-        },
-      },
-      pattern: /must equal taskType:authoritativeParentNodeId/,
-    },
-    {
-      name: "parent is a pull request",
-      options: { parentOverrides: { pull_request: { url: "x" } } },
-      pattern: /requested non-PR parent Issue/,
-    },
-    {
-      name: "parent number mismatch",
-      options: { parentOverrides: { number: 88 } },
-      pattern: /requested non-PR parent Issue/,
-    },
-    {
-      name: "parent node mismatch",
-      options: { parentOverrides: { node_id: "I_other" } },
-      pattern: /requested non-PR parent Issue/,
-    },
-    {
-      name: "parent repository mismatch",
-      options: {
-        parentOverrides: {
-          repository_url: "https://api.github.com/repos/other/repository",
-        },
-      },
-      pattern: /not in the fixed repository/,
-    },
-  ];
-  for (const item of cases) {
-    await t.test(item.name, async () => {
-      const { response, state } = await callReporter(
-        item.options,
-        "submit_task_result",
-        submitInput(),
+      assert.equal(fake.state.tasks.get(TASK_NUMBER).state, "open");
+      assert.equal(
+        fake.state.operations.some((operation) =>
+          /PATCH .*\/issues\/17$/.test(operation),
+        ),
+        false,
       );
-      assert.equal(response.isError, true);
-      assert.match(response.content[0].text, item.pattern);
-      assert.equal(state.postAttempts, 0);
-      assertNoForbiddenMutation(state);
-    });
-  }
+    },
+  );
 });
 
-test("validates reporter configuration and identity", async (t) => {
-  const cases = [
+test("Result rejects wrong Assignment/Result authors and task target", async () => {
+  await withFake(
     {
-      name: "wrong configured type ID",
-      config: { taskIssueTypeId: "IT_wrong" },
-      pattern: /exact WorkGraphTask type ID and name/,
-    },
-    {
-      name: "wrong configured creator ID",
-      config: { launcherUserId: "999" },
-      pattern: /LAUNCHER_USER_ID/,
-    },
-    {
-      name: "wrong configured reporter ID",
-      config: { reporterUserId: "999" },
-      pattern: /REPORTER_USER_ID/,
-    },
-    {
-      name: "non-positive launcher ID",
-      config: { launcherUserId: "0" },
-      pattern: /LAUNCHER_USER_ID must be a positive integer/,
-    },
-    {
-      name: "empty Issue Type ID",
-      config: { taskIssueTypeId: "" },
-      pattern: /TASK_ISSUE_TYPE_ID/,
-    },
-    {
-      name: "wrong authenticated reporter",
-      options: { identityId: 999 },
-      pattern: /REPORTER_USER_ID/,
-    },
-  ];
-  for (const item of cases) {
-    await t.test(item.name, async () => {
-      const { response, state } = await callReporter(
-        item.options ?? {},
-        "submit_task_result",
-        submitInput(),
-        item.config,
-      );
-      assert.equal(response.isError, true);
-      assert.match(response.content[0].text, item.pattern);
-      assert.equal(state.postAttempts, 0);
-      assertNoForbiddenMutation(state);
-    });
-  }
-});
-
-test("rejects malformed and unreconciled typed Results", async (t) => {
-  const cases = [
-    {
-      name: "assignment ID mismatch",
-      result: { ...VALIDATION_RESULT, assignmentId: "I_other" },
-      pattern: /must match assignment.assignmentId/,
-    },
-    {
-      name: "task type mismatch",
-      result: {
-        ...RISK_RESULT,
-        assignmentId: VALIDATION_ASSIGNMENT_ID,
+      comments: {
+        [TASK_NUMBER]: [assignmentComment("issue-validator", 999)],
       },
-      pattern: /must match assignment.taskType/,
     },
+    async (fake) => {
+      const response = await runTool(fake, IDS.result, "submit_task_result", {
+        ...baseInput(),
+        workResult: PASS_RESULT,
+      });
+      assert.equal(response.result.isError, true);
+      assert.match(response.result.content[0].text, /configured Assignment reporter/);
+    },
+  );
+  await withFake(
     {
-      name: "profile criterion mismatch",
-      result: {
-        ...VALIDATION_RESULT,
+      comments: {
+        [TASK_NUMBER]: [
+          assignmentComment(),
+          resultComment(PASS_RESULT, 999),
+        ],
+      },
+    },
+    async (fake) => {
+      const response = await runTool(fake, IDS.result, "submit_task_result", {
+        ...baseInput(),
+        workResult: PASS_RESULT,
+      });
+      assert.equal(response.result.isError, true);
+      assert.match(response.result.content[0].text, /foreign/);
+    },
+  );
+});
+
+test("request-info posts one idempotent parent comment and submits typed Result", async () => {
+  const validation = makeTask({ state: "closed" });
+  const request = makeTask({
+    number: 18,
+    nodeId: "I_request",
+    id: 118,
+    taskType: "request-info",
+    resultNode: "IC_result",
+  });
+  await withFake(
+    {
+      parentStatus: "status:awaiting-need-info",
+      tasks: [validation, request],
+      children: [17, 18],
+      comments: {
+        17: [
+          assignmentComment(),
+          resultComment(FAIL_RESULT),
+          acceptanceComment(FAIL_RESULT),
+        ],
+        18: [makeComment(formatAssignment("issue-info-requester"), IDS.assignment, "IC_assignment_request", 211)],
+      },
+    },
+    async (fake) => {
+      const infoInput = {
+        ...baseInput(request),
+        validationTaskIssueNumber: 17,
+        validationTaskIssueNodeId: TASK_NODE,
+        validationResultCommentNodeId: "IC_result",
+      };
+      const first = await runTool(
+        fake,
+        IDS.info,
+        "post_parent_info_request",
+        infoInput,
+      );
+      assert.equal(first.result.isError, false);
+      assert.match(fake.state.comments.get(PARENT_NUMBER)[0].body, /@submitter/);
+      assert.match(fake.state.comments.get(PARENT_NUMBER)[0].body, /The Issue body is present/);
+      const duplicate = await runTool(
+        fake,
+        IDS.info,
+        "post_parent_info_request",
+        infoInput,
+      );
+      assert.equal(duplicate.result.structuredContent.reconciled, true);
+      assert.equal(fake.state.comments.get(PARENT_NUMBER).length, 1);
+
+      const infoResult = {
+        taskType: "request-info",
+        outcome: "succeeded",
+        summary: "Requested the missing issue information.",
         result: {
-          criteria: [
-            {
-              ...VALIDATION_RESULT.result.criteria[0],
-              criterion: "Different criterion",
-            },
-            VALIDATION_RESULT.result.criteria[1],
+          requestCommentNodeId:
+            first.result.structuredContent.requestCommentNodeId,
+        },
+      };
+      const submitted = await runTool(fake, IDS.result, "submit_task_result", {
+        ...baseInput(request),
+        workResult: infoResult,
+      });
+      assert.equal(submitted.result.isError, false);
+      assert.equal(
+        fake.state.comments.get(18).at(-1).body,
+        formatTaskResult(infoResult),
+      );
+      assert.equal(request.state, "open");
+    },
+  );
+});
+
+test("Acceptance is idempotent and rejects stale digest, wrong author, and wrong target", async () => {
+  const comments = [assignmentComment(), resultComment(PASS_RESULT)];
+  await withFake(
+    { comments: { [TASK_NUMBER]: comments } },
+    async (fake) => {
+      const correct = {
+        ...baseInput(),
+        resultCommentNodeId: "IC_result",
+        resultBodyDigest: resultDigest(formatTaskResult(PASS_RESULT)),
+        summary: "Result is satisfactory.",
+      };
+      const first = await runTool(
+        fake,
+        IDS.acceptance,
+        "submit_result_acceptance",
+        correct,
+      );
+      assert.equal(first.result.isError, false);
+      const duplicate = await runTool(
+        fake,
+        IDS.acceptance,
+        "submit_result_acceptance",
+        correct,
+      );
+      assert.equal(duplicate.result.structuredContent.reconciled, true);
+      const stale = await runTool(
+        fake,
+        IDS.acceptance,
+        "submit_result_acceptance",
+        { ...correct, resultBodyDigest: `sha256:${"0".repeat(64)}` },
+      );
+      assert.equal(stale.result.isError, true);
+      assert.match(stale.result.content[0].text, /stale Result/);
+      const wrongTarget = await runTool(
+        fake,
+        IDS.acceptance,
+        "submit_result_acceptance",
+        { ...correct, resultCommentNodeId: "IC_other" },
+      );
+      assert.equal(wrongTarget.result.isError, true);
+    },
+  );
+  await withFake(
+    {
+      comments: {
+        [TASK_NUMBER]: [
+          assignmentComment(),
+          resultComment(PASS_RESULT),
+          acceptanceComment(PASS_RESULT, 999),
+        ],
+      },
+    },
+    async (fake) => {
+      const response = await runTool(
+        fake,
+        IDS.acceptance,
+        "submit_result_acceptance",
+        {
+          ...baseInput(),
+          resultCommentNodeId: "IC_result",
+          resultBodyDigest: resultDigest(formatTaskResult(PASS_RESULT)),
+          summary: "Result is satisfactory.",
+        },
+      );
+      assert.equal(response.result.isError, true);
+      assert.match(response.result.content[0].text, /foreign/);
+    },
+  );
+});
+
+test("start transition rejects stale status and any open child", async () => {
+  await withFake({}, async (fake) => {
+    let response = await runTool(fake, IDS.orchestrator, "transition_issue", {
+      parentIssueNumber: PARENT_NUMBER,
+      parentIssueNodeId: PARENT_NODE,
+      expectedStatus: "status:new",
+      transition: "start-validation",
+    });
+    assert.equal(response.result.isError, true);
+    assert.match(response.result.content[0].text, /open child/);
+    fake.state.parent.labels = [{ name: "status:awaiting-triage" }];
+    response = await runTool(fake, IDS.orchestrator, "transition_issue", {
+      parentIssueNumber: PARENT_NUMBER,
+      parentIssueNodeId: PARENT_NODE,
+      expectedStatus: "status:new",
+      transition: "start-validation",
+    });
+    assert.equal(response.result.isError, true);
+    assert.match(response.result.content[0].text, /stale supplied parent status/);
+  });
+});
+
+test("accepted validation pass advances to triage and failure creates request-info", async () => {
+  for (const [result, expectedStatus] of [
+    [PASS_RESULT, "status:awaiting-triage"],
+    [FAIL_RESULT, "status:awaiting-need-info"],
+  ]) {
+    await withFake(
+      {
+        parentStatus: "status:awaiting-validation",
+        tasks: [makeTask({ state: "closed" })],
+        comments: {
+          [TASK_NUMBER]: [
+            assignmentComment(),
+            resultComment(result),
+            acceptanceComment(result),
           ],
         },
       },
-      pattern: /must exactly match the validation profile/,
-    },
-    {
-      name: "dimension order mismatch",
-      assignment: RISK_ASSIGNMENT,
-      result: {
-        ...RISK_RESULT,
-        result: {
-          dimensions: [...RISK_RESULT.result.dimensions].reverse(),
-        },
+      async (fake) => {
+        const response = await runTool(
+          fake,
+          IDS.orchestrator,
+          "transition_issue",
+          {
+            parentIssueNumber: PARENT_NUMBER,
+            parentIssueNodeId: PARENT_NODE,
+            expectedStatus: "status:awaiting-validation",
+            transition: "advance-validation",
+            taskIssueNumber: TASK_NUMBER,
+            taskIssueNodeId: TASK_NODE,
+            resultCommentNodeId: "IC_result",
+          },
+        );
+        assert.equal(response.result.isError, false);
+        assert.equal(response.result.structuredContent.status, expectedStatus);
+        assert.equal(
+          fake.state.parent.labels.some((label) => label.name === expectedStatus),
+          true,
+        );
+        if (result === FAIL_RESULT) {
+          const created = fake.state.tasks.get(30);
+          assert.equal(parseTask(created.body).taskType, "request-info");
+          assert.equal(
+            parseTask(created.body).inputs.validationResultCommentNodeId,
+            "IC_result",
+          );
+        }
       },
-      pattern: /must exactly match the Assignment dimensions/,
-    },
-    {
-      name: "summary has marker",
-      result: {
-        ...VALIDATION_RESULT,
-        summary: "Includes WorkGraphTaskResult/v1",
-      },
-      pattern: /structured markers/,
-    },
-    {
-      name: "invalid risk score",
-      assignment: RISK_ASSIGNMENT,
-      result: {
-        ...RISK_RESULT,
-        result: {
-          dimensions: [
-            { ...RISK_RESULT.result.dimensions[0], score: 101 },
-            RISK_RESULT.result.dimensions[1],
-          ],
-        },
-      },
-      pattern: /integer between 0 and 100/,
-    },
-  ];
-  for (const item of cases) {
-    await t.test(item.name, async () => {
-      const { response, state } = await callReporter(
-        { assignment: item.assignment ?? VALIDATION_ASSIGNMENT },
-        "submit_task_result",
-        submitInput(item.result),
-      );
-      assert.equal(response.isError, true);
-      assert.match(response.content[0].text, item.pattern);
-      assert.equal(state.postAttempts, 0);
-      assertNoForbiddenMutation(state);
-    });
+    );
   }
 });
 
-test("ignores ordinary task progress and adopts one exact authenticated Result", async () => {
-  const existing = {
-    node_id: "IC_result",
-    user: { id: REPORTER_USER_ID, login: "workgraph-reporter" },
-    body: formatTaskResult(VALIDATION_RESULT),
+test("accepted request-info resumes only from a later human reply", async () => {
+  const request = makeTask({
+    state: "closed",
+    taskType: "request-info",
+    resultNode: "IC_validation",
+  });
+  const infoResult = {
+    taskType: "request-info",
+    outcome: "succeeded",
+    summary: "Requested the missing issue information.",
+    result: {
+      requestCommentNodeId: "IC_info",
+    },
   };
-  const { response, state } = await callReporter(
+  const infoBody =
+    "@submitter, please provide the missing issue information:\n\n" +
+    "- The Issue body is present\n\n" +
+    "<!-- WorkGraphInfoRequest/v1 validationResultCommentNodeId=IC_validation -->\n";
+  await withFake(
     {
-      taskOverrides: { state: "closed" },
-      existingComments: [
-        {
-          node_id: "IC_progress",
-          user: { id: REPORTER_USER_ID, login: "workgraph-reporter" },
-          body: "Reviewed the parent fields.",
-        },
-        existing,
+      parentStatus: "status:awaiting-need-info",
+      tasks: [request],
+      comments: {
+        [TASK_NUMBER]: [
+          assignmentComment("issue-info-requester"),
+          resultComment(infoResult),
+          acceptanceComment(infoResult),
+        ],
+      },
+      parentComments: [
+        makeComment(infoBody, IDS.info, "IC_info", 240, "2026-08-18T22:00:00Z"),
+        makeComment(
+          "Added the missing details.",
+          IDS.human,
+          "IC_human_reply",
+          241,
+          "2026-08-18T22:01:00Z",
+        ),
       ],
     },
-    "submit_task_result",
-    submitInput(),
-  );
-  assert.equal(response.structuredContent.reconciled, true);
-  assert.equal(response.structuredContent.commentNodeId, "IC_result");
-  assert.equal(state.postAttempts, 0);
-  assertNoForbiddenMutation(state);
-});
-
-test("rejects malformed, conflicting, foreign, and multiple candidates", async (t) => {
-  const canonical = formatTaskResult(VALIDATION_RESULT);
-  const conflicting = formatTaskResult({
-    ...VALIDATION_RESULT,
-    summary: "A different valid result.",
-  });
-  const cases = [
-    {
-      name: "legacy marker",
-      comments: [{
-        node_id: "IC_legacy",
-        user: { id: REPORTER_USER_ID },
-        body: "WorkGraphResult/v1\n",
-      }],
-      pattern: /malformed structured Result/,
-    },
-    {
-      name: "malformed current marker",
-      comments: [{
-        node_id: "IC_malformed",
-        user: { id: REPORTER_USER_ID },
-        body: canonical.slice(0, -1),
-      }],
-      pattern: /malformed structured Result/,
-    },
-    {
-      name: "Result-shaped fence without marker",
-      comments: [{
-        node_id: "IC_unmarked",
-        user: { id: REPORTER_USER_ID },
-        body: canonical.replace("WorkGraphTaskResult/v1\n\n", ""),
-      }],
-      pattern: /malformed structured Result/,
-    },
-    {
-      name: "Result-shaped uppercase fence without marker",
-      comments: [{
-        node_id: "IC_unmarked_uppercase",
-        user: { id: REPORTER_USER_ID },
-        body: canonical
-          .replace("WorkGraphTaskResult/v1\n\n", "")
-          .replace("```json", "```JSON"),
-      }],
-      pattern: /malformed structured Result/,
-    },
-    {
-      name: "Result-shaped tilde fence without marker",
-      comments: [{
-        node_id: "IC_unmarked_tilde",
-        user: { id: REPORTER_USER_ID },
-        body: canonical
-          .replace("WorkGraphTaskResult/v1\n\n", "")
-          .replaceAll("```", "~~~"),
-      }],
-      pattern: /malformed structured Result/,
-    },
-    {
-      name: "conflicting authenticated result",
-      comments: [{
-        node_id: "IC_conflict",
-        user: { id: REPORTER_USER_ID },
-        body: conflicting,
-      }],
-      pattern: /conflicts with the requested result/,
-    },
-    {
-      name: "foreign canonical result",
-      comments: [{
-        node_id: "IC_foreign",
-        user: { id: 999 },
-        body: canonical,
-      }],
-      pattern: /different author/,
-    },
-    {
-      name: "multiple candidates",
-      comments: [
+    async (fake) => {
+      const response = await runTool(
+        fake,
+        IDS.orchestrator,
+        "transition_issue",
         {
-          node_id: "IC_one",
-          user: { id: REPORTER_USER_ID },
-          body: canonical,
+          parentIssueNumber: PARENT_NUMBER,
+          parentIssueNodeId: PARENT_NODE,
+          expectedStatus: "status:awaiting-need-info",
+          transition: "resume-after-human-reply",
+          taskIssueNumber: TASK_NUMBER,
+          taskIssueNodeId: TASK_NODE,
+          requestCommentNodeId: "IC_info",
+          humanReplyCommentNodeId: "IC_human_reply",
         },
-        {
-          node_id: "IC_two",
-          user: { id: REPORTER_USER_ID },
-          body: canonical,
-        },
-      ],
-      pattern: /multiple structured Result/,
-    },
-  ];
-  for (const item of cases) {
-    await t.test(item.name, async () => {
-      const { response, state } = await callReporter(
-        { existingComments: item.comments },
-        "submit_task_result",
-        submitInput(),
       );
-      assert.equal(response.isError, true);
-      assert.match(response.content[0].text, item.pattern);
-      assert.equal(state.postAttempts, 0);
-      assertNoForbiddenMutation(state);
-    });
+      assert.equal(response.result.isError, false);
+      assert.equal(
+        response.result.structuredContent.status,
+        "status:awaiting-validation",
+      );
+      assert.equal(parseTask(fake.state.tasks.get(30).body).taskType, "validate-issue");
+    },
+  );
+});
+
+test("feedback is idempotent and returns only external redispatch contract", async () => {
+  await withFake(
+    {
+      comments: {
+        [TASK_NUMBER]: [assignmentComment(), resultComment(PASS_RESULT)],
+      },
+    },
+    async (fake) => {
+      const input = {
+        ...baseInput(),
+        resultCommentNodeId: "IC_result",
+        resultBodyDigest: resultDigest(formatTaskResult(PASS_RESULT)),
+        feedback: "Clarify the evidence for the body criterion.",
+      };
+      const first = await runTool(
+        fake,
+        IDS.redispatch,
+        "feedback_and_redispatch",
+        input,
+      );
+      assert.equal(first.result.isError, false, first.result.content?.[0]?.text);
+      assert.deepEqual(first.result.structuredContent.redispatch, {
+        status: "external-dispatch-required",
+        agentProfile: "issue-validator",
+        taskIssueNumber: TASK_NUMBER,
+      });
+      const duplicate = await runTool(
+        fake,
+        IDS.redispatch,
+        "feedback_and_redispatch",
+        input,
+      );
+      assert.equal(duplicate.result.structuredContent.reconciled, true);
+      const stale = await runTool(
+        fake,
+        IDS.redispatch,
+        "feedback_and_redispatch",
+        {
+          ...input,
+          resultBodyDigest: `sha256:${"0".repeat(64)}`,
+        },
+      );
+      assert.equal(stale.result.isError, true);
+      assert.match(stale.result.content[0].text, /stale Result digest/);
+    },
+  );
+});
+
+test("transition rejects a stale closed task and every open sibling", async () => {
+  const oldTask = makeTask({ state: "closed" });
+  const latestTask = makeTask({
+    number: 19,
+    nodeId: "I_latest",
+    id: 119,
+    state: "closed",
+  });
+  const openSibling = makeTask({
+    number: 18,
+    nodeId: "I_open_request",
+    id: 118,
+    taskType: "request-info",
+    resultNode: "IC_result",
+  });
+  await withFake(
+    {
+      parentStatus: "status:awaiting-validation",
+      tasks: [oldTask, latestTask],
+      children: [17, 19],
+      comments: {
+        17: [assignmentComment(), resultComment(), acceptanceComment()],
+        19: [assignmentComment(), resultComment(), acceptanceComment()],
+      },
+    },
+    async (fake) => {
+      const response = await runTool(
+        fake,
+        IDS.orchestrator,
+        "transition_issue",
+        {
+          parentIssueNumber: PARENT_NUMBER,
+          parentIssueNodeId: PARENT_NODE,
+          expectedStatus: "status:awaiting-validation",
+          transition: "advance-validation",
+          taskIssueNumber: oldTask.number,
+          taskIssueNodeId: oldTask.node_id,
+          resultCommentNodeId: "IC_result",
+        },
+      );
+      assert.equal(response.result.isError, true);
+      assert.match(response.result.content[0].text, /current latest validate-issue/);
+    },
+  );
+  await withFake(
+    {
+      parentStatus: "status:awaiting-validation",
+      tasks: [oldTask, openSibling],
+      children: [17, 18],
+      comments: {
+        17: [assignmentComment(), resultComment(), acceptanceComment()],
+      },
+    },
+    async (fake) => {
+      const response = await runTool(
+        fake,
+        IDS.orchestrator,
+        "transition_issue",
+        {
+          parentIssueNumber: PARENT_NUMBER,
+          parentIssueNodeId: PARENT_NODE,
+          expectedStatus: "status:awaiting-validation",
+          transition: "advance-validation",
+          taskIssueNumber: oldTask.number,
+          taskIssueNodeId: oldTask.node_id,
+          resultCommentNodeId: "IC_result",
+        },
+      );
+      assert.equal(response.result.isError, true);
+      assert.match(response.result.content[0].text, /open child\/sibling/);
+    },
+  );
+});
+
+test("transition rejects cross-repository native children", async () => {
+  const task = makeTask({ state: "closed" });
+  await withFake(
+    {
+      parentStatus: "status:awaiting-validation",
+      tasks: [task],
+      children: [task.number],
+      comments: {
+        [task.number]: [
+          assignmentComment(),
+          resultComment(),
+          acceptanceComment(),
+        ],
+      },
+    },
+    async (fake) => {
+      fake.state.subIssueRepositoryUrl =
+        "https://api.github.com/repos/drasi-project/other";
+      const response = await runTool(
+        fake,
+        IDS.orchestrator,
+        "transition_issue",
+        {
+          parentIssueNumber: PARENT_NUMBER,
+          parentIssueNodeId: PARENT_NODE,
+          expectedStatus: "status:awaiting-validation",
+          transition: "advance-validation",
+          taskIssueNumber: task.number,
+          taskIssueNodeId: task.node_id,
+          resultCommentNodeId: "IC_result",
+        },
+      );
+      assert.equal(response.result.isError, true);
+      assert.match(response.result.content[0].text, /outside the fixed repository/);
+    },
+  );
+});
+
+test("transition retries reconcile partial create, attach, and status writes", async () => {
+  for (const [operation, timing] of [
+    ["create", "after"],
+    ["attach", "after"],
+    ["status", "after"],
+  ]) {
+    await withFake(
+      {
+        tasks: [],
+        children: [],
+        failures: { [operation]: timing },
+      },
+      async (fake) => {
+        const input = {
+          parentIssueNumber: PARENT_NUMBER,
+          parentIssueNodeId: PARENT_NODE,
+          expectedStatus: "status:new",
+          transition: "start-validation",
+        };
+        const first = await runTool(
+          fake,
+          IDS.orchestrator,
+          "transition_issue",
+          input,
+        );
+        assert.equal(first.result.isError, true, operation);
+        const retry = await runTool(
+          fake,
+          IDS.orchestrator,
+          "transition_issue",
+          input,
+        );
+        assert.equal(retry.result.isError, false, operation);
+        assert.equal(fake.state.tasks.size, 1, operation);
+        assert.deepEqual(fake.state.children, [30], operation);
+        assert.equal(
+          fake.state.parent.labels.some(
+            (label) => label.name === "status:awaiting-validation",
+          ),
+          true,
+          operation,
+        );
+        assert.equal(
+          fake.state.tasks.get(30).title,
+          "WorkGraph: validate-issue parent #7 start-validation",
+        );
+      },
+    );
   }
 });
 
-test("rejects a closed task without an exact Result", async () => {
-  const { response, state } = await callReporter(
-    { taskOverrides: { state: "closed" } },
-    "submit_task_result",
-    submitInput(),
+test("transition birth-types tasks and replaces an incorrectly typed creation", async () => {
+  await withFake(
+    {
+      tasks: [],
+      children: [],
+      incorrectlyTypedCreates: 1,
+    },
+    async (fake) => {
+      const input = {
+        parentIssueNumber: PARENT_NUMBER,
+        parentIssueNodeId: PARENT_NODE,
+        expectedStatus: "status:new",
+        transition: "start-validation",
+      };
+      const rejected = await runTool(
+        fake,
+        IDS.orchestrator,
+        "transition_issue",
+        input,
+      );
+      assert.equal(rejected.result.isError, true);
+      assert.match(rejected.result.content[0].text, /did not reconcile/);
+      assert.equal(fake.state.tasks.get(30).type, null);
+      assert.equal(fake.state.comments.get(30).length, 0);
+      assert.deepEqual(fake.state.children, []);
+
+      const replaced = await runTool(
+        fake,
+        IDS.orchestrator,
+        "transition_issue",
+        input,
+      );
+      assert.equal(replaced.result.isError, false);
+      assert.equal(fake.state.tasks.get(30).type, null);
+      assert.deepEqual(fake.state.tasks.get(31).type, {
+        name: "WorkGraphTask",
+        node_id: TYPE_ID,
+      });
+      assert.deepEqual(fake.state.children, [31]);
+      assert.equal(fake.state.createPayloads.length, 2);
+      assert.equal(
+        fake.state.createPayloads.every(
+          (payload) => payload.type === "WorkGraphTask",
+        ),
+        true,
+      );
+      assert.equal(
+        fake.state.operations.some(
+          (operation) => /^PATCH \/repos\/[^/]+\/[^/]+\/issues\/\d+$/.test(operation),
+        ),
+        false,
+      );
+    },
   );
-  assert.equal(response.isError, true);
-  assert.match(response.content[0].text, /closed task Issue has no/);
-  assert.equal(state.postAttempts, 0);
-  assertNoForbiddenMutation(state);
 });
 
-test("reconciles an ambiguous Result create with one re-list and no second POST", async () => {
-  const { response, state } = await callReporter(
-    { commentMode: "ambiguous" },
-    "submit_task_result",
-    submitInput(),
-  );
-  assert.equal(response.structuredContent.reconciled, true);
-  assert.equal(state.postAttempts, 1);
-  assert.deepEqual(state.operations, [
-    "identity",
-    "task",
-    "parent",
-    "comments",
-    "comment-ambiguous",
-    "comments",
-  ]);
-  assertNoForbiddenMutation(state);
-});
-
-test("reconciles an unreadable successful response without a second POST", async () => {
-  const { response, state } = await callReporter(
-    { commentMode: "malformed-response" },
-    "submit_task_result",
-    submitInput(),
-  );
-  assert.equal(response.structuredContent.reconciled, true);
-  assert.equal(state.postAttempts, 1);
-  assert.equal(
-    state.operations.filter((operation) => operation === "comments").length,
-    2,
-  );
-  assertNoForbiddenMutation(state);
-});
-
-test("does not retry an explicit Result POST failure", async () => {
-  const { response, state } = await callReporter(
-    { commentMode: "failure" },
-    "submit_task_result",
-    submitInput(),
-  );
-  assert.equal(response.isError, true);
-  assert.match(response.content[0].text, /HTTP 422: comment rejected/);
-  assert.equal(state.postAttempts, 1);
-  assert.equal(
-    state.operations.filter((operation) => operation === "comments").length,
-    1,
-  );
-  assertNoForbiddenMutation(state);
-});
-
-test("rejects obsolete report_result and additional input before GitHub access", async () => {
-  const fake = await startFakeGitHub();
-  try {
-    const obsolete = await runMcp(
-      protocolMessages("report_result", submitInput()),
-      fake.apiUrl,
+test("status mutation re-reads expected status and preserves concurrent labels", async () => {
+  await withFake({ tasks: [], children: [] }, async (fake) => {
+    fake.state.hooks.beforeParentIssueRead = (count, state) => {
+      if (count === 2) state.parent.labels.push({ name: "concurrent:keep" });
+    };
+    const response = await runTool(
+      fake,
+      IDS.orchestrator,
+      "transition_issue",
+      {
+        parentIssueNumber: PARENT_NUMBER,
+        parentIssueNodeId: PARENT_NODE,
+        expectedStatus: "status:new",
+        transition: "start-validation",
+      },
     );
-    assert.equal(obsolete[3].result.isError, true);
-    assert.match(obsolete[3].result.content[0].text, /unknown tool/);
-    const extra = await runMcp(
-      protocolMessages("submit_task_result", {
-        ...submitInput(),
-        repository: "other/repository",
-      }),
-      fake.apiUrl,
+    assert.equal(response.result.isError, false);
+    assert.deepEqual(
+      fake.state.parent.labels.map((label) => label.name).sort(),
+      ["concurrent:keep", "kind:demo", "status:awaiting-validation"],
     );
-    assert.equal(extra[3].result.isError, true);
-    assert.match(extra[3].result.content[0].text, /extra=.*repository/);
-    assert.deepEqual(fake.state.operations, []);
-  } finally {
-    await fake.close();
-  }
+  });
+  await withFake({ tasks: [], children: [] }, async (fake) => {
+    fake.state.hooks.beforeParentIssueRead = (count, state) => {
+      if (count === 2) {
+        state.parent.labels = [{ name: "status:awaiting-triage" }];
+      }
+    };
+    const response = await runTool(
+      fake,
+      IDS.orchestrator,
+      "transition_issue",
+      {
+        parentIssueNumber: PARENT_NUMBER,
+        parentIssueNodeId: PARENT_NODE,
+        expectedStatus: "status:new",
+        transition: "start-validation",
+      },
+    );
+    assert.equal(response.result.isError, true);
+    assert.match(response.result.content[0].text, /immediately before mutation/);
+    assert.equal(
+      fake.state.operations.some((operation) => operation.startsWith("PUT ")),
+      false,
+    );
+  });
+});
+
+test("parent info request requires the current request task Assignment", async () => {
+  const validation = makeTask({ state: "closed" });
+  const request = makeTask({
+    number: 18,
+    nodeId: "I_request",
+    id: 118,
+    taskType: "request-info",
+    resultNode: "IC_result",
+  });
+  await withFake(
+    {
+      parentStatus: "status:awaiting-need-info",
+      tasks: [validation, request],
+      children: [17, 18],
+      comments: {
+        17: [
+          assignmentComment(),
+          resultComment(FAIL_RESULT),
+          acceptanceComment(FAIL_RESULT),
+        ],
+        18: [],
+      },
+    },
+    async (fake) => {
+      const response = await runTool(
+        fake,
+        IDS.info,
+        "post_parent_info_request",
+        {
+          ...baseInput(request),
+          validationTaskIssueNumber: 17,
+          validationTaskIssueNodeId: TASK_NODE,
+          validationResultCommentNodeId: "IC_result",
+        },
+      );
+      assert.equal(response.result.isError, true);
+      assert.match(response.result.content[0].text, /one canonical Assignment/);
+      assert.equal(fake.state.comments.get(PARENT_NUMBER).length, 0);
+    },
+  );
+});
+
+test("feedback follows Result revisions by patching one canonical comment", async () => {
+  await withFake(
+    {
+      comments: {
+        [TASK_NUMBER]: [assignmentComment(), resultComment(PASS_RESULT)],
+      },
+    },
+    async (fake) => {
+      const input = {
+        ...baseInput(),
+        resultCommentNodeId: "IC_result",
+        resultBodyDigest: resultDigest(formatTaskResult(PASS_RESULT)),
+        feedback: "Clarify the evidence.",
+      };
+      const first = await runTool(
+        fake,
+        IDS.redispatch,
+        "feedback_and_redispatch",
+        input,
+      );
+      assert.equal(first.result.isError, false, first.result.content?.[0]?.text);
+      const revisedResult = {
+        ...PASS_RESULT,
+        summary: "Revised result evidence.",
+      };
+      const revisedResultResponse = await runTool(
+        fake,
+        IDS.result,
+        "submit_task_result",
+        { ...baseInput(), workResult: revisedResult },
+      );
+      assert.equal(revisedResultResponse.result.isError, false);
+      const second = await runTool(
+        fake,
+        IDS.redispatch,
+        "feedback_and_redispatch",
+        {
+          ...input,
+          resultBodyDigest: resultDigest(formatTaskResult(revisedResult)),
+        },
+      );
+      assert.equal(second.result.structuredContent.revised, true);
+      assert.equal(second.result.structuredContent.reconciled, false);
+      assert.equal(
+        second.result.structuredContent.resultBodyDigest,
+        resultDigest(formatTaskResult(revisedResult)),
+      );
+      assert.deepEqual(
+        second.result.structuredContent.redispatch,
+        first.result.structuredContent.redispatch,
+      );
+      assert.equal(
+        fake.state.comments
+          .get(TASK_NUMBER)
+          .filter((comment) =>
+            comment.body.includes("WorkGraphTaskFeedback/v1"),
+          ).length,
+        1,
+      );
+    },
+  );
+});
+
+test("Result and Acceptance writes fail closed when the counterpart races", async () => {
+  await withFake(
+    {
+      comments: {
+        [TASK_NUMBER]: [assignmentComment(), resultComment(FAIL_RESULT)],
+      },
+    },
+    async (fake) => {
+      fake.state.hooks.afterPatchComment = (_id, result, state) => {
+        state.comments.get(TASK_NUMBER).push(
+          makeComment(
+            formatAcceptance({
+              resultCommentNodeId: result.node_id,
+              resultBodyDigest: resultDigest(result.body),
+              summary: "Racing acceptance.",
+            }),
+            IDS.acceptance,
+            "IC_racing_acceptance",
+            250,
+          ),
+        );
+      };
+      const response = await runTool(
+        fake,
+        IDS.result,
+        "submit_task_result",
+        { ...baseInput(), workResult: PASS_RESULT },
+      );
+      assert.equal(response.result.isError, true);
+      assert.match(response.result.content[0].text, /inconsistent/);
+    },
+  );
+  await withFake(
+    {
+      comments: {
+        [TASK_NUMBER]: [assignmentComment(), resultComment(PASS_RESULT)],
+      },
+    },
+    async (fake) => {
+      fake.state.hooks.beforeGetComment = (_id, state) => {
+        state.comments.get(TASK_NUMBER).find(
+          (comment) => comment.node_id === "IC_result",
+        ).body = formatTaskResult(FAIL_RESULT);
+      };
+      const response = await runTool(
+        fake,
+        IDS.acceptance,
+        "submit_result_acceptance",
+        {
+          ...baseInput(),
+          resultCommentNodeId: "IC_result",
+          resultBodyDigest: resultDigest(formatTaskResult(PASS_RESULT)),
+          summary: "Result is satisfactory.",
+        },
+      );
+      assert.equal(response.result.isError, true);
+      assert.match(response.result.content[0].text, /changed during reconciliation/);
+      assert.equal(
+        fake.state.comments
+          .get(TASK_NUMBER)
+          .some((comment) =>
+            comment.body.includes("WorkGraphTaskResultAcceptance/v1"),
+          ),
+        false,
+      );
+    },
+  );
+  await withFake(
+    {
+      comments: {
+        [TASK_NUMBER]: [assignmentComment(), resultComment(PASS_RESULT)],
+      },
+    },
+    async (fake) => {
+      fake.state.hooks.afterPostComment = (_number, comment, state) => {
+        if (comment.body.includes("WorkGraphTaskResultAcceptance/v1")) {
+          state.comments.get(TASK_NUMBER).find(
+            (item) => item.node_id === "IC_result",
+          ).body = formatTaskResult(FAIL_RESULT);
+        }
+      };
+      const response = await runTool(
+        fake,
+        IDS.acceptance,
+        "submit_result_acceptance",
+        {
+          ...baseInput(),
+          resultCommentNodeId: "IC_result",
+          resultBodyDigest: resultDigest(formatTaskResult(PASS_RESULT)),
+          summary: "Result is satisfactory.",
+        },
+      );
+      assert.equal(response.result.isError, true);
+      assert.match(response.result.content[0].text, /inconsistent/);
+    },
+  );
 });

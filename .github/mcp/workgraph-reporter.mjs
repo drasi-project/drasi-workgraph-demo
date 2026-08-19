@@ -1,1240 +1,1755 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
+import { isDeepStrictEqual, TextEncoder } from "node:util";
 import process from "node:process";
 import readline from "node:readline";
-import { lstatSync, readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { isDeepStrictEqual, TextDecoder, TextEncoder } from "node:util";
 
-const GITHUB_API_URL = "https://api.github.com";
-const REPOSITORY_OWNER = "drasi-project";
-const REPOSITORY_NAME = "drasi-workgraph-demo";
+const API = "https://api.github.com";
+const OWNER = "drasi-project";
+const REPO = "drasi-workgraph-demo";
+const REPOSITORY_URL = `${API}/repos/${OWNER}/${REPO}`;
 const TASK_TYPE_NAME = "WorkGraphTask";
+const TASK_MARKER = "WorkGraphTask/v1";
+const ASSIGNMENT_MARKER = "WorkGraphTaskAssignment/v1";
 const RESULT_MARKER = "WorkGraphTaskResult/v1";
-const STRUCTURED_MARKERS = [
-  RESULT_MARKER,
-  "WorkGraphResult/v1",
-  "WorkGraphAssignment/v1",
-  "WorkGraphEvent/v1",
+const ACCEPTANCE_MARKER = "WorkGraphTaskResultAcceptance/v1";
+const INFO_MARKER = "WorkGraphInfoRequest/v1";
+const FEEDBACK_MARKER = "WorkGraphTaskFeedback/v1";
+const STATUS_LABELS = [
+  "status:new",
+  "status:awaiting-validation",
+  "status:awaiting-need-info",
+  "status:awaiting-triage",
 ];
-const TASK_TYPES = ["issue-validation", "issue-risk-profile"];
+const TASK_TYPES = ["validate-issue", "request-info"];
 const OUTCOMES = ["succeeded", "failed", "blocked"];
-const MAX_PROGRESS_BYTES = 4096;
-const MAX_IDENTIFIER_LENGTH = 256;
-const REPORTER_FILE_PATH = fileURLToPath(import.meta.url);
-const REPOSITORY_ROOT = path.resolve(
-  path.dirname(REPORTER_FILE_PATH),
-  "..",
-  "..",
-);
-const ISSUE_VALIDATION_PROFILE_DIRECTORY = path.join(
-  REPOSITORY_ROOT,
-  ".github",
-  "workgraph",
-  "profiles",
-  "issue-validation",
-);
-const VALIDATION_PROFILE_NAME_PATTERN =
-  /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-const MAX_VALIDATION_PROFILE_NAME_LENGTH = 64;
-const MAX_VALIDATION_PROFILE_BYTES = 64 * 1024;
-const ISSUE_REFERENCE_KEYS = [
+const CRITERIA = [
+  "The Issue has a non-empty title",
+  "The Issue body is present",
+];
+const AGENT_BY_TASK = {
+  "validate-issue": "issue-validator",
+  "request-info": "issue-info-requester",
+};
+const MAX_TEXT_BYTES = 4096;
+const MAX_ID = 256;
+const MAX_TITLE = 256;
+const REFS = [
   "taskIssueNumber",
   "taskIssueNodeId",
   "parentIssueNumber",
   "parentIssueNodeId",
 ];
-const ASSIGNMENT_KEYS = [
-  "assignmentId",
-  "agentProfile",
-  "priority",
-  "taskType",
-  "task",
-];
-const RESULT_KEYS = [
-  "assignmentId",
-  "taskType",
-  "outcome",
-  "summary",
-  "result",
-];
-const PROFILE_BY_TASK_TYPE = {
-  "issue-validation": "issue-validator",
-  "issue-risk-profile": "issue-risk-profiler",
-};
 
-class ReporterError extends Error {}
-class AmbiguousCreateError extends ReporterError {}
+class WorkGraphError extends Error {}
 
-function isObject(value) {
+function object(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function requireExactKeys(value, expectedKeys, label) {
-  if (!isObject(value)) {
-    throw new ReporterError(`${label} must be an object`);
-  }
+function exact(value, keys, label) {
+  if (!object(value)) throw new WorkGraphError(`${label} must be an object`);
   const actual = Object.keys(value).sort();
-  const expected = [...expectedKeys].sort();
-  if (!isDeepStrictEqual(actual, expected)) {
-    const missing = expected.filter((key) => !actual.includes(key));
-    const extra = actual.filter((key) => !expected.includes(key));
-    throw new ReporterError(
-      `${label} has invalid properties; missing=${JSON.stringify(missing)}, ` +
-        `extra=${JSON.stringify(extra)}`,
+  const wanted = [...keys].sort();
+  if (!isDeepStrictEqual(actual, wanted)) {
+    throw new WorkGraphError(
+      `${label} properties must be exactly ${wanted.join(", ")}`,
     );
   }
 }
 
-function requireNonEmptyString(value, label) {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new ReporterError(`${label} must be a non-empty string`);
+function nonempty(value, label) {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new WorkGraphError(`${label} must be a non-empty string`);
   }
 }
 
-function requireBoundedIdentifier(value, label) {
-  requireNonEmptyString(value, label);
-  if (value.length > MAX_IDENTIFIER_LENGTH) {
-    throw new ReporterError(
-      `${label} must not exceed ${MAX_IDENTIFIER_LENGTH} characters`,
-    );
+function identifier(value, label) {
+  nonempty(value, label);
+  if (value.length > MAX_ID || !/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new WorkGraphError(`${label} must be a bounded GitHub node ID`);
   }
 }
 
-function requirePlainText(value, label, maxBytes) {
-  requireNonEmptyString(value, label);
-  const byteLength = new TextEncoder().encode(value).length;
-  if (byteLength > maxBytes) {
-    throw new ReporterError(
-      `${label} must not exceed ${maxBytes} UTF-8 bytes`,
-    );
+function issueNumber(value, label) {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new WorkGraphError(`${label} must be a positive integer`);
+  }
+}
+
+function plain(value, label) {
+  nonempty(value, label);
+  if (new TextEncoder().encode(value).length > MAX_TEXT_BYTES) {
+    throw new WorkGraphError(`${label} must not exceed ${MAX_TEXT_BYTES} bytes`);
   }
   if (
     value.includes("\r") ||
     value.includes("```") ||
-    value.includes("~~~") ||
-    STRUCTURED_MARKERS.some((marker) => value.includes(marker)) ||
-    /<\/?(?:details|summary)\b/i.test(value)
+    [
+      TASK_MARKER,
+      ASSIGNMENT_MARKER,
+      RESULT_MARKER,
+      ACCEPTANCE_MARKER,
+      INFO_MARKER,
+      FEEDBACK_MARKER,
+    ].some((marker) => value.includes(marker))
   ) {
-    throw new ReporterError(
-      `${label} must be ordinary LF text without carriage returns, ` +
-        "structured markers, fences, or details/summary tags",
-    );
+    throw new WorkGraphError(`${label} must be ordinary LF plain text`);
   }
 }
 
-function requireNonEmptyStringArray(value, label) {
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new ReporterError(`${label} must contain at least one item`);
-  }
-  value.forEach((entry, index) => {
-    requireNonEmptyString(entry, `${label}[${index}]`);
-  });
-}
-
-function requireValidationProfileName(value) {
+function refs(input, extra = []) {
+  exact(input, [...REFS, ...extra], "arguments");
+  issueNumber(input.taskIssueNumber, "arguments.taskIssueNumber");
+  issueNumber(input.parentIssueNumber, "arguments.parentIssueNumber");
+  identifier(input.taskIssueNodeId, "arguments.taskIssueNodeId");
+  identifier(input.parentIssueNodeId, "arguments.parentIssueNodeId");
   if (
-    typeof value !== "string" ||
-    value.length > MAX_VALIDATION_PROFILE_NAME_LENGTH ||
-    !VALIDATION_PROFILE_NAME_PATTERN.test(value)
+    input.taskIssueNumber === input.parentIssueNumber ||
+    input.taskIssueNodeId === input.parentIssueNodeId
   ) {
-    throw new ReporterError(
-      "assignment.task.validationProfile must be 1-64 lowercase letters " +
-        "or digits separated only by single hyphens",
-    );
+    throw new WorkGraphError("task and parent identifiers must differ");
   }
 }
 
-export function resolveIssueValidationProfilePath(validationProfile) {
-  requireValidationProfileName(validationProfile);
-  const profilePath = path.resolve(
-    ISSUE_VALIDATION_PROFILE_DIRECTORY,
-    `${validationProfile}.md`,
-  );
-  if (path.dirname(profilePath) !== ISSUE_VALIDATION_PROFILE_DIRECTORY) {
-    throw new ReporterError(
-      "assignment.task.validationProfile does not resolve to the canonical " +
-        "issue-validation profile directory",
-    );
-  }
-  return profilePath;
+function fenced(marker, language, payload) {
+  return `${marker}\n\n\`\`\`${language}\n${payload}\n\`\`\`\n`;
 }
 
-export function parseIssueValidationProfile(
-  source,
-  label = "issue-validation profile",
-) {
-  if (typeof source !== "string" || source.length === 0) {
-    throw new ReporterError(`${label} must be non-empty UTF-8 Markdown`);
+function canonicalJson(marker, payload) {
+  let canonical = payload;
+  if (marker === RESULT_MARKER) {
+    canonical = {
+      taskType: payload.taskType,
+      outcome: payload.outcome,
+      summary: payload.summary,
+      result:
+        payload.taskType === "validate-issue"
+          ? {
+              criteria: payload.result.criteria.map((entry) => ({
+                criterion: entry.criterion,
+                passed: entry.passed,
+                evidence: entry.evidence,
+              })),
+            }
+          : {
+              requestCommentNodeId: payload.result.requestCommentNodeId,
+            },
+    };
+  } else if (marker === ACCEPTANCE_MARKER) {
+    canonical = {
+      resultCommentNodeId: payload.resultCommentNodeId,
+      resultBodyDigest: payload.resultBodyDigest,
+      summary: payload.summary,
+    };
+  } else if (marker === FEEDBACK_MARKER) {
+    canonical = {
+      resultCommentNodeId: payload.resultCommentNodeId,
+      resultBodyDigest: payload.resultBodyDigest,
+      feedback: payload.feedback,
+    };
   }
-  if (source.includes("\0") || source.includes("\r")) {
-    throw new ReporterError(
-      `${label} must use LF text without NUL or carriage-return characters`,
-    );
-  }
-  if (!source.endsWith("\n")) {
-    throw new ReporterError(`${label} must end with one LF`);
-  }
-
-  const lines = source.slice(0, -1).split("\n");
-  const criteriaHeadings = lines
-    .map((line, index) => ({ line, index }))
-    .filter(({ line }) =>
-      /^[ \t]*#{1,6}[ \t]+criteria\b/i.test(line),
-    );
-  if (criteriaHeadings.length === 0) {
-    throw new ReporterError(`${label} is missing the ## Criteria section`);
-  }
-  const exactCriteriaHeadings = criteriaHeadings.filter(
-    ({ line }) => line === "## Criteria",
-  );
-  if (exactCriteriaHeadings.length > 1) {
-    throw new ReporterError(
-      `${label} must contain exactly one Criteria heading`,
-    );
-  }
-  if (
-    exactCriteriaHeadings.length !== 1 ||
-    criteriaHeadings.length !== 1
-  ) {
-    throw new ReporterError(
-      `${label} Criteria heading must be exactly "## Criteria"`,
-    );
-  }
-
-  const heading = exactCriteriaHeadings[0];
-  const sectionLines = lines.slice(heading.index + 1);
-  if (sectionLines[0] !== "") {
-    throw new ReporterError(
-      `${label} must have one blank line after ## Criteria`,
-    );
-  }
-  const itemLines = sectionLines.slice(1);
-  if (itemLines.length === 0) {
-    throw new ReporterError(`${label} Criteria section must not be empty`);
-  }
-
-  const criteria = [];
-  const seen = new Set();
-  itemLines.forEach((line, index) => {
-    const match = line.match(/^([1-9][0-9]*)\. (\S(?:.*\S)?)$/);
-    if (match === null) {
-      throw new ReporterError(
-        `${label} has unexpected Criteria content at item ${index + 1}`,
-      );
-    }
-    const number = Number(match[1]);
-    if (!Number.isSafeInteger(number) || number !== index + 1) {
-      throw new ReporterError(
-        `${label} Criteria items must be numbered consecutively from 1`,
-      );
-    }
-    const criterion = match[2];
-    if (seen.has(criterion)) {
-      throw new ReporterError(
-        `${label} contains duplicate criterion ${JSON.stringify(criterion)}`,
-      );
-    }
-    seen.add(criterion);
-    criteria.push(criterion);
-  });
-  return criteria;
+  return fenced(marker, "json", JSON.stringify(canonical, null, 2));
 }
 
-export function loadIssueValidationProfile(validationProfile) {
-  const profilePath = resolveIssueValidationProfilePath(validationProfile);
-  let bytes;
-  try {
-    const metadata = lstatSync(profilePath);
-    if (!metadata.isFile()) {
-      throw new ReporterError(
-        `issue-validation profile ${JSON.stringify(validationProfile)} ` +
-          "must be a regular file",
-      );
-    }
-    if (metadata.size > MAX_VALIDATION_PROFILE_BYTES) {
-      throw new ReporterError(
-        `issue-validation profile ${JSON.stringify(validationProfile)} ` +
-          `must not exceed ${MAX_VALIDATION_PROFILE_BYTES} bytes`,
-      );
-    }
-    bytes = readFileSync(profilePath);
-  } catch (error) {
-    if (error instanceof ReporterError) {
-      throw error;
-    }
-    if (error?.code === "ENOENT") {
-      throw new ReporterError(
-        `issue-validation profile ${JSON.stringify(validationProfile)} ` +
-          "does not exist",
-      );
-    }
-    throw new ReporterError(
-      `issue-validation profile ${JSON.stringify(validationProfile)} ` +
-        "could not be read",
-    );
-  }
-
-  let source;
-  try {
-    source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    throw new ReporterError(
-      `issue-validation profile ${JSON.stringify(validationProfile)} ` +
-        "must be valid UTF-8",
-    );
-  }
-  return parseIssueValidationProfile(
-    source,
-    `issue-validation profile ${JSON.stringify(validationProfile)}`,
+export function formatTask(task) {
+  validateTask(task);
+  const key =
+    task.taskType === "validate-issue"
+      ? "validationProfile"
+      : "validationResultCommentNodeId";
+  return fenced(
+    TASK_MARKER,
+    "yaml",
+    `taskType: ${task.taskType}\ninputs:\n  ${key}: ${task.inputs[key]}`,
   );
 }
 
-function validateAssignment(assignment) {
-  requireExactKeys(assignment, ASSIGNMENT_KEYS, "assignment");
-  requireNonEmptyString(assignment.assignmentId, "assignment.assignmentId");
-  requireNonEmptyString(assignment.agentProfile, "assignment.agentProfile");
-  if (!Number.isSafeInteger(assignment.priority) || assignment.priority < 0) {
-    throw new ReporterError(
-      "assignment.priority must be an integer greater than or equal to 0",
-    );
+function validateTask(task) {
+  exact(task, ["taskType", "inputs"], "task");
+  if (!TASK_TYPES.includes(task.taskType)) {
+    throw new WorkGraphError("task.taskType must be validate-issue or request-info");
   }
-  if (!TASK_TYPES.includes(assignment.taskType)) {
-    throw new ReporterError(
-      "assignment.taskType must be issue-validation or issue-risk-profile",
-    );
-  }
-  if (
-    assignment.agentProfile !== PROFILE_BY_TASK_TYPE[assignment.taskType]
-  ) {
-    throw new ReporterError(
-      "assignment.agentProfile does not match assignment.taskType",
-    );
-  }
-  if (assignment.taskType === "issue-validation") {
-    requireExactKeys(
-      assignment.task,
-      ["validationProfile"],
-      "assignment.task",
-    );
-    requireValidationProfileName(assignment.task.validationProfile);
-    return;
-  }
-
-  requireExactKeys(
-    assignment.task,
-    ["riskProfile", "dimensions"],
-    "assignment.task",
-  );
-  requireNonEmptyString(
-    assignment.task.riskProfile,
-    "assignment.task.riskProfile",
-  );
-  requireNonEmptyStringArray(
-    assignment.task.dimensions,
-    "assignment.task.dimensions",
-  );
-}
-
-function parseAssignmentBody(body) {
-  if (typeof body !== "string" || body.trim().length === 0) {
-    throw new ReporterError(
-      "WorkGraphTask body must be raw WorkGraphAssignment JSON",
-    );
-  }
-  if (
-    body.includes("\r") ||
-    body.includes("```") ||
-    STRUCTURED_MARKERS.some((marker) => body.includes(marker)) ||
-    /<\/?(?:details|summary)\b/i.test(body)
-  ) {
-    throw new ReporterError(
-      "WorkGraphTask body must contain only raw WorkGraphAssignment JSON",
-    );
-  }
-  let assignment;
-  try {
-    assignment = JSON.parse(body);
-  } catch {
-    throw new ReporterError(
-      "WorkGraphTask body is not valid WorkGraphAssignment JSON",
-    );
-  }
-  validateAssignment(assignment);
-  return assignment;
-}
-
-function validateWorkResult(workResult) {
-  requireExactKeys(workResult, RESULT_KEYS, "workResult");
-  requireNonEmptyString(workResult.assignmentId, "workResult.assignmentId");
-  if (!TASK_TYPES.includes(workResult.taskType)) {
-    throw new ReporterError(
-      "workResult.taskType must be issue-validation or issue-risk-profile",
-    );
-  }
-  if (!OUTCOMES.includes(workResult.outcome)) {
-    throw new ReporterError(
-      "workResult.outcome must be succeeded, failed, or blocked",
-    );
-  }
-  requirePlainText(workResult.summary, "workResult.summary", 4096);
-
-  if (workResult.taskType === "issue-validation") {
-    requireExactKeys(workResult.result, ["criteria"], "workResult.result");
-    if (
-      !Array.isArray(workResult.result.criteria) ||
-      workResult.result.criteria.length === 0
-    ) {
-      throw new ReporterError(
-        "workResult.result.criteria must contain at least one item",
+  if (task.taskType === "validate-issue") {
+    exact(task.inputs, ["validationProfile"], "task.inputs");
+    if (task.inputs.validationProfile !== "new-issue-default") {
+      throw new WorkGraphError(
+        "task.inputs.validationProfile must be new-issue-default",
       );
     }
-    const seenCriteria = new Set();
-    workResult.result.criteria.forEach((criterion, index) => {
-      const label = `workResult.result.criteria[${index}]`;
-      requireExactKeys(
-        criterion,
-        ["criterion", "passed", "evidence"],
-        label,
-      );
-      requireNonEmptyString(criterion.criterion, `${label}.criterion`);
-      if (typeof criterion.passed !== "boolean") {
-        throw new ReporterError(`${label}.passed must be a boolean`);
-      }
-      requireNonEmptyString(criterion.evidence, `${label}.evidence`);
-      if (seenCriteria.has(criterion.criterion)) {
-        throw new ReporterError(
-          "workResult.result.criteria must not contain duplicate criteria",
-        );
-      }
-      seenCriteria.add(criterion.criterion);
-    });
-    return;
-  }
-
-  requireExactKeys(workResult.result, ["dimensions"], "workResult.result");
-  if (
-    !Array.isArray(workResult.result.dimensions) ||
-    workResult.result.dimensions.length === 0
-  ) {
-    throw new ReporterError(
-      "workResult.result.dimensions must contain at least one item",
+  } else {
+    exact(task.inputs, ["validationResultCommentNodeId"], "task.inputs");
+    identifier(
+      task.inputs.validationResultCommentNodeId,
+      "task.inputs.validationResultCommentNodeId",
     );
-  }
-  workResult.result.dimensions.forEach((dimension, index) => {
-    const label = `workResult.result.dimensions[${index}]`;
-    requireExactKeys(
-      dimension,
-      ["dimension", "score", "rationale"],
-      label,
-    );
-    requireNonEmptyString(dimension.dimension, `${label}.dimension`);
-    if (
-      !Number.isInteger(dimension.score) ||
-      dimension.score < 0 ||
-      dimension.score > 100
-    ) {
-      throw new ReporterError(
-        `${label}.score must be an integer between 0 and 100`,
-      );
-    }
-    requireNonEmptyString(dimension.rationale, `${label}.rationale`);
-  });
-}
-
-function validateIssueReferences(input, expectedKeys) {
-  requireExactKeys(input, expectedKeys, "arguments");
-  for (const key of ["taskIssueNumber", "parentIssueNumber"]) {
-    if (!Number.isSafeInteger(input[key]) || input[key] <= 0) {
-      throw new ReporterError(`arguments.${key} must be a positive integer`);
-    }
-  }
-  for (const key of ["taskIssueNodeId", "parentIssueNodeId"]) {
-    requireBoundedIdentifier(input[key], `arguments.${key}`);
-  }
-  if (input.taskIssueNumber === input.parentIssueNumber) {
-    throw new ReporterError("task and parent Issue numbers must differ");
-  }
-  if (input.taskIssueNodeId === input.parentIssueNodeId) {
-    throw new ReporterError("task and parent Issue node IDs must differ");
   }
 }
 
-function validateProgressInput(input) {
-  validateIssueReferences(input, [
-    ...ISSUE_REFERENCE_KEYS,
-    "assignmentId",
-    "message",
-  ]);
-  requireBoundedIdentifier(
-    input.assignmentId,
-    "arguments.assignmentId",
+export function parseTask(body) {
+  if (typeof body !== "string" || body.includes("\r")) {
+    throw new WorkGraphError("WorkGraphTask body is not canonical");
+  }
+  const match = body.match(
+    /^WorkGraphTask\/v1\n\n```yaml\ntaskType: (validate-issue|request-info)\ninputs:\n  (validationProfile|validationResultCommentNodeId): ([A-Za-z0-9_-]+)\n```\n$/,
   );
-  requirePlainText(input.message, "arguments.message", MAX_PROGRESS_BYTES);
+  if (!match) throw new WorkGraphError("WorkGraphTask body is not canonical");
+  const task = { taskType: match[1], inputs: { [match[2]]: match[3] } };
+  validateTask(task);
+  if (body !== formatTask(task)) {
+    throw new WorkGraphError("WorkGraphTask body is not canonical");
+  }
+  return task;
 }
 
-function validateResultInputShape(input) {
-  validateIssueReferences(input, [...ISSUE_REFERENCE_KEYS, "workResult"]);
-  validateWorkResult(input.workResult);
+export function formatAssignment(agentProfile) {
+  if (!Object.values(AGENT_BY_TASK).includes(agentProfile)) {
+    throw new WorkGraphError("agentProfile is not supported");
+  }
+  return canonicalJson(ASSIGNMENT_MARKER, { agentProfile });
 }
 
-function reconcileAssignment(
-  assignment,
-  parentNodeId,
-  assertedAssignmentId,
-  workResult,
-) {
-  const expectedAssignmentId = `${assignment.taskType}:${parentNodeId}`;
-  if (assignment.assignmentId !== expectedAssignmentId) {
-    throw new ReporterError(
-      "assignment.assignmentId must equal taskType:authoritativeParentNodeId",
-    );
-  }
-  if (assertedAssignmentId !== assignment.assignmentId) {
-    throw new ReporterError(
-      "supplied assignmentId must match assignment.assignmentId",
-    );
-  }
-  if (workResult !== undefined) {
-    if (workResult.assignmentId !== assignment.assignmentId) {
-      throw new ReporterError(
-        "workResult.assignmentId must match assignment.assignmentId",
-      );
-    }
-    if (workResult.taskType !== assignment.taskType) {
-      throw new ReporterError(
-        "workResult.taskType must match assignment.taskType",
-      );
-    }
-  }
-
-  const expectedNames =
-    assignment.taskType === "issue-validation"
-      ? loadIssueValidationProfile(assignment.task.validationProfile)
-      : assignment.task.dimensions;
-  if (workResult === undefined) {
-    return;
-  }
-  const actualNames =
-    workResult.taskType === "issue-validation"
-      ? workResult.result.criteria.map((entry) => entry.criterion)
-      : workResult.result.dimensions.map((entry) => entry.dimension);
-  if (!isDeepStrictEqual(actualNames, expectedNames)) {
-    const field =
-      assignment.taskType === "issue-validation"
-        ? "criteria"
-        : "dimensions";
-    const source =
-      assignment.taskType === "issue-validation"
-        ? `validation profile ${JSON.stringify(
-            assignment.task.validationProfile,
-          )}`
-        : "Assignment";
-    throw new ReporterError(
-      `workResult ${field} must exactly match the ${source} ${field} in order`,
-    );
-  }
-}
-
-function canonicalWorkResult(workResult) {
-  const result =
-    workResult.taskType === "issue-validation"
-      ? {
-          criteria: workResult.result.criteria.map((entry) => ({
-            criterion: entry.criterion,
-            passed: entry.passed,
-            evidence: entry.evidence,
-          })),
-        }
-      : {
-          dimensions: workResult.result.dimensions.map((entry) => ({
-            dimension: entry.dimension,
-            score: entry.score,
-            rationale: entry.rationale,
-          })),
-        };
-  return {
-    assignmentId: workResult.assignmentId,
-    taskType: workResult.taskType,
-    outcome: workResult.outcome,
-    summary: workResult.summary,
-    result,
-  };
-}
-
-export function formatTaskResult(workResult) {
-  return (
-    `${RESULT_MARKER}\n\n\`\`\`json\n` +
-    `${JSON.stringify(canonicalWorkResult(workResult), null, 2)}\n\`\`\`\n`
+function parseCanonicalJson(body, marker, validator) {
+  if (typeof body !== "string" || body.includes("\r")) return null;
+  const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = body.match(
+    new RegExp(`^${escaped}\\n\\n\\\`\\\`\\\`json\\n([\\s\\S]+)\\n\\\`\\\`\\\`\\n$`),
   );
-}
-
-function looksLikeStructuredResult(body) {
-  return (
-    typeof body === "string" &&
-    (STRUCTURED_MARKERS.some((marker) => body.includes(marker)) ||
-      /<summary>\s*WorkGraph(?: Task)? Result\s*<\/summary>/i.test(body) ||
-      (/(?:```|~~~)[ \t]*json\b/i.test(body) &&
-        body.includes('"assignmentId"') &&
-        body.includes('"taskType"') &&
-        body.includes('"result"')))
-  );
-}
-
-function inspectTaskResult(body) {
-  if (!looksLikeStructuredResult(body)) {
-    return null;
-  }
-  const match =
-    typeof body === "string"
-      ? body.match(
-          /^WorkGraphTaskResult\/v1\n\n```json\n([\s\S]+)\n```\n$/,
-        )
-      : null;
-  if (match === null) {
-    return { canonical: false, payload: null };
-  }
+  if (!match) return null;
   let payload;
   try {
     payload = JSON.parse(match[1]);
-    validateWorkResult(payload);
+    validator(payload);
   } catch {
-    return { canonical: false, payload: null };
+    return null;
   }
-  return {
-    canonical: body === formatTaskResult(payload),
-    payload,
-  };
+  return body === canonicalJson(marker, payload) ? payload : null;
 }
 
-function apiBaseUrl() {
-  if (
-    process.env.NODE_ENV === "test" &&
-    process.env.WORKGRAPH_TEST_GITHUB_API_URL
-  ) {
-    const testUrl = new URL(process.env.WORKGRAPH_TEST_GITHUB_API_URL);
-    if (
-      testUrl.protocol !== "http:" ||
-      !["127.0.0.1", "::1", "localhost"].includes(testUrl.hostname)
-    ) {
-      throw new ReporterError(
-        "WORKGRAPH_TEST_GITHUB_API_URL must be a loopback HTTP URL",
-      );
+function validateAssignment(value) {
+  exact(value, ["agentProfile"], "Assignment");
+  if (!Object.values(AGENT_BY_TASK).includes(value.agentProfile)) {
+    throw new WorkGraphError("Assignment.agentProfile is not supported");
+  }
+}
+
+function validateResult(value) {
+  exact(value, ["taskType", "outcome", "summary", "result"], "Result");
+  if (!TASK_TYPES.includes(value.taskType)) {
+    throw new WorkGraphError("Result.taskType is not supported");
+  }
+  if (!OUTCOMES.includes(value.outcome)) {
+    throw new WorkGraphError("Result.outcome is not supported");
+  }
+  plain(value.summary, "Result.summary");
+  if (value.taskType === "validate-issue") {
+    exact(value.result, ["criteria"], "Result.result");
+    if (!Array.isArray(value.result.criteria) || value.result.criteria.length !== 2) {
+      throw new WorkGraphError("validation Result must contain exactly two criteria");
     }
-    return testUrl.toString().replace(/\/$/, "");
+    value.result.criteria.forEach((entry, index) => {
+      exact(entry, ["criterion", "passed", "evidence"], `criterion[${index}]`);
+      if (entry.criterion !== CRITERIA[index]) {
+        throw new WorkGraphError("validation criteria must match the repository profile");
+      }
+      if (typeof entry.passed !== "boolean") {
+        throw new WorkGraphError(`criterion[${index}].passed must be boolean`);
+      }
+      plain(entry.evidence, `criterion[${index}].evidence`);
+    });
+  } else {
+    exact(value.result, ["requestCommentNodeId"], "Result.result");
+    identifier(
+      value.result.requestCommentNodeId,
+      "Result.result.requestCommentNodeId",
+    );
   }
-  return GITHUB_API_URL;
 }
 
-function positiveIntegerEnvironment(name) {
-  const value = Number(process.env[name] ?? "");
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new ReporterError(`${name} must be a positive integer`);
+export function formatTaskResult(result) {
+  validateResult(result);
+  return canonicalJson(RESULT_MARKER, result);
+}
+
+function validateAcceptance(value) {
+  exact(
+    value,
+    ["resultCommentNodeId", "resultBodyDigest", "summary"],
+    "Acceptance",
+  );
+  identifier(value.resultCommentNodeId, "Acceptance.resultCommentNodeId");
+  if (
+    typeof value.resultBodyDigest !== "string" ||
+    !/^sha256:[0-9a-f]{64}$/.test(value.resultBodyDigest)
+  ) {
+    throw new WorkGraphError("Acceptance.resultBodyDigest must be sha256:<64 lowercase hex>");
+  }
+  plain(value.summary, "Acceptance.summary");
+}
+
+export function formatAcceptance(value) {
+  validateAcceptance(value);
+  return canonicalJson(ACCEPTANCE_MARKER, value);
+}
+
+function validateFeedback(value) {
+  exact(
+    value,
+    ["resultCommentNodeId", "resultBodyDigest", "feedback"],
+    "Feedback",
+  );
+  identifier(value.resultCommentNodeId, "Feedback.resultCommentNodeId");
+  if (
+    typeof value.resultBodyDigest !== "string" ||
+    !/^sha256:[0-9a-f]{64}$/.test(value.resultBodyDigest)
+  ) {
+    throw new WorkGraphError("Feedback.resultBodyDigest must be sha256:<64 lowercase hex>");
+  }
+  plain(value.feedback, "Feedback.feedback");
+}
+
+export function resultDigest(body) {
+  return `sha256:${createHash("sha256").update(body, "utf8").digest("hex")}`;
+}
+
+function digestString(value, label) {
+  if (typeof value !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value)) {
+    throw new WorkGraphError(`${label} must be sha256:<64 lowercase hex>`);
   }
   return value;
 }
 
-function loadConfig() {
-  const token = process.env.COPILOT_MCP_WORKGRAPH_TOKEN ?? "";
-  const taskIssueTypeId =
-    process.env.COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID ?? "";
-  if (token.length === 0) {
-    throw new ReporterError(
-      "COPILOT_MCP_WORKGRAPH_TOKEN is not configured",
-    );
+function structured(body, marker) {
+  return typeof body === "string" && body.includes(marker);
+}
+
+function envId(name) {
+  const value = Number(process.env[name] ?? "");
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new WorkGraphError(`${name} must be a positive integer`);
   }
+  return value;
+}
+
+function config() {
+  const token = process.env.COPILOT_MCP_WORKGRAPH_TOKEN ?? "";
+  const taskTypeId =
+    process.env.COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID ?? "";
+  if (!token) throw new WorkGraphError("COPILOT_MCP_WORKGRAPH_TOKEN is required");
+  identifier(taskTypeId, "COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID");
+  let api = API;
   if (
-    taskIssueTypeId.length === 0 ||
-    taskIssueTypeId.length > MAX_IDENTIFIER_LENGTH
+    process.env.NODE_ENV === "test" &&
+    process.env.WORKGRAPH_TEST_GITHUB_API_URL
   ) {
-    throw new ReporterError(
-      "COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID must be the bounded exact " +
-        "WorkGraphTask GraphQL Issue Type node ID",
-    );
+    const url = new URL(process.env.WORKGRAPH_TEST_GITHUB_API_URL);
+    if (url.protocol !== "http:" || !["127.0.0.1", "::1", "localhost"].includes(url.hostname)) {
+      throw new WorkGraphError("test API URL must be loopback HTTP");
+    }
+    api = url.toString().replace(/\/$/, "");
   }
   return {
     token,
-    taskIssueTypeId,
-    launcherUserId: positiveIntegerEnvironment(
-      "COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID",
-    ),
-    reporterUserId: positiveIntegerEnvironment(
-      "COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID",
-    ),
-    apiUrl: apiBaseUrl(),
+    taskTypeId,
+    launcherId: envId("COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID"),
+    assignmentId: envId("COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID"),
+    resultId: envId("COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID"),
+    acceptanceId: envId("COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID"),
+    orchestratorId: envId("COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID"),
+    infoId: envId("COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID"),
+    redispatchId: envId("COPILOT_MCP_WORKGRAPH_REDISPATCH_REPORTER_USER_ID"),
+    api,
   };
 }
 
-class GitHubClient {
-  constructor(config) {
-    this.config = config;
+class GitHub {
+  constructor(cfg) {
+    this.cfg = cfg;
   }
 
-  async request(method, requestPath, payload, { ambiguousWrite = false } = {}) {
+  async request(method, route, payload, { allowNotFound = false } = {}) {
     let response;
     try {
-      response = await fetch(`${this.config.apiUrl}${requestPath}`, {
+      response = await fetch(`${this.cfg.api}${route}`, {
         method,
         headers: {
           Accept: "application/vnd.github+json",
-          Authorization: `Bearer ${this.config.token}`,
+          Authorization: `Bearer ${this.cfg.token}`,
           "Content-Type": "application/json",
-          "User-Agent": "drasi-workgraph-task-reporter",
+          "User-Agent": "drasi-workgraph-reporter",
           "X-GitHub-Api-Version": "2026-03-10",
         },
         body: payload === undefined ? undefined : JSON.stringify(payload),
         signal: AbortSignal.timeout(30_000),
       });
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "unknown network error";
-      if (ambiguousWrite) {
-        throw new AmbiguousCreateError(
-          `task comment creation is ambiguous: ${message}`,
-        );
-      }
-      throw new ReporterError(`GitHub API request failed: ${message}`);
+      throw new WorkGraphError(`GitHub request failed: ${error.message}`);
     }
-
-    let text;
-    try {
-      text = await response.text();
-    } catch {
-      if (ambiguousWrite) {
-        throw new AmbiguousCreateError(
-          "task comment creation response is ambiguous",
-        );
-      }
-      throw new ReporterError("GitHub API response could not be read");
-    }
-    if (!response.ok && ambiguousWrite && response.status >= 500) {
-      throw new AmbiguousCreateError(
-        `task comment creation returned HTTP ${response.status}`,
-      );
-    }
-
+    const text = await response.text();
     let body = null;
-    if (text.length > 0) {
+    if (text) {
       try {
         body = JSON.parse(text);
       } catch {
-        if (ambiguousWrite) {
-          throw new AmbiguousCreateError(
-            "task comment creation response is ambiguous",
-          );
-        }
-        throw new ReporterError("GitHub API response is not valid JSON");
+        throw new WorkGraphError("GitHub response was not JSON");
       }
     }
+    if (allowNotFound && response.status === 404) return null;
     if (!response.ok) {
-      const detail =
-        isObject(body) && typeof body.message === "string"
-          ? body.message
-          : text;
-      throw new ReporterError(
-        `GitHub API request failed with HTTP ${response.status}: ${detail}`,
+      throw new WorkGraphError(
+        `GitHub request failed with HTTP ${response.status}: ${body?.message ?? text}`,
       );
     }
     return body;
   }
 
-  async getIdentity() {
+  identity() {
     return this.request("GET", "/user");
   }
-
-  async getIssue(issueNumber) {
+  issue(number) {
+    return this.request("GET", `/repos/${OWNER}/${REPO}/issues/${number}`);
+  }
+  parent(number) {
+    return this.request("GET", `/repos/${OWNER}/${REPO}/issues/${number}/parent`);
+  }
+  optionalParent(number) {
     return this.request(
       "GET",
-      `/repos/${REPOSITORY_OWNER}/${REPOSITORY_NAME}/issues/${issueNumber}`,
+      `/repos/${OWNER}/${REPO}/issues/${number}/parent`,
+      undefined,
+      { allowNotFound: true },
     );
   }
-
-  async getParent(taskIssueNumber) {
-    return this.request(
-      "GET",
-      `/repos/${REPOSITORY_OWNER}/${REPOSITORY_NAME}/issues/` +
-        `${taskIssueNumber}/parent`,
-    );
+  comment(id) {
+    return this.request("GET", `/repos/${OWNER}/${REPO}/issues/comments/${id}`);
   }
-
-  async listComments(taskIssueNumber) {
-    const comments = [];
+  async paginate(route) {
+    const items = [];
     for (let page = 1; page <= 100; page += 1) {
+      const separator = route.includes("?") ? "&" : "?";
       const batch = await this.request(
         "GET",
-        `/repos/${REPOSITORY_OWNER}/${REPOSITORY_NAME}/issues/` +
-          `${taskIssueNumber}/comments?per_page=100&page=${page}`,
+        `${route}${separator}per_page=100&page=${page}`,
       );
       if (!Array.isArray(batch)) {
-        throw new ReporterError("GitHub comments response is not an array");
+        throw new WorkGraphError("paginated GitHub response must be an array");
       }
-      comments.push(...batch);
-      if (batch.length < 100) {
-        return comments;
-      }
+      items.push(...batch);
+      if (batch.length < 100) return items;
     }
-    throw new ReporterError("task comment reconciliation exceeded 100 pages");
+    throw new WorkGraphError("GitHub pagination exceeded 100 pages");
   }
-
-  async createComment(taskIssueNumber, body, ambiguousWrite = false) {
+  comments(number) {
+    return this.paginate(`/repos/${OWNER}/${REPO}/issues/${number}/comments`);
+  }
+  subIssues(number) {
+    return this.paginate(
+      `/repos/${OWNER}/${REPO}/issues/${number}/sub_issues`,
+    );
+  }
+  openIssues() {
+    return this.paginate(`/repos/${OWNER}/${REPO}/issues?state=open`);
+  }
+  postComment(number, body) {
     return this.request(
       "POST",
-      `/repos/${REPOSITORY_OWNER}/${REPOSITORY_NAME}/issues/` +
-        `${taskIssueNumber}/comments`,
+      `/repos/${OWNER}/${REPO}/issues/${number}/comments`,
       { body },
-      { ambiguousWrite },
+    );
+  }
+  patchComment(id, body) {
+    return this.request(
+      "PATCH",
+      `/repos/${OWNER}/${REPO}/issues/comments/${id}`,
+      { body },
+    );
+  }
+  createIssue(title, body) {
+    return this.request("POST", `/repos/${OWNER}/${REPO}/issues`, {
+      title,
+      body,
+      type: TASK_TYPE_NAME,
+    });
+  }
+  attachSubIssue(parentNumber, childId) {
+    return this.request(
+      "POST",
+      `/repos/${OWNER}/${REPO}/issues/${parentNumber}/sub_issues`,
+      { sub_issue_id: childId },
+    );
+  }
+  replaceLabels(number, labels) {
+    return this.request(
+      "PUT",
+      `/repos/${OWNER}/${REPO}/issues/${number}/labels`,
+      { labels },
     );
   }
 }
 
-function validateIdentity(identity, config) {
-  if (
-    !isObject(identity) ||
-    identity.id !== config.reporterUserId ||
-    typeof identity.login !== "string"
-  ) {
-    throw new ReporterError(
-      "GitHub token identity does not match " +
-        `COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID ${config.reporterUserId}`,
-    );
+function verifyIdentity(identity, expected, label) {
+  if (!object(identity) || identity.id !== expected || !identity.login) {
+    throw new WorkGraphError(`token identity does not match configured ${label}`);
   }
 }
 
-function validateTaskIssue(issue, input, config) {
+function validateParent(parent, input) {
   if (
-    !isObject(issue) ||
-    issue.pull_request !== undefined ||
-    issue.number !== input.taskIssueNumber ||
-    issue.node_id !== input.taskIssueNodeId
-  ) {
-    throw new ReporterError(
-      "the fixed-repository task is not the requested non-PR Issue",
-    );
-  }
-  if (
-    issue.type?.name !== TASK_TYPE_NAME ||
-    issue.type?.node_id !== config.taskIssueTypeId
-  ) {
-    throw new ReporterError(
-      "task Issue does not have the configured exact WorkGraphTask type ID and name",
-    );
-  }
-  if (issue.user?.id !== config.launcherUserId) {
-    throw new ReporterError(
-      "task Issue creator does not match " +
-        "COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID",
-    );
-  }
-  if (!["open", "closed"].includes(issue.state)) {
-    throw new ReporterError("task Issue has an invalid state");
-  }
-}
-
-function validateParentIssue(parent, input) {
-  if (
-    !isObject(parent) ||
-    parent.pull_request !== undefined ||
+    !object(parent) ||
+    parent.pull_request ||
     parent.number !== input.parentIssueNumber ||
-    parent.node_id !== input.parentIssueNodeId
+    parent.node_id !== input.parentIssueNodeId ||
+    parent.state !== "open"
   ) {
-    throw new ReporterError(
-      "native parent relation does not match the requested non-PR parent Issue",
-    );
+    throw new WorkGraphError("native parent is not the requested open Issue");
   }
   if (
-    parent.repository_url !== undefined &&
-    parent.repository_url !==
-      `${GITHUB_API_URL}/repos/${REPOSITORY_OWNER}/${REPOSITORY_NAME}`
+    parent.repository_url &&
+    parent.repository_url !== `${API}/repos/${OWNER}/${REPO}`
   ) {
-    throw new ReporterError("native parent Issue is not in the fixed repository");
+    throw new WorkGraphError("native parent is outside the fixed repository");
   }
 }
 
-function validateTaskContext(
-  task,
-  parent,
-  input,
-  config,
-  assertedAssignmentId,
-  workResult,
-) {
-  validateTaskIssue(task, input, config);
-  validateParentIssue(parent, input);
-  const assignment = parseAssignmentBody(task.body);
-  reconcileAssignment(
-    assignment,
-    parent.node_id,
-    assertedAssignmentId,
-    workResult,
-  );
-  return assignment;
-}
-
-function findExistingResult(comments, workResult, identity) {
-  const candidates = [];
-  for (const comment of comments) {
-    if (!isObject(comment)) {
-      continue;
-    }
-    const inspected = inspectTaskResult(comment.body);
-    if (inspected !== null) {
-      candidates.push({ comment, inspected });
-    }
-  }
-  if (candidates.length > 1) {
-    throw new ReporterError(
-      "multiple structured Result comment candidates exist on the task",
-    );
-  }
-  if (candidates.length === 0) {
-    return null;
-  }
-
-  const candidate = candidates[0];
-  if (!candidate.inspected.canonical) {
-    throw new ReporterError(
-      "a malformed structured Result comment candidate exists on the task",
-    );
-  }
-  if (candidate.comment.user?.id !== identity.id) {
-    throw new ReporterError(
-      "a canonical Result comment exists from a different author",
-    );
-  }
-  const expected = canonicalWorkResult(workResult);
+function validateTaskIssue(task, input, cfg, { open = false } = {}) {
   if (
-    !isDeepStrictEqual(candidate.inspected.payload, expected) ||
-    candidate.comment.body !== formatTaskResult(workResult)
+    !object(task) ||
+    task.pull_request ||
+    task.number !== input.taskIssueNumber ||
+    task.node_id !== input.taskIssueNodeId
   ) {
-    throw new ReporterError(
-      "the authenticated Result comment conflicts with the requested result",
-    );
+    throw new WorkGraphError("task is not the requested Issue");
   }
-  return candidate.comment;
-}
-
-function requireCommentNodeId(comment, label) {
   if (
-    !isObject(comment) ||
-    typeof comment.node_id !== "string" ||
-    comment.node_id.length === 0
+    task.type?.name !== TASK_TYPE_NAME ||
+    task.type?.node_id !== cfg.taskTypeId
   ) {
-    throw new ReporterError(`${label} comment has no node ID`);
+    throw new WorkGraphError("task does not have the configured exact WorkGraphTask type name and ID");
   }
-  return comment.node_id;
+  if (task.user?.id !== cfg.launcherId) {
+    throw new WorkGraphError("task creator is not the configured launcher identity");
+  }
+  if (open && task.state !== "open") {
+    throw new WorkGraphError("task must be open");
+  }
+  return parseTask(task.body);
 }
 
-class TaskReporter {
-  constructor(config, client) {
-    this.config = config;
-    this.client = client;
-  }
-
-  async loadContext(input, workResult) {
-    const identity = await this.client.getIdentity();
-    validateIdentity(identity, this.config);
-    const task = await this.client.getIssue(input.taskIssueNumber);
-    const parent = await this.client.getParent(input.taskIssueNumber);
-    const assignment = validateTaskContext(
-      task,
-      parent,
-      input,
-      this.config,
-      workResult?.assignmentId ?? input.assignmentId,
-      workResult,
-    );
-    return { identity, task, assignment };
-  }
-
-  async reportProgress(input) {
-    const { task } = await this.loadContext(input);
-    if (task.state !== "open") {
-      throw new ReporterError("progress can be posted only to an open task Issue");
-    }
-    const comment = await this.client.createComment(
-      input.taskIssueNumber,
-      input.message,
-    );
-    return {
-      taskIssueNodeId: input.taskIssueNodeId,
-      commentNodeId: requireCommentNodeId(comment, "progress"),
-    };
-  }
-
-  async submitResult(input) {
-    const { identity, task, assignment } = await this.loadContext(
-      input,
-      input.workResult,
-    );
-    let comments = await this.client.listComments(input.taskIssueNumber);
-    let comment = findExistingResult(
-      comments,
-      input.workResult,
-      identity,
-    );
-    let reconciled = comment !== null;
-    if (comment === null) {
-      if (task.state !== "open") {
-        throw new ReporterError(
-          "a closed task Issue has no authenticated canonical Result",
-        );
-      }
-      const body = formatTaskResult(input.workResult);
-      try {
-        comment = await this.client.createComment(
-          input.taskIssueNumber,
-          body,
-          true,
-        );
-      } catch (error) {
-        if (!(error instanceof AmbiguousCreateError)) {
-          throw error;
-        }
-        comments = await this.client.listComments(input.taskIssueNumber);
-        comment = findExistingResult(
-          comments,
-          input.workResult,
-          identity,
-        );
-        if (comment === null) {
-          throw new ReporterError(
-            "Result creation was ambiguous and no authenticated canonical " +
-              "Result was found",
-          );
-        }
-        reconciled = true;
-      }
-      if (
-        !isObject(comment) ||
-        comment.user?.id !== identity.id ||
-        comment.body !== body ||
-        typeof comment.node_id !== "string" ||
-        comment.node_id.length === 0
-      ) {
-        comments = await this.client.listComments(input.taskIssueNumber);
-        comment = findExistingResult(
-          comments,
-          input.workResult,
-          identity,
-        );
-        if (comment === null) {
-          throw new ReporterError(
-            "GitHub did not confirm the authenticated canonical Result",
-          );
-        }
-        reconciled = true;
-      }
-    }
-
-    return {
-      taskIssueNodeId: input.taskIssueNodeId,
-      parentIssueNodeId: input.parentIssueNodeId,
-      assignmentId: assignment.assignmentId,
-      taskType: assignment.taskType,
-      commentNodeId: requireCommentNodeId(comment, "Result"),
-      reconciled,
-    };
-  }
+async function context(github, input, cfg, options) {
+  const [identity, task, parent] = await Promise.all([
+    github.identity(),
+    github.issue(input.taskIssueNumber),
+    github.parent(input.taskIssueNumber),
+  ]);
+  verifyIdentity(identity, options.actorId, options.actorLabel);
+  const taskPayload = validateTaskIssue(task, input, cfg, { open: options.open });
+  validateParent(parent, input);
+  return { identity, task, parent, taskPayload };
 }
 
-const NON_EMPTY_STRING = {
-  type: "string",
-  minLength: 1,
-  pattern: "[\\s\\S]*\\S[\\s\\S]*",
-};
-const BOUNDED_IDENTIFIER = {
-  ...NON_EMPTY_STRING,
-  maxLength: MAX_IDENTIFIER_LENGTH,
-};
-const ISSUE_REFERENCE_PROPERTIES = {
-  taskIssueNumber: { type: "integer", minimum: 1 },
-  taskIssueNodeId: BOUNDED_IDENTIFIER,
-  parentIssueNumber: { type: "integer", minimum: 1 },
-  parentIssueNodeId: BOUNDED_IDENTIFIER,
-};
-
-function strictObject(properties) {
+function candidates(comments, marker, parser) {
+  const marked = comments.filter((comment) => structured(comment.body, marker));
   return {
-    type: "object",
-    additionalProperties: false,
-    required: Object.keys(properties),
-    properties,
+    marked,
+    parsed: marked.map((comment) => ({
+      comment,
+      payload: parser(comment.body),
+    })),
   };
 }
 
-function workResultSchema(taskType) {
-  const validation = taskType === "issue-validation";
-  return strictObject({
-    assignmentId: BOUNDED_IDENTIFIER,
-    taskType: { const: taskType },
-    outcome: { type: "string", enum: OUTCOMES },
-    summary: NON_EMPTY_STRING,
-    result: validation
-      ? strictObject({
-          criteria: {
-            type: "array",
-            minItems: 1,
-            items: strictObject({
-              criterion: NON_EMPTY_STRING,
-              passed: { type: "boolean" },
-              evidence: NON_EMPTY_STRING,
-            }),
-          },
-        })
-      : strictObject({
-          dimensions: {
-            type: "array",
-            minItems: 1,
-            items: strictObject({
-              dimension: NON_EMPTY_STRING,
-              score: { type: "integer", minimum: 0, maximum: 100 },
-              rationale: NON_EMPTY_STRING,
-            }),
-          },
-        }),
-  });
+function oneAssignment(comments, taskPayload, cfg) {
+  const found = candidates(comments, ASSIGNMENT_MARKER, (body) =>
+    parseCanonicalJson(body, ASSIGNMENT_MARKER, validateAssignment),
+  );
+  if (
+    found.parsed.length !== 1 ||
+    !found.parsed[0].payload ||
+    found.parsed[0].comment.user?.id !== cfg.assignmentId
+  ) {
+    throw new WorkGraphError("task must have one canonical Assignment by the configured Assignment reporter");
+  }
+  if (found.parsed[0].payload.agentProfile !== AGENT_BY_TASK[taskPayload.taskType]) {
+    throw new WorkGraphError("Assignment agentProfile does not match taskType");
+  }
+  return found.parsed[0];
 }
 
-const TOOLS = [
-  {
-    name: "report_progress",
-    description:
-      "Post bounded ordinary progress text to one validated WorkGraphTask.",
-    inputSchema: strictObject({
-      ...ISSUE_REFERENCE_PROPERTIES,
-      assignmentId: BOUNDED_IDENTIFIER,
-      message: {
-        type: "string",
-        minLength: 1,
-        maxLength: MAX_PROGRESS_BYTES,
+function oneResult(comments, taskPayload, cfg) {
+  const found = candidates(comments, RESULT_MARKER, (body) =>
+    parseCanonicalJson(body, RESULT_MARKER, validateResult),
+  );
+  if (
+    found.parsed.length !== 1 ||
+    !found.parsed[0].payload ||
+    found.parsed[0].comment.user?.id !== cfg.resultId
+  ) {
+    throw new WorkGraphError("task must have one canonical Result by the configured Result reporter");
+  }
+  if (found.parsed[0].payload.taskType !== taskPayload.taskType) {
+    throw new WorkGraphError("Result taskType does not match the task");
+  }
+  return found.parsed[0];
+}
+
+function acceptanceFor(comments, resultEntry, cfg) {
+  const found = candidates(comments, ACCEPTANCE_MARKER, (body) =>
+    parseCanonicalJson(body, ACCEPTANCE_MARKER, validateAcceptance),
+  );
+  if (found.parsed.length !== 1 || !found.parsed[0].payload) {
+    throw new WorkGraphError("task must have one canonical Result Acceptance");
+  }
+  const entry = found.parsed[0];
+  if (entry.comment.user?.id !== cfg.acceptanceId) {
+    throw new WorkGraphError("Acceptance author is not configured");
+  }
+  const digest = resultDigest(resultEntry.comment.body);
+  if (
+    entry.payload.resultCommentNodeId !== resultEntry.comment.node_id ||
+    entry.payload.resultBodyDigest !== digest
+  ) {
+    throw new WorkGraphError("Acceptance does not target the exact current Result and digest");
+  }
+  return entry;
+}
+
+function verifiedCommentWrite(comment, expectedBody, actorId, label) {
+  if (
+    !object(comment) ||
+    !Number.isSafeInteger(comment.id) ||
+    comment.id <= 0 ||
+    typeof comment.node_id !== "string" ||
+    !/^[A-Za-z0-9_-]+$/.test(comment.node_id) ||
+    comment.user?.id !== actorId ||
+    comment.body !== expectedBody
+  ) {
+    throw new WorkGraphError(`${label} write response did not reconcile`);
+  }
+  return comment;
+}
+
+function verifyResultSnapshot(comment, expected, cfg) {
+  if (
+    !object(comment) ||
+    comment.id !== expected.id ||
+    comment.node_id !== expected.node_id ||
+    comment.user?.id !== cfg.resultId ||
+    comment.body !== expected.body
+  ) {
+    throw new WorkGraphError("current Result changed during reconciliation");
+  }
+}
+
+async function submitAssignment(input, github, cfg) {
+  refs(input, ["agentProfile"]);
+  if (!Object.values(AGENT_BY_TASK).includes(input.agentProfile)) {
+    throw new WorkGraphError("arguments.agentProfile is unsupported");
+  }
+  const ctx = await context(github, input, cfg, {
+    actorId: cfg.assignmentId,
+    actorLabel: "Assignment reporter",
+    open: true,
+  });
+  if (input.agentProfile !== AGENT_BY_TASK[ctx.taskPayload.taskType]) {
+    throw new WorkGraphError("agentProfile does not match taskType");
+  }
+  const comments = await github.comments(input.taskIssueNumber);
+  const found = candidates(comments, ASSIGNMENT_MARKER, (body) =>
+    parseCanonicalJson(body, ASSIGNMENT_MARKER, validateAssignment),
+  );
+  const body = formatAssignment(input.agentProfile);
+  if (found.marked.length > 0) {
+    if (
+      found.parsed.length === 1 &&
+      found.parsed[0].payload?.agentProfile === input.agentProfile &&
+      found.parsed[0].comment.user?.id === cfg.assignmentId &&
+      found.parsed[0].comment.body === body
+    ) {
+      return {
+        commentNodeId: found.parsed[0].comment.node_id,
+        reconciled: true,
+      };
+    }
+    throw new WorkGraphError("task already has a malformed, foreign, or conflicting Assignment");
+  }
+  const comment = verifiedCommentWrite(
+    await github.postComment(input.taskIssueNumber, body),
+    body,
+    cfg.assignmentId,
+    "Assignment",
+  );
+  return { commentNodeId: comment.node_id, reconciled: false };
+}
+
+function validateRequestedResult(result, taskPayload) {
+  validateResult(result);
+  if (result.taskType !== taskPayload.taskType) {
+    throw new WorkGraphError("Result taskType does not match taskType");
+  }
+}
+
+async function verifyInfoResult(result, parentComments, taskPayload, cfg) {
+  const comment = parentComments.find(
+    (item) => item.node_id === result.result.requestCommentNodeId,
+  );
+  if (
+    !comment ||
+    comment.user?.id !== cfg.infoId ||
+    !structured(comment.body, INFO_MARKER) ||
+    !comment.body.includes(taskPayload.inputs.validationResultCommentNodeId)
+  ) {
+    throw new WorkGraphError("request-info Result does not identify the canonical parent info comment");
+  }
+}
+
+async function submitResult(input, github, cfg) {
+  refs(input, ["workResult"]);
+  const ctx = await context(github, input, cfg, {
+    actorId: cfg.resultId,
+    actorLabel: "Result reporter",
+    open: true,
+  });
+  validateRequestedResult(input.workResult, ctx.taskPayload);
+  const [comments, parentComments] = await Promise.all([
+    github.comments(input.taskIssueNumber),
+    ctx.taskPayload.taskType === "request-info"
+      ? github.comments(input.parentIssueNumber)
+      : Promise.resolve([]),
+  ]);
+  oneAssignment(comments, ctx.taskPayload, cfg);
+  if (ctx.taskPayload.taskType === "request-info") {
+    await verifyInfoResult(input.workResult, parentComments, ctx.taskPayload, cfg);
+  }
+  const body = formatTaskResult(input.workResult);
+  const found = candidates(comments, RESULT_MARKER, (candidate) =>
+    parseCanonicalJson(candidate, RESULT_MARKER, validateResult),
+  );
+  if (found.marked.length === 0) {
+    const comment = verifiedCommentWrite(
+      await github.postComment(input.taskIssueNumber, body),
+      body,
+      cfg.resultId,
+      "Result",
+    );
+    return {
+      commentNodeId: comment.node_id,
+      resultBodyDigest: resultDigest(body),
+      revised: false,
+      reconciled: false,
+    };
+  }
+  if (
+    found.parsed.length !== 1 ||
+    !found.parsed[0].payload ||
+    found.parsed[0].comment.user?.id !== cfg.resultId ||
+    found.parsed[0].payload.taskType !== ctx.taskPayload.taskType
+  ) {
+    throw new WorkGraphError("task has a malformed, foreign, or conflicting Result");
+  }
+  const current = found.parsed[0].comment;
+  if (current.body === body) {
+    return {
+      commentNodeId: current.node_id,
+      resultBodyDigest: resultDigest(body),
+      revised: false,
+      reconciled: true,
+    };
+  }
+  if (comments.some((comment) => structured(comment.body, ACCEPTANCE_MARKER))) {
+    throw new WorkGraphError("an accepted Result cannot be revised");
+  }
+  if (!Number.isSafeInteger(current.id) || current.id <= 0) {
+    throw new WorkGraphError("current Result lacks a REST comment ID for revision");
+  }
+  const beforeComments = await github.comments(input.taskIssueNumber);
+  const beforeResult = oneResult(beforeComments, ctx.taskPayload, cfg).comment;
+  verifyResultSnapshot(beforeResult, current, cfg);
+  if (
+    beforeComments.some((comment) =>
+      structured(comment.body, ACCEPTANCE_MARKER),
+    )
+  ) {
+    throw new WorkGraphError("an accepted Result cannot be revised");
+  }
+  verifyResultSnapshot(await github.comment(current.id), current, cfg);
+  const revised = verifiedCommentWrite(
+    await github.patchComment(current.id, body),
+    body,
+    cfg.resultId,
+    "Result revision",
+  );
+  if (revised.node_id !== current.node_id || revised.id !== current.id) {
+    throw new WorkGraphError("revised Result changed comment identity");
+  }
+  const afterComments = await github.comments(input.taskIssueNumber);
+  if (
+    afterComments.some((comment) =>
+      structured(comment.body, ACCEPTANCE_MARKER),
+    )
+  ) {
+    throw new WorkGraphError(
+      "Result/Acceptance race left the task inconsistent; manual remediation is required",
+    );
+  }
+  const afterResult = oneResult(afterComments, ctx.taskPayload, cfg).comment;
+  verifyResultSnapshot(afterResult, revised, cfg);
+  return {
+    commentNodeId: revised.node_id,
+    resultBodyDigest: resultDigest(body),
+    revised: true,
+    reconciled: false,
+  };
+}
+
+async function submitAcceptance(input, github, cfg) {
+  refs(input, [
+    "resultCommentNodeId",
+    "resultBodyDigest",
+    "summary",
+  ]);
+  validateAcceptance({
+    resultCommentNodeId: input.resultCommentNodeId,
+    resultBodyDigest: input.resultBodyDigest,
+    summary: input.summary,
+  });
+  const ctx = await context(github, input, cfg, {
+    actorId: cfg.acceptanceId,
+    actorLabel: "Acceptance reporter",
+    open: true,
+  });
+  const comments = await github.comments(input.taskIssueNumber);
+  oneAssignment(comments, ctx.taskPayload, cfg);
+  const current = oneResult(comments, ctx.taskPayload, cfg);
+  const digest = resultDigest(current.comment.body);
+  if (
+    current.comment.node_id !== input.resultCommentNodeId ||
+    digest !== input.resultBodyDigest
+  ) {
+    throw new WorkGraphError("Acceptance request targets a stale Result ID or digest");
+  }
+  const payload = {
+    resultCommentNodeId: input.resultCommentNodeId,
+    resultBodyDigest: input.resultBodyDigest,
+    summary: input.summary,
+  };
+  const body = formatAcceptance(payload);
+  const found = candidates(comments, ACCEPTANCE_MARKER, (candidate) =>
+    parseCanonicalJson(candidate, ACCEPTANCE_MARKER, validateAcceptance),
+  );
+  if (found.marked.length > 0) {
+    if (
+      found.parsed.length === 1 &&
+      found.parsed[0].comment.user?.id === cfg.acceptanceId &&
+      found.parsed[0].comment.body === body
+    ) {
+      if (!Number.isSafeInteger(current.comment.id) || current.comment.id <= 0) {
+        throw new WorkGraphError("current Result lacks a REST comment ID");
+      }
+      verifyResultSnapshot(
+        await github.comment(current.comment.id),
+        current.comment,
+        cfg,
+      );
+      acceptanceFor(comments, current, cfg);
+      return {
+        commentNodeId: found.parsed[0].comment.node_id,
+        reconciled: true,
+      };
+    }
+    throw new WorkGraphError("task already has a stale, malformed, foreign, or conflicting Acceptance");
+  }
+  const beforeComments = await github.comments(input.taskIssueNumber);
+  oneAssignment(beforeComments, ctx.taskPayload, cfg);
+  const beforeResult = oneResult(beforeComments, ctx.taskPayload, cfg);
+  const beforeDigest = resultDigest(beforeResult.comment.body);
+  if (
+    beforeResult.comment.node_id !== input.resultCommentNodeId ||
+    beforeDigest !== input.resultBodyDigest
+  ) {
+    throw new WorkGraphError("Acceptance request targets a stale Result ID or digest");
+  }
+  if (!Number.isSafeInteger(beforeResult.comment.id) || beforeResult.comment.id <= 0) {
+    throw new WorkGraphError("current Result lacks a REST comment ID");
+  }
+  verifyResultSnapshot(
+    await github.comment(beforeResult.comment.id),
+    beforeResult.comment,
+    cfg,
+  );
+  const beforeAcceptances = candidates(
+    beforeComments,
+    ACCEPTANCE_MARKER,
+    (candidate) =>
+      parseCanonicalJson(candidate, ACCEPTANCE_MARKER, validateAcceptance),
+  );
+  if (beforeAcceptances.marked.length > 0) {
+    throw new WorkGraphError(
+      "task already has a stale, malformed, foreign, or conflicting Acceptance",
+    );
+  }
+  const comment = verifiedCommentWrite(
+    await github.postComment(input.taskIssueNumber, body),
+    body,
+    cfg.acceptanceId,
+    "Acceptance",
+  );
+  const afterComments = await github.comments(input.taskIssueNumber);
+  const afterResult = oneResult(afterComments, ctx.taskPayload, cfg);
+  if (
+    afterResult.comment.node_id !== input.resultCommentNodeId ||
+    resultDigest(afterResult.comment.body) !== input.resultBodyDigest
+  ) {
+    throw new WorkGraphError(
+      "Result/Acceptance race left the task inconsistent; manual remediation is required",
+    );
+  }
+  acceptanceFor(afterComments, afterResult, cfg);
+  return { commentNodeId: comment.node_id, reconciled: false };
+}
+
+function infoBody(login, validationResultCommentNodeId, missing) {
+  const bullets = missing.map((criterion) => `- ${criterion}`).join("\n");
+  return (
+    `@${login}, please provide the missing issue information:\n\n${bullets}\n\n` +
+    `<!-- ${INFO_MARKER} validationResultCommentNodeId=${validationResultCommentNodeId} -->\n`
+  );
+}
+
+async function postInfo(input, github, cfg) {
+  refs(input, [
+    "validationTaskIssueNumber",
+    "validationTaskIssueNodeId",
+    "validationResultCommentNodeId",
+  ]);
+  issueNumber(input.validationTaskIssueNumber, "arguments.validationTaskIssueNumber");
+  identifier(input.validationTaskIssueNodeId, "arguments.validationTaskIssueNodeId");
+  identifier(input.validationResultCommentNodeId, "arguments.validationResultCommentNodeId");
+  const ctx = await context(github, input, cfg, {
+    actorId: cfg.infoId,
+    actorLabel: "Info reporter",
+    open: true,
+  });
+  if (
+    ctx.taskPayload.taskType !== "request-info" ||
+    ctx.taskPayload.inputs.validationResultCommentNodeId !==
+      input.validationResultCommentNodeId
+  ) {
+    throw new WorkGraphError("request-info task does not reference the requested validation Result");
+  }
+  const requestChildren = await authoritativeChildren(
+    github,
+    input.parentIssueNumber,
+    cfg,
+  );
+  requireCurrentChild(requestChildren, input, "request-info");
+  const requestComments = await github.comments(input.taskIssueNumber);
+  oneAssignment(requestComments, ctx.taskPayload, cfg);
+  const validationInput = {
+    ...input,
+    taskIssueNumber: input.validationTaskIssueNumber,
+    taskIssueNodeId: input.validationTaskIssueNodeId,
+  };
+  const validationTask = await github.issue(input.validationTaskIssueNumber);
+  const validationPayload = validateTaskIssue(validationTask, validationInput, cfg);
+  if (validationPayload.taskType !== "validate-issue") {
+    throw new WorkGraphError("referenced Result is not on a validate-issue task");
+  }
+  const validationParent = await github.parent(input.validationTaskIssueNumber);
+  validateParent(validationParent, validationInput);
+  const validationComments = await github.comments(input.validationTaskIssueNumber);
+  oneAssignment(validationComments, validationPayload, cfg);
+  const result = oneResult(validationComments, validationPayload, cfg);
+  if (result.comment.node_id !== input.validationResultCommentNodeId) {
+    throw new WorkGraphError("validation Result comment ID is not current");
+  }
+  acceptanceFor(validationComments, result, cfg);
+  const missing = result.payload.result.criteria
+    .filter((criterion) => !criterion.passed)
+    .map((criterion) => criterion.criterion);
+  if (missing.length === 0) {
+    throw new WorkGraphError("validation Result has no missing criteria");
+  }
+  if (
+    typeof ctx.parent.user?.login !== "string" ||
+    !/^[A-Za-z0-9-]+$/.test(ctx.parent.user.login)
+  ) {
+    throw new WorkGraphError("parent submitter login is unavailable");
+  }
+  const body = infoBody(
+    ctx.parent.user?.login,
+    input.validationResultCommentNodeId,
+    missing,
+  );
+  const parentComments = await github.comments(input.parentIssueNumber);
+  const infoToken =
+    `${INFO_MARKER} validationResultCommentNodeId=` +
+    input.validationResultCommentNodeId;
+  const marked = parentComments.filter(
+    (comment) =>
+      structured(comment.body, INFO_MARKER) &&
+      comment.body.includes(infoToken),
+  );
+  if (marked.length > 0) {
+    if (
+      marked.length === 1 &&
+      marked[0].user?.id === cfg.infoId &&
+      marked[0].body === body
+    ) {
+      return {
+        requestCommentNodeId: marked[0].node_id,
+        reconciled: true,
+      };
+    }
+    throw new WorkGraphError("parent already has a malformed, foreign, or conflicting info request");
+  }
+  const comment = verifiedCommentWrite(
+    await github.postComment(input.parentIssueNumber, body),
+    body,
+    cfg.infoId,
+    "parent info request",
+  );
+  if (
+    typeof comment.created_at !== "string" ||
+    !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(comment.created_at)
+  ) {
+    throw new WorkGraphError("parent info request response lacks a canonical timestamp");
+  }
+  return {
+    requestCommentNodeId: comment.node_id,
+    reconciled: false,
+  };
+}
+
+function statusOf(issue) {
+  const statuses = (issue.labels ?? [])
+    .map((label) => (typeof label === "string" ? label : label.name))
+    .filter((name) => STATUS_LABELS.includes(name));
+  if (statuses.length !== 1) {
+    throw new WorkGraphError("parent must have exactly one WorkGraph status label");
+  }
+  return statuses[0];
+}
+
+async function replaceStatus(github, input, expectedStatus, status) {
+  const parent = await github.issue(input.parentIssueNumber);
+  validateParent(parent, input);
+  if (statusOf(parent) !== expectedStatus) {
+    throw new WorkGraphError("parent status changed immediately before mutation");
+  }
+  const labels = (parent.labels ?? [])
+    .map((label) => (typeof label === "string" ? label : label.name))
+    .filter((name) => name && !STATUS_LABELS.includes(name));
+  labels.push(status);
+  const updated = await github.replaceLabels(parent.number, labels);
+  const updatedNames = Array.isArray(updated)
+    ? updated
+        .map((label) => (typeof label === "string" ? label : label.name))
+        .filter(Boolean)
+        .sort()
+    : [];
+  if (
+    !Array.isArray(updated) ||
+    !isDeepStrictEqual(updatedNames, [...labels].sort()) ||
+    updatedNames.filter((name) => STATUS_LABELS.includes(name)).join("") !==
+      status
+  ) {
+    throw new WorkGraphError("status replacement response did not reconcile");
+  }
+}
+
+async function authoritativeChildren(github, parentNumber, cfg) {
+  const summaries = await github.subIssues(parentNumber);
+  if (!Array.isArray(summaries)) {
+    throw new WorkGraphError("sub-issues response must be an array");
+  }
+  const children = [];
+  for (const summary of summaries) {
+    if (
+      !object(summary) ||
+      !Number.isSafeInteger(summary.number) ||
+      summary.number <= 0 ||
+      summary.repository_url !== REPOSITORY_URL ||
+      typeof summary.node_id !== "string" ||
+      !summary.node_id
+    ) {
+      throw new WorkGraphError(
+        "parent has a child outside the fixed repository or with invalid identity",
+      );
+    }
+    const issue = await github.issue(summary.number);
+    if (
+      issue.number !== summary.number ||
+      issue.node_id !== summary.node_id ||
+      issue.repository_url !== REPOSITORY_URL
+    ) {
+      throw new WorkGraphError("child summary does not match the fixed-repository Issue");
+    }
+    if (issue.type?.name !== TASK_TYPE_NAME || issue.type?.node_id !== cfg.taskTypeId) {
+      throw new WorkGraphError("parent has a child that is not the configured WorkGraphTask type");
+    }
+    if (issue.user?.id !== cfg.launcherId) {
+      throw new WorkGraphError("child task has the wrong creator");
+    }
+    children.push(issue);
+  }
+  return children;
+}
+
+function requireNoOpenChildren(children, allowedNodeId = null) {
+  if (
+    children.some(
+      (child) => child.state === "open" && child.node_id !== allowedNodeId,
+    )
+  ) {
+    throw new WorkGraphError(
+      "parent has an unexpected open child/sibling WorkGraphTask",
+    );
+  }
+}
+
+function requireCurrentChild(children, input, taskType) {
+  const typed = children
+    .map((child) => ({ child, payload: parseTask(child.body) }))
+    .filter((entry) => entry.payload.taskType === taskType);
+  if (typed.length === 0) {
+    throw new WorkGraphError(`parent has no ${taskType} task`);
+  }
+  const latestNumber = Math.max(...typed.map((entry) => entry.child.number));
+  const latest = typed.filter((entry) => entry.child.number === latestNumber);
+  if (latest.length !== 1) {
+    throw new WorkGraphError(`parent does not have one unique latest ${taskType} task`);
+  }
+  if (
+    latest[0].child.number !== input.taskIssueNumber ||
+    latest[0].child.node_id !== input.taskIssueNodeId
+  ) {
+    throw new WorkGraphError(`supplied task is not the current latest ${taskType} task`);
+  }
+  return latest[0];
+}
+
+function transitionTitle(parentNumber, transition, correlationNodeId = null) {
+  let title;
+  if (transition === "start-validation") {
+    title = `WorkGraph: validate-issue parent #${parentNumber} start-validation`;
+  } else if (transition === "advance-validation") {
+    identifier(correlationNodeId, "transition validation Result correlation");
+    title =
+      `WorkGraph: request-info parent #${parentNumber} ` +
+      `validation-result ${correlationNodeId}`;
+  } else {
+    identifier(correlationNodeId, "transition human reply correlation");
+    title =
+      `WorkGraph: validate-issue parent #${parentNumber} ` +
+      `human-reply ${correlationNodeId}`;
+  }
+  if (title.length > MAX_TITLE) {
+    throw new WorkGraphError("canonical transition title exceeds GitHub's limit");
+  }
+  return title;
+}
+
+function matchesTransitionTask(issue, title, body, cfg) {
+  return (
+    object(issue) &&
+    !issue.pull_request &&
+    issue.title === title &&
+    issue.body === body &&
+    issue.state === "open" &&
+    issue.type?.name === TASK_TYPE_NAME &&
+    issue.type?.node_id === cfg.taskTypeId &&
+    issue.user?.id === cfg.launcherId
+  );
+}
+
+async function findUnattachedTransitionTask(
+  github,
+  parentNumber,
+  title,
+  body,
+  cfg,
+) {
+  const listed = await github.openIssues();
+  const possible = listed.filter(
+    (issue) =>
+      object(issue) &&
+      !issue.pull_request &&
+      issue.title === title &&
+      issue.body === body &&
+      issue.state === "open" &&
+      issue.user?.id === cfg.launcherId,
+  );
+  const unattached = [];
+  for (const summary of possible) {
+    const issue = await github.issue(summary.number);
+    if (!matchesTransitionTask(issue, title, body, cfg)) continue;
+    const nativeParent = await github.optionalParent(issue.number);
+    if (nativeParent === null) {
+      unattached.push(issue);
+    } else if (nativeParent.number === parentNumber) {
+      throw new WorkGraphError(
+        "matching task parent relation is inconsistent with authoritative children",
+      );
+    } else {
+      throw new WorkGraphError(
+        "matching canonical transition task is attached to another parent",
+      );
+    }
+  }
+  if (unattached.length > 1) {
+    throw new WorkGraphError(
+      "multiple unattached Issues match the canonical transition correlation",
+    );
+  }
+  return unattached[0] ?? null;
+}
+
+async function ensureTransitionTask(
+  github,
+  parent,
+  children,
+  task,
+  transition,
+  correlationNodeId,
+  cfg,
+  { create = true } = {},
+) {
+  const body = formatTask(task);
+  const title = transitionTitle(parent.number, transition, correlationNodeId);
+  const matching = children.filter((child) =>
+    matchesTransitionTask(child, title, body, cfg),
+  );
+  if (matching.length > 1) {
+    throw new WorkGraphError("multiple attached tasks match the transition correlation");
+  }
+  requireNoOpenChildren(children, matching[0]?.node_id ?? null);
+  if (matching.length === 1) return matching[0];
+  if (!create) {
+    throw new WorkGraphError(
+      "completed transition lacks its canonical correlated child task",
+    );
+  }
+  let candidate = await findUnattachedTransitionTask(
+    github,
+    parent.number,
+    title,
+    body,
+    cfg,
+  );
+  if (!candidate) {
+    candidate = await github.createIssue(title, body);
+    if (!matchesTransitionTask(candidate, title, body, cfg)) {
+      throw new WorkGraphError(
+        "created task did not reconcile to the canonical transition correlation",
+      );
+    }
+  }
+  await github.attachSubIssue(parent.number, candidate.id);
+  const attached = await authoritativeChildren(github, parent.number, cfg);
+  const reconciled = attached.filter((child) =>
+    matchesTransitionTask(child, title, body, cfg),
+  );
+  if (reconciled.length !== 1) {
+    throw new WorkGraphError("task attachment did not reconcile");
+  }
+  requireNoOpenChildren(attached, reconciled[0].node_id);
+  return reconciled[0];
+}
+
+async function transitionIssue(input, github, cfg) {
+  exact(input, [
+    "parentIssueNumber",
+    "parentIssueNodeId",
+    "expectedStatus",
+    "transition",
+    ...(input.transition === "advance-validation"
+      ? ["taskIssueNumber", "taskIssueNodeId", "resultCommentNodeId"]
+      : input.transition === "resume-after-human-reply"
+        ? [
+            "taskIssueNumber",
+            "taskIssueNodeId",
+            "requestCommentNodeId",
+            "humanReplyCommentNodeId",
+          ]
+        : []),
+  ], "arguments");
+  issueNumber(input.parentIssueNumber, "arguments.parentIssueNumber");
+  identifier(input.parentIssueNodeId, "arguments.parentIssueNodeId");
+  if (
+    !["start-validation", "advance-validation", "resume-after-human-reply"].includes(
+      input.transition,
+    )
+  ) {
+    throw new WorkGraphError("arguments.transition is unsupported");
+  }
+  const expectedByTransition = {
+    "start-validation": "status:new",
+    "advance-validation": "status:awaiting-validation",
+    "resume-after-human-reply": "status:awaiting-need-info",
+  };
+  if (input.expectedStatus !== expectedByTransition[input.transition]) {
+    throw new WorkGraphError("supplied expectedStatus does not match transition");
+  }
+  const [identity, parent] = await Promise.all([
+    github.identity(),
+    github.issue(input.parentIssueNumber),
+  ]);
+  verifyIdentity(identity, cfg.orchestratorId, "orchestrator");
+  validateParent(parent, input);
+  const initialStatus = statusOf(parent);
+  const children = await authoritativeChildren(github, parent.number, cfg);
+
+  if (input.transition === "start-validation") {
+    if (
+      initialStatus !== input.expectedStatus &&
+      initialStatus !== "status:awaiting-validation"
+    ) {
+      throw new WorkGraphError("stale supplied parent status");
+    }
+    const task = await ensureTransitionTask(
+      github,
+      parent,
+      children,
+      {
+        taskType: "validate-issue",
+        inputs: { validationProfile: "new-issue-default" },
       },
+      input.transition,
+      null,
+      cfg,
+      { create: initialStatus === input.expectedStatus },
+    );
+    if (initialStatus === input.expectedStatus) {
+      await replaceStatus(
+        github,
+        input,
+        input.expectedStatus,
+        "status:awaiting-validation",
+      );
+    }
+    return { taskIssueNumber: task.number, taskIssueNodeId: task.node_id, status: "status:awaiting-validation" };
+  }
+
+  issueNumber(input.taskIssueNumber, "arguments.taskIssueNumber");
+  identifier(input.taskIssueNodeId, "arguments.taskIssueNodeId");
+
+  if (input.transition === "advance-validation") {
+    identifier(input.resultCommentNodeId, "arguments.resultCommentNodeId");
+    const { child, payload } = requireCurrentChild(
+      children,
+      input,
+      "validate-issue",
+    );
+    if (child.state !== "closed") {
+      throw new WorkGraphError("accepted validation task must be closed by the external runtime");
+    }
+    const comments = await github.comments(child.number);
+    oneAssignment(comments, payload, cfg);
+    const result = oneResult(comments, payload, cfg);
+    if (result.comment.node_id !== input.resultCommentNodeId) {
+      throw new WorkGraphError("supplied Result is not the current validation Result");
+    }
+    acceptanceFor(comments, result, cfg);
+    if (result.payload.result.criteria.every((criterion) => criterion.passed)) {
+      requireNoOpenChildren(children);
+      if (
+        initialStatus !== input.expectedStatus &&
+        initialStatus !== "status:awaiting-triage"
+      ) {
+        throw new WorkGraphError("stale supplied parent status");
+      }
+      if (initialStatus === input.expectedStatus) {
+        await replaceStatus(
+          github,
+          input,
+          input.expectedStatus,
+          "status:awaiting-triage",
+        );
+      }
+      return { status: "status:awaiting-triage" };
+    }
+    if (
+      initialStatus !== input.expectedStatus &&
+      initialStatus !== "status:awaiting-need-info"
+    ) {
+      throw new WorkGraphError("stale supplied parent status");
+    }
+    const task = await ensureTransitionTask(
+      github,
+      parent,
+      children,
+      {
+        taskType: "request-info",
+        inputs: {
+          validationResultCommentNodeId: result.comment.node_id,
+        },
+      },
+      input.transition,
+      result.comment.node_id,
+      cfg,
+      { create: initialStatus === input.expectedStatus },
+    );
+    if (initialStatus === input.expectedStatus) {
+      await replaceStatus(
+        github,
+        input,
+        input.expectedStatus,
+        "status:awaiting-need-info",
+      );
+    }
+    return {
+      taskIssueNumber: task.number,
+      taskIssueNodeId: task.node_id,
+      status: "status:awaiting-need-info",
+    };
+  }
+
+  identifier(input.requestCommentNodeId, "arguments.requestCommentNodeId");
+  identifier(input.humanReplyCommentNodeId, "arguments.humanReplyCommentNodeId");
+  const { child, payload } = requireCurrentChild(
+    children,
+    input,
+    "request-info",
+  );
+  if (child.state !== "closed") {
+    throw new WorkGraphError("request-info task must be closed by the external runtime");
+  }
+  const comments = await github.comments(child.number);
+  oneAssignment(comments, payload, cfg);
+  const result = oneResult(comments, payload, cfg);
+  acceptanceFor(comments, result, cfg);
+  if (
+    result.payload.result.requestCommentNodeId !== input.requestCommentNodeId
+  ) {
+    throw new WorkGraphError("supplied parent info comment is not the accepted Result target");
+  }
+  const parentComments = await github.comments(parent.number);
+  const info = parentComments.find(
+    (comment) => comment.node_id === input.requestCommentNodeId,
+  );
+  const reply = parentComments.find(
+    (comment) => comment.node_id === input.humanReplyCommentNodeId,
+  );
+  const botIds = new Set([
+    cfg.launcherId,
+    cfg.assignmentId,
+    cfg.resultId,
+    cfg.acceptanceId,
+    cfg.orchestratorId,
+    cfg.infoId,
+    cfg.redispatchId,
+  ]);
+  if (
+    !info ||
+    info.user?.id !== cfg.infoId ||
+    !reply ||
+    reply.user?.type !== "User" ||
+    botIds.has(reply.user?.id) ||
+    Date.parse(reply.created_at) <= Date.parse(info.created_at)
+  ) {
+    throw new WorkGraphError("supplied comment is not a qualifying human reply after the info request");
+  }
+  if (
+    initialStatus !== input.expectedStatus &&
+    initialStatus !== "status:awaiting-validation"
+  ) {
+    throw new WorkGraphError("stale supplied parent status");
+  }
+  const task = await ensureTransitionTask(
+    github,
+    parent,
+    children,
+    {
+      taskType: "validate-issue",
+      inputs: { validationProfile: "new-issue-default" },
+    },
+    input.transition,
+    input.humanReplyCommentNodeId,
+    cfg,
+    { create: initialStatus === input.expectedStatus },
+  );
+  if (initialStatus === input.expectedStatus) {
+    await replaceStatus(
+      github,
+      input,
+      input.expectedStatus,
+      "status:awaiting-validation",
+    );
+  }
+  return { taskIssueNumber: task.number, taskIssueNodeId: task.node_id, status: "status:awaiting-validation" };
+}
+
+function feedbackBody(resultCommentNodeId, resultBodyDigest, feedback) {
+  const payload = { resultCommentNodeId, resultBodyDigest, feedback };
+  validateFeedback(payload);
+  return canonicalJson(FEEDBACK_MARKER, payload);
+}
+
+async function getResultSnapshot(input, github, cfg) {
+  refs(input);
+  const ctx = await context(github, input, cfg, {
+    actorId: cfg.acceptanceId,
+    actorLabel: "acceptance reporter",
+    open: true,
+  });
+  const comments = await github.comments(input.taskIssueNumber);
+  oneAssignment(comments, ctx.taskPayload, cfg);
+  const result = oneResult(comments, ctx.taskPayload, cfg);
+  return {
+    resultCommentNodeId: result.comment.node_id,
+    resultBodyDigest: resultDigest(result.comment.body),
+    workResult: result.payload,
+  };
+}
+
+async function feedbackAndRedispatch(input, github, cfg) {
+  refs(input, ["resultCommentNodeId", "resultBodyDigest", "feedback"]);
+  identifier(input.resultCommentNodeId, "arguments.resultCommentNodeId");
+  digestString(input.resultBodyDigest, "arguments.resultBodyDigest");
+  plain(input.feedback, "arguments.feedback");
+  const ctx = await context(github, input, cfg, {
+    actorId: cfg.redispatchId,
+    actorLabel: "redispatch reporter",
+    open: true,
+  });
+  const comments = await github.comments(input.taskIssueNumber);
+  const assignment = oneAssignment(comments, ctx.taskPayload, cfg);
+  const result = oneResult(comments, ctx.taskPayload, cfg);
+  if (result.comment.node_id !== input.resultCommentNodeId) {
+    throw new WorkGraphError("feedback does not target the current Result");
+  }
+  if (comments.some((comment) => structured(comment.body, ACCEPTANCE_MARKER))) {
+    throw new WorkGraphError("feedback cannot redispatch an accepted Result");
+  }
+  const currentDigest = resultDigest(result.comment.body);
+  if (currentDigest !== input.resultBodyDigest) {
+    throw new WorkGraphError("feedback targets a stale Result digest");
+  }
+  const body = feedbackBody(
+    input.resultCommentNodeId,
+    currentDigest,
+    input.feedback,
+  );
+  const existing = candidates(comments, FEEDBACK_MARKER, (candidate) =>
+    parseCanonicalJson(candidate, FEEDBACK_MARKER, validateFeedback),
+  );
+  let comment;
+  let reconciled = false;
+  let revised = false;
+  if (existing.marked.length > 0) {
+    if (
+      existing.parsed.length !== 1 ||
+      !existing.parsed[0].payload ||
+      existing.parsed[0].comment.user?.id !== cfg.redispatchId ||
+      existing.parsed[0].payload.resultCommentNodeId !==
+        input.resultCommentNodeId
+    ) {
+      throw new WorkGraphError("task has conflicting or foreign feedback");
+    }
+    comment = existing.parsed[0].comment;
+    if (comment.body === body) {
+      reconciled = true;
+    } else {
+      if (!Number.isSafeInteger(comment.id) || comment.id <= 0) {
+        throw new WorkGraphError("current feedback lacks a REST comment ID");
+      }
+      const patched = verifiedCommentWrite(
+        await github.patchComment(comment.id, body),
+        body,
+        cfg.redispatchId,
+        "feedback revision",
+      );
+      if (patched.id !== comment.id || patched.node_id !== comment.node_id) {
+        throw new WorkGraphError("revised feedback changed comment identity");
+      }
+      comment = patched;
+      revised = true;
+    }
+  } else {
+    comment = verifiedCommentWrite(
+      await github.postComment(input.taskIssueNumber, body),
+      body,
+      cfg.redispatchId,
+      "feedback",
+    );
+  }
+  return {
+    feedbackCommentNodeId: comment.node_id,
+    resultBodyDigest: currentDigest,
+    reconciled,
+    revised,
+    redispatch: {
+      status: "external-dispatch-required",
+      agentProfile: assignment.payload.agentProfile,
+      taskIssueNumber: input.taskIssueNumber,
+    },
+  };
+}
+
+const referenceProperties = {
+  taskIssueNumber: { type: "integer", minimum: 1 },
+  taskIssueNodeId: { type: "string", minLength: 1, maxLength: MAX_ID },
+  parentIssueNumber: { type: "integer", minimum: 1 },
+  parentIssueNodeId: { type: "string", minLength: 1, maxLength: MAX_ID },
+};
+
+function schema(properties, required = Object.keys(properties)) {
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties,
+    required,
+  };
+}
+
+const tools = [
+  {
+    name: "get_result_snapshot",
+    description:
+      "Return the verified current Result payload, comment node ID, and SHA-256 digest.",
+    inputSchema: schema({
+      ...referenceProperties,
+    }),
+  },
+  {
+    name: "submit_task_assignment",
+    description: "Submit or reconcile one strict task Assignment.",
+    inputSchema: schema({
+      ...referenceProperties,
+      agentProfile: { type: "string", enum: Object.values(AGENT_BY_TASK) },
     }),
   },
   {
     name: "submit_task_result",
-    description:
-      "Publish or reconcile one strict WorkGraphTaskResult/v1 comment on a " +
-      "validated WorkGraphTask without closing any Issue.",
-    inputSchema: strictObject({
-      ...ISSUE_REFERENCE_PROPERTIES,
-      workResult: {
-        oneOf: TASK_TYPES.map((taskType) => workResultSchema(taskType)),
+    description: "Create or revise the one strict Result comment; never close a task.",
+    inputSchema: schema({
+      ...referenceProperties,
+      workResult: { type: "object" },
+    }),
+  },
+  {
+    name: "submit_result_acceptance",
+    description: "Accept the exact current Result comment ID and SHA-256 digest.",
+    inputSchema: schema({
+      ...referenceProperties,
+      resultCommentNodeId: { type: "string" },
+      resultBodyDigest: { type: "string" },
+      summary: { type: "string" },
+    }),
+  },
+  {
+    name: "transition_issue",
+    description: "Expected-state parent status/task transition in one narrow operation.",
+    inputSchema: schema(
+      {
+        parentIssueNumber: referenceProperties.parentIssueNumber,
+        parentIssueNodeId: referenceProperties.parentIssueNodeId,
+        expectedStatus: { type: "string", enum: STATUS_LABELS },
+        transition: {
+          type: "string",
+          enum: [
+            "start-validation",
+            "advance-validation",
+            "resume-after-human-reply",
+          ],
+        },
+        taskIssueNumber: referenceProperties.taskIssueNumber,
+        taskIssueNodeId: referenceProperties.taskIssueNodeId,
+        resultCommentNodeId: { type: "string" },
+        requestCommentNodeId: { type: "string" },
+        humanReplyCommentNodeId: { type: "string" },
       },
+      ["parentIssueNumber", "parentIssueNodeId", "expectedStatus", "transition"],
+    ),
+  },
+  {
+    name: "post_parent_info_request",
+    description: "Post or reconcile one parent info request from a validation Result.",
+    inputSchema: schema({
+      ...referenceProperties,
+      validationTaskIssueNumber: { type: "integer", minimum: 1 },
+      validationTaskIssueNodeId: { type: "string" },
+      validationResultCommentNodeId: { type: "string" },
+    }),
+  },
+  {
+    name: "feedback_and_redispatch",
+    description: "Post idempotent Result feedback and return a bounded external redispatch request.",
+    inputSchema: schema({
+      ...referenceProperties,
+      resultCommentNodeId: { type: "string" },
+      resultBodyDigest: { type: "string" },
+      feedback: { type: "string" },
     }),
   },
 ];
 
-function toolResult(result) {
-  return {
-    content: [{ type: "text", text: JSON.stringify(result) }],
-    structuredContent: result,
-    isError: false,
-  };
+async function callTool(name, args) {
+  const cfg = config();
+  const github = new GitHub(cfg);
+  if (name === "get_result_snapshot") return getResultSnapshot(args, github, cfg);
+  if (name === "submit_task_assignment") return submitAssignment(args, github, cfg);
+  if (name === "submit_task_result") return submitResult(args, github, cfg);
+  if (name === "submit_result_acceptance") return submitAcceptance(args, github, cfg);
+  if (name === "transition_issue") return transitionIssue(args, github, cfg);
+  if (name === "post_parent_info_request") return postInfo(args, github, cfg);
+  if (name === "feedback_and_redispatch") return feedbackAndRedispatch(args, github, cfg);
+  throw new WorkGraphError(`unknown tool ${name}`);
 }
 
-function toolError(error) {
-  return {
-    content: [{ type: "text", text: error.message }],
-    isError: true,
-  };
-}
-
-async function handleRequest(message) {
-  switch (message.method) {
-    case "initialize":
-      return {
-        protocolVersion:
-          message.params?.protocolVersion ?? "2025-06-18",
-        capabilities: { tools: { listChanged: false } },
-        serverInfo: {
-          name: "drasi-workgraph-task-reporter",
-          version: "2.0.0",
-        },
-      };
-    case "ping":
-      return {};
-    case "tools/list":
-      return { tools: TOOLS };
-    case "tools/call": {
-      const tool = TOOLS.find(
-        (candidate) => candidate.name === message.params?.name,
-      );
-      if (tool === undefined) {
-        return toolError(new ReporterError("unknown tool"));
-      }
-      try {
-        if (tool.name === "report_progress") {
-          validateProgressInput(message.params.arguments);
-        } else {
-          validateResultInputShape(message.params.arguments);
-        }
-        const config = loadConfig();
-        const reporter = new TaskReporter(
-          config,
-          new GitHubClient(config),
-        );
-        const result =
-          tool.name === "report_progress"
-            ? await reporter.reportProgress(message.params.arguments)
-            : await reporter.submitResult(message.params.arguments);
-        return toolResult(result);
-      } catch (error) {
-        return toolError(
-          error instanceof ReporterError
-            ? error
-            : new ReporterError("WorkGraphTask reporter failed"),
-        );
-      }
-    }
-    default:
-      throw new ReporterError(`unsupported MCP method: ${message.method}`);
+async function rpc(message) {
+  if (message.method === "initialize") {
+    return {
+      protocolVersion: "2025-06-18",
+      capabilities: { tools: {} },
+      serverInfo: { name: "drasi-workgraph-reporter", version: "2.0.0" },
+    };
   }
+  if (message.method === "ping") return {};
+  if (message.method === "tools/list") return { tools };
+  if (message.method === "tools/call") {
+    try {
+      const structuredContent = await callTool(
+        message.params?.name,
+        message.params?.arguments ?? {},
+      );
+      return {
+        content: [{ type: "text", text: JSON.stringify(structuredContent) }],
+        structuredContent,
+        isError: false,
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: error.message }],
+        isError: true,
+      };
+    }
+  }
+  throw new WorkGraphError(`unsupported method ${message.method}`);
 }
 
-async function main() {
-  const lines = readline.createInterface({
-    input: process.stdin,
-    crlfDelay: Infinity,
-  });
-  for await (const line of lines) {
-    if (line.trim().length === 0) {
-      continue;
-    }
-    let id = null;
+if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+  const lines = readline.createInterface({ input: process.stdin });
+  lines.on("line", async (line) => {
+    let request;
     try {
-      const message = JSON.parse(line);
-      id = message.id ?? null;
-      if (id === null) {
-        continue;
+      request = JSON.parse(line);
+      if (request.id === undefined) {
+        return;
       }
-      const result = await handleRequest(message);
+      const result = await rpc(request);
       process.stdout.write(
-        `${JSON.stringify({ jsonrpc: "2.0", id, result })}\n`,
+        `${JSON.stringify({ jsonrpc: "2.0", id: request.id, result })}\n`,
       );
     } catch (error) {
       process.stdout.write(
         `${JSON.stringify({
           jsonrpc: "2.0",
-          id,
-          error: {
-            code: -32602,
-            message:
-              error instanceof ReporterError
-                ? error.message
-                : "invalid request",
-          },
+          id: request?.id ?? null,
+          error: { code: -32603, message: error.message },
         })}\n`,
       );
     }
-  }
-}
-
-if (
-  process.argv[1] !== undefined &&
-  path.resolve(process.argv[1]) === REPORTER_FILE_PATH
-) {
-  main().catch(() => {
-    process.exitCode = 1;
   });
 }

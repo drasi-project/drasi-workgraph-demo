@@ -6,257 +6,241 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 AGENTS = ROOT / ".github" / "agents"
 REPORTER = ROOT / ".github" / "mcp" / "workgraph-reporter.mjs"
-VALIDATION_PROFILES = (
-    ROOT / ".github" / "workgraph" / "profiles" / "issue-validation"
+PROFILE = (
+    ROOT
+    / ".github"
+    / "workgraph"
+    / "profiles"
+    / "issue-validation"
+    / "new-issue-default.md"
 )
 DOC = ROOT / "docs" / "workgraph-result-reporter.md"
 README = ROOT / "README.md"
-PROFILE_TASK_TYPES = {
-    "issue-validator": "issue-validation",
-    "issue-risk-profiler": "issue-risk-profile",
-}
-PROFILE_TOOLS = {
+
+EXPECTED_TOOLS = {
+    "issue-orchestrator": ["github/issue_read", "workgraph/transition_issue"],
+    "issue-assigner": [
+        "github/issue_read",
+        "workgraph/submit_task_assignment",
+    ],
     "issue-validator": [
-        "read",
         "github/issue_read",
-        "workgraph/report_progress",
         "workgraph/submit_task_result",
     ],
-    "issue-risk-profiler": [
+    "issue-info-requester": [
         "github/issue_read",
-        "workgraph/report_progress",
+        "workgraph/post_parent_info_request",
         "workgraph/submit_task_result",
+    ],
+    "workgraph-result-acceptor": [
+        "github/issue_read",
+        "workgraph/get_result_snapshot",
+        "workgraph/submit_result_acceptance",
+        "workgraph/feedback_and_redispatch",
     ],
 }
 
+IDENTITY_KEYS = [
+    "COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID",
+    "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
+    "COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID",
+    "COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID",
+    "COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID",
+    "COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID",
+    "COPILOT_MCP_WORKGRAPH_REDISPATCH_REPORTER_USER_ID",
+]
 
-class WorkGraphAgentProfilesTest(unittest.TestCase):
+
+class WorkGraphProfilesTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.profiles = {
-            path.stem.removesuffix(".agent"): path.read_text(encoding="utf-8")
+        cls.agents = {
+            path.name.removesuffix(".agent.md"): path.read_text(encoding="utf-8")
             for path in AGENTS.glob("*.agent.md")
         }
         cls.reporter = REPORTER.read_text(encoding="utf-8")
-        cls.validation_profiles = {
-            path.stem: path.read_text(encoding="utf-8")
-            for path in VALIDATION_PROFILES.glob("*.md")
-        }
+        cls.profile = PROFILE.read_text(encoding="utf-8")
         cls.doc = DOC.read_text(encoding="utf-8")
         cls.readme = README.read_text(encoding="utf-8")
 
-    def test_exactly_two_repository_defined_profiles_exist(self):
-        self.assertEqual(set(self.profiles), set(PROFILE_TASK_TYPES))
-        self.assertEqual(
-            {path.name for path in AGENTS.glob("*.agent.md")},
-            {
-                "issue-validator.agent.md",
-                "issue-risk-profiler.agent.md",
-            },
-        )
-
-    def test_profiles_are_user_invocable_and_least_privileged(self):
-        for name, profile in self.profiles.items():
-            with self.subTest(profile=name):
-                frontmatter = profile.split("---", 2)[1]
+    def test_exactly_five_non_user_invocable_profiles(self):
+        self.assertEqual(set(self.agents), set(EXPECTED_TOOLS))
+        self.assertNotIn("risk-profiler", "\n".join(self.agents.values()))
+        for name, content in self.agents.items():
+            with self.subTest(name=name):
+                frontmatter = content.split("---", 2)[1]
                 self.assertRegex(frontmatter, rf"(?m)^name: {name}$")
-                self.assertRegex(frontmatter, r"(?m)^description: \S")
-                self.assertRegex(
-                    frontmatter, r"(?m)^target: github-copilot$"
-                )
-                self.assertRegex(
-                    frontmatter, r"(?m)^user-invocable: true$"
-                )
+                self.assertRegex(frontmatter, r"(?m)^user-invocable: false$")
                 self.assertRegex(
                     frontmatter, r"(?m)^disable-model-invocation: true$"
                 )
-                tools = re.findall(r"(?m)^  - (\S+)$", frontmatter)
-                self.assertEqual(tools, PROFILE_TOOLS[name])
-                self.assertIn(
-                    ".github/mcp/workgraph-reporter.mjs", frontmatter
-                )
-                for setting in [
-                    "secrets.COPILOT_MCP_WORKGRAPH_TOKEN",
-                    "vars.COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID",
-                    "vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID",
-                ]:
-                    self.assertIn(setting, frontmatter)
+                self.assertIn("target: github-copilot", frontmatter)
+                tools_block = frontmatter.split("tools:", 1)[1].split(
+                    "mcp-servers:", 1
+                )[0]
+                tools = re.findall(r"(?m)^  - (\S+)$", tools_block)
+                self.assertEqual(tools, EXPECTED_TOOLS[name])
+                self.assertNotIn("github/issue_write", frontmatter)
+                self.assertNotIn("github/add_issue_comment", frontmatter)
+
+    def test_profiles_pin_type_and_separate_identities(self):
+        for name, content in self.agents.items():
+            with self.subTest(name=name):
                 self.assertIn(
                     "COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID: "
                     "IT_kwDOCX0YF84CKGIJ",
-                    frontmatter,
-                )
-                self.assertNotIn("github/add_issue_comment", frontmatter)
-                self.assertNotIn("github/issue_write", frontmatter)
-
-    def test_profiles_follow_task_parent_work_result_flow(self):
-        for name, task_type in PROFILE_TASK_TYPES.items():
-            profile = self.profiles[name]
-            with self.subTest(profile=name):
-                self.assertIn("taskIssueNumber", profile)
-                self.assertIn("taskIssueNodeId", profile)
-                self.assertIn("method: get_parent", profile)
-                self.assertIn("native parent relation is authoritative", profile)
-                self.assertRegex(
-                    profile,
-                    rf'"assignmentId": "{task_type}:<parent node ID>"',
+                    content,
                 )
                 self.assertIn(
-                    f'"taskType": "{task_type}"',
-                    profile,
+                    "COPILOT_MCP_WORKGRAPH_TOKEN: "
+                    "${{ secrets.COPILOT_MCP_WORKGRAPH_TOKEN }}",
+                    content,
                 )
-                self.assertRegex(
-                    profile,
-                    r"Call `workgraph/submit_task_result` exactly once",
-                )
-                self.assertIn("never closes any Issue", profile)
-                self.assertRegex(
-                    profile, r"Never\s+write to the parent Issue"
-                )
+                for key in IDENTITY_KEYS:
+                    self.assertIn(key, content)
 
-    def test_profiles_preserve_typed_work_contracts(self):
-        validation = self.profiles["issue-validator"]
-        self.assertIn("validationProfile", validation)
-        self.assertIn("criteria", validation)
-        self.assertIn('"criterion"', validation)
-        self.assertIn('"passed"', validation)
-        self.assertIn('"evidence"', validation)
-        self.assertRegex(validation, r"Preserve each criterion string\s+exactly")
+    def test_task_contract_is_exact_and_closed(self):
+        for text in [self.doc, self.reporter]:
+            self.assertIn("WorkGraphTask/v1", text)
+            self.assertIn("validate-issue", text)
+            self.assertIn("request-info", text)
+            self.assertIn("new-issue-default", text)
+            self.assertIn("validationResultCommentNodeId", text)
+        self.assertIn("minimal canonical YAML grammar", self.doc)
+        self.assertIn("There is no generic task registry", self.doc)
+        self.assertIn('const TASK_TYPE_NAME = "WorkGraphTask"', self.reporter)
+        self.assertNotIn("issue-risk-profile", self.reporter)
 
-        risk = self.profiles["issue-risk-profiler"]
-        self.assertIn("riskProfile", risk)
-        self.assertIn("dimensions", risk)
-        self.assertIn('"dimension"', risk)
-        self.assertIn('"score"', risk)
-        self.assertIn('"rationale"', risk)
-        self.assertIn("higher score is riskier", risk)
-        self.assertIn("0 through 100", risk)
+    def test_exact_comment_contracts_and_result_fields(self):
+        for marker in [
+            "WorkGraphTaskAssignment/v1",
+            "WorkGraphTaskResult/v1",
+            "WorkGraphTaskResultAcceptance/v1",
+        ]:
+            self.assertIn(marker, self.doc)
+            self.assertIn(marker, self.reporter)
+        self.assertIn('"agentProfile": "issue-validator"', self.doc)
+        self.assertIn("There is no `assignmentId`", self.doc)
+        self.assertNotIn('"assignmentId"', self.reporter)
+        for field in [
+            "requestCommentNodeId",
+            "resultCommentNodeId",
+            "resultBodyDigest",
+        ]:
+            self.assertIn(field, self.doc)
+            self.assertIn(field, self.reporter)
+        self.assertIn("sha256:<64 lowercase hex>", self.reporter)
 
-    def test_task_body_is_raw_assignment_json_only(self):
-        for name, profile in self.profiles.items():
-            with self.subTest(profile=name):
-                self.assertIn("body as raw JSON", profile)
-                self.assertIn(
-                    "no marker, Markdown fence, envelope, or prose", profile
-                )
-                self.assertIn(
-                    "exactly `assignmentId`, `agentProfile`,\n"
-                    "   `priority`, `taskType`, and `task`",
-                    profile,
-                )
-        self.assertIn(
-            "body containing only one strict WorkGraphAssignment JSON object",
-            self.doc,
+    def test_reporter_exposes_only_narrow_tools(self):
+        names = re.findall(
+            r'(?m)^    name: "(get_result_snapshot|submit_task_assignment|submit_task_result|'
+            r'submit_result_acceptance|transition_issue|'
+            r'post_parent_info_request|feedback_and_redispatch)"',
+            self.reporter,
         )
-
-    def test_exact_result_envelope_has_no_collapsed_or_human_wrapper(self):
-        sources = {**self.profiles, "documentation": self.doc, "readme": self.readme}
-        for name, content in sources.items():
-            with self.subTest(source=name):
-                self.assertIn(
-                    "WorkGraphTaskResult/v1\n\n```json\n{\n",
-                    content,
-                )
-                self.assertRegex(
-                    content,
-                    r"WorkGraphTaskResult/v1\n\n```json\n\{\n"
-                    r"[\s\S]*\n\}\n```",
-                )
-                self.assertNotIn("<details>\n<summary>", content)
-                self.assertNotIn("<summary>WorkGraph Result</summary>", content)
-
-    def test_reporter_has_only_task_comment_mutation_routes(self):
-        self.assertIn('"report_progress"', self.reporter)
-        self.assertIn('"submit_task_result"', self.reporter)
-        self.assertNotIn('name: "report_result"', self.reporter)
-        self.assertNotRegex(self.reporter, r'request\(\s*"PATCH"')
-        self.assertNotRegex(self.reporter, r'request\(\s*"PUT"')
-        self.assertNotRegex(self.reporter, r'request\(\s*"DELETE"')
+        self.assertEqual(set(names), {
+            "get_result_snapshot",
+            "submit_task_assignment",
+            "submit_task_result",
+            "submit_result_acceptance",
+            "transition_issue",
+            "post_parent_info_request",
+            "feedback_and_redispatch",
+        })
+        self.assertNotIn("report_progress", self.reporter)
+        self.assertNotIn("issue-risk", self.reporter)
+        self.assertIn('patchComment(id, body)', self.reporter)
+        self.assertIn("ensureTransitionTask", self.reporter)
+        self.assertIn("findUnattachedTransitionTask", self.reporter)
         self.assertNotIn("state_reason", self.reporter)
-        self.assertNotIn("/labels", self.reporter)
-        self.assertRegex(
-            self.reporter,
-            r'createComment\(taskIssueNumber, body, ambiguousWrite = false\)',
-        )
 
-    def test_reporter_requires_exact_type_and_identities(self):
+    def test_orchestrator_state_machine_and_reconciliation_are_explicit(self):
+        orchestrator = self.agents["issue-orchestrator"]
         for value in [
-            'const TASK_TYPE_NAME = "WorkGraphTask"',
-            "COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID",
-            "COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID",
-            "COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID",
+            "status:new",
+            "status:awaiting-validation",
+            "status:awaiting-need-info",
+            "status:awaiting-triage",
+            "start-validation",
+            "advance-validation",
+            "resume-after-human-reply",
+            "stale supplied status",
+            "unexpected open sibling",
+            "no-op",
         ]:
-            self.assertIn(value, self.reporter)
-        self.assertIn("exact WorkGraphTask type ID and name", self.reporter)
+            self.assertIn(value, orchestrator)
         self.assertIn(
-            "assignment.assignmentId must equal "
-            "taskType:authoritativeParentNodeId",
-            self.reporter,
+            "reconcile expected state\nimmediately before writing", self.doc
         )
-        self.assertIn('"assignmentId"', self.reporter)
-        self.assertIn('"message"', self.reporter)
+        self.assertIn("does not provide a\ntransaction", self.doc)
+        self.assertIn("greatest Issue number", self.doc)
+        self.assertIn("canonical title/body correlation", self.doc)
+        self.assertIn("without creating another task", self.doc)
+        self.assertIn("never type or untype an Issue", orchestrator)
+        self.assertIn("initial create request", orchestrator)
+        self.assertIn("No tool exposes an Issue Type", self.doc)
 
-    def test_progress_and_retry_guards_are_documented(self):
-        for text in [
-            "4096 UTF-8 bytes",
-            "carriage returns",
-            "legacy WorkGraph markers",
-            "multiple structured",
-            "foreign-authored",
-            "explicit POST failure",
-            "exactly one comment",
-            "A second POST is never sent",
-            "open or closed",
-        ]:
-            self.assertIn(text, self.doc)
-        self.assertRegex(self.doc, r"Markdown\s+fences")
-        self.assertRegex(self.doc, r"Ordinary\s+progress is ignored")
+    def test_worker_and_acceptor_provenance_rules(self):
+        validator = self.agents["issue-validator"]
+        self.assertIn("native parent; that relation is\nauthoritative", validator)
+        self.assertIn('outcome:\n"succeeded"', validator)
+        self.assertIn("PATCHes the existing canonical Result", validator)
 
-    def test_shared_prototype_identity_is_explicit(self):
-        self.assertIn(
-            "creator and reporter IDs may intentionally\n"
-            "be the same stable bot identity",
-            self.doc,
+        requester = self.agents["issue-info-requester"]
+        self.assertIn("mentions the parent's submitter", requester)
+        self.assertIn("requestCommentNodeId", requester)
+
+        acceptor = self.agents["workgraph-result-acceptor"]
+        self.assertIn("exact current Result", acceptor)
+        self.assertIn("SHA-256", acceptor)
+        self.assertIn("submit no Acceptance", acceptor)
+        self.assertIn("external WorkGraph dispatcher", acceptor)
+        self.assertIn("PATCHes the one feedback comment", acceptor)
+
+    def test_fail_closed_race_and_feedback_revision_are_documented(self):
+        self.assertIn("Unavoidable REST race and remediation", self.doc)
+        self.assertIn("performs no compensating delete", self.doc)
+        self.assertIn("Manual remediation is required", self.doc)
+        self.assertIn("Feedback is bound to the exact current Result digest", self.doc)
+        self.assertIn("resultBodyDigest", self.reporter)
+        self.assertIn("Result/Acceptance race left the task inconsistent", self.reporter)
+        self.assertNotIn("deleteComment", self.reporter)
+
+    def test_result_and_acceptance_never_close_task(self):
+        sources = "\n".join(
+            [self.reporter, self.doc, self.readme, *self.agents.values()]
         )
-        self.assertIn("separate configuration checks", self.doc)
+        self.assertIn("A Result never closes a task", self.readme)
+        self.assertIn("It never changes Issue state and never closes the task", self.doc)
+        self.assertNotRegex(self.reporter, r'["`]state["`]\s*:')
+        self.assertNotIn("closeIssue", self.reporter)
+        self.assertIn("external WorkGraph runtime may close", sources)
 
-    def test_repository_validation_profile_is_canonical(self):
-        self.assertEqual(
-            set(self.validation_profiles),
-            {"new-issue-default"},
-        )
-        profile = self.validation_profiles["new-issue-default"]
-        self.assertIn("## Guidance\n\n", profile)
+    def test_core_graph_contract_names_are_exact(self):
+        for value in (
+            "`WorkGraphTask`: `taskType`, `inputs`",
+            "`WorkGraphTaskAssignment`: `agentProfile`",
+            "`WorkGraphTaskResult`: computed `bodyDigest`",
+            "`WorkGraphTaskResultAcceptance`: `resultCommentNodeId`",
+            "`ASSIGNMENT_FOR`",
+            "`RESULT_FOR`",
+            "`ACCEPTS_RESULT`",
+            "`COMMENT_ON`",
+            "`resultBodyDigest` equals that Result node's `bodyDigest`",
+        ):
+            self.assertIn(value, self.doc)
+
+    def test_repository_validation_profile_is_unchanged_two_criteria(self):
         self.assertTrue(
-            profile.endswith(
+            self.profile.endswith(
                 "## Criteria\n\n"
                 "1. The Issue has a non-empty title\n"
                 "2. The Issue body is present\n"
             )
         )
-        self.assertNotIn("\r", profile)
-
-    def test_runtime_has_no_legacy_parent_local_contract(self):
-        runtime = "\n".join([*self.profiles.values(), self.reporter])
-        for obsolete in [
-            "WorkGraphEvent/v1",
-            "WorkGraphResult/v1",
-            "WorkGraphAssignment/v1",
-            "report_completion",
-            "projectItemNodeId",
-            "routeId",
-            "responsibilityId",
-            "executionId",
-            "expectedEventId",
-            "AwaitingRouting",
-            "updateProjectV2ItemFieldValue",
-        ]:
-            with self.subTest(obsolete=obsolete):
-                # Marker strings exist only in the reporter's reject list.
-                if obsolete.startswith("WorkGraph"):
-                    self.assertEqual(runtime.count(obsolete), 1)
-                else:
-                    self.assertNotIn(obsolete, runtime)
+        self.assertEqual(self.profile.count("\n1. "), 1)
+        self.assertEqual(self.profile.count("\n2. "), 1)
+        self.assertNotIn("\r", self.profile)
 
 
 if __name__ == "__main__":
