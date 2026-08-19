@@ -176,6 +176,9 @@ class WorkGraphProfilesTest(unittest.TestCase):
         self.assertIn("greatest Issue number", self.doc)
         self.assertIn("canonical title/body correlation", self.doc)
         self.assertIn("without creating another task", self.doc)
+        self.assertIn("never type or untype an Issue", orchestrator)
+        self.assertIn("initial create request", orchestrator)
+        self.assertIn("No tool exposes an Issue Type", self.doc)
 
     def test_worker_and_acceptor_provenance_rules(self):
         validator = self.agents["issue-validator"]

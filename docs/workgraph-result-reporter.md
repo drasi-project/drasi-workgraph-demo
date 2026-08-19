@@ -249,6 +249,14 @@ other open child fail closed. A retry therefore completes a partial
 create/attach/status sequence without creating another task or leaving the
 known correlated task orphaned.
 
+Task creation always includes the configured `WorkGraphTask` Issue Type in the
+initial create request. Only a create response and later authoritative reads
+with the exact configured type ID and name are adoptable. A correlated Issue
+created without that type, with another type, or later typed/untyped is never
+attached, assigned, commented on, or retyped by these tools; creation retry
+replaces it with a fresh correctly typed task. No tool exposes an Issue Type
+mutation route.
+
 `post_parent_info_request` verifies the request task and referenced current
 validation Result, mentions the parent submitter, lists only failed criteria,
 and reconciles by validation Result comment node ID. It permits later cycles

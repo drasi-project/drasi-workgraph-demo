@@ -62,6 +62,10 @@ Apply exactly this state machine:
 The transition tool reconciles expected state immediately before writing and
 encapsulates task creation, native child attachment, and status replacement as
 one narrow MCP operation. Never call a generic write tool, never close a task,
-and never change arguments on retry. After an ambiguous create/attach/status
+never type or untype an Issue, and never change arguments on retry. Every task
+must be created with the configured Issue Type in its initial create request.
+An incorrectly created correlated Issue is rejected and replaced with a new
+correctly typed task; it is never retyped or used after comments exist. After
+an ambiguous create/attach/status
 failure, retry the exact same call so its canonical transition correlation can
 finish the partial operation without a duplicate.

@@ -148,6 +148,7 @@ async function fakeGitHub({
   comments = {},
   parentComments = [],
   failures = {},
+  incorrectlyTypedCreates = 0,
 } = {}) {
   const state = {
     identityId: IDS.result,
@@ -158,6 +159,8 @@ async function fakeGitHub({
     nextIssue: 30,
     nextComment: 300,
     failures: { ...failures },
+    incorrectlyTypedCreates,
+    createPayloads: [],
     hooks: {},
     subIssueRepositoryUrl:
       "https://api.github.com/repos/drasi-project/drasi-workgraph-demo",
@@ -320,6 +323,7 @@ async function fakeGitHub({
     ) {
       if (fail("create", "before", response)) return;
       const payload = await jsonBody(request);
+      state.createPayloads.push(payload);
       const task = makeTask({
         number: state.nextIssue,
         nodeId: `I_created_${state.nextIssue}`,
@@ -332,6 +336,10 @@ async function fakeGitHub({
       });
       task.title = payload.title;
       task.body = payload.body;
+      if (state.incorrectlyTypedCreates > 0) {
+        task.type = null;
+        state.incorrectlyTypedCreates -= 1;
+      }
       state.nextIssue += 1;
       state.tasks.set(task.number, task);
       state.comments.set(task.number, []);
@@ -1155,6 +1163,62 @@ test("transition retries reconcile partial create, attach, and status writes", a
       },
     );
   }
+});
+
+test("transition birth-types tasks and replaces an incorrectly typed creation", async () => {
+  await withFake(
+    {
+      tasks: [],
+      children: [],
+      incorrectlyTypedCreates: 1,
+    },
+    async (fake) => {
+      const input = {
+        parentIssueNumber: PARENT_NUMBER,
+        parentIssueNodeId: PARENT_NODE,
+        expectedStatus: "status:new",
+        transition: "start-validation",
+      };
+      const rejected = await runTool(
+        fake,
+        IDS.orchestrator,
+        "transition_issue",
+        input,
+      );
+      assert.equal(rejected.result.isError, true);
+      assert.match(rejected.result.content[0].text, /did not reconcile/);
+      assert.equal(fake.state.tasks.get(30).type, null);
+      assert.equal(fake.state.comments.get(30).length, 0);
+      assert.deepEqual(fake.state.children, []);
+
+      const replaced = await runTool(
+        fake,
+        IDS.orchestrator,
+        "transition_issue",
+        input,
+      );
+      assert.equal(replaced.result.isError, false);
+      assert.equal(fake.state.tasks.get(30).type, null);
+      assert.deepEqual(fake.state.tasks.get(31).type, {
+        name: "WorkGraphTask",
+        node_id: TYPE_ID,
+      });
+      assert.deepEqual(fake.state.children, [31]);
+      assert.equal(fake.state.createPayloads.length, 2);
+      assert.equal(
+        fake.state.createPayloads.every(
+          (payload) => payload.type === "WorkGraphTask",
+        ),
+        true,
+      );
+      assert.equal(
+        fake.state.operations.some(
+          (operation) => /^PATCH \/repos\/[^/]+\/[^/]+\/issues\/\d+$/.test(operation),
+        ),
+        false,
+      );
+    },
+  );
 });
 
 test("status mutation re-reads expected status and preserves concurrent labels", async () => {
