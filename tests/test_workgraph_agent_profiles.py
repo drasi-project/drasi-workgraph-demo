@@ -316,6 +316,16 @@ class WorkGraphProfilesTest(unittest.TestCase):
         self.assertIn("external WorkGraph runtime may close", sources)
 
     def test_core_graph_contract_names_are_exact(self):
+        self.assertIn(
+            "093a1cbc3c45cb52aedfc6f9f84f7a8dde50fe92",
+            self.doc,
+        )
+        self.assertIn(
+            "d42e07952f6b197d3379cee3dffdf0c8f4e24baf",
+            self.doc,
+        )
+        self.assertIn("activeLeaseIds", self.doc)
+        self.assertIn("dispatchableTasks", self.doc)
         for value in (
             "`WorkGraphTask`: `taskType`, `inputs`",
             "`WorkGraphTaskAssignment`: `agentProfile`, and v2 `workerId`",

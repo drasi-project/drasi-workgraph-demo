@@ -7,6 +7,15 @@ create them. There is no generic task registry, arbitrary repository selector,
 arbitrary comment body, Lease writer, or generic mutation tool. All parsers
 reject unknown fields and noncanonical bytes.
 
+The current process authority is `drasi-project/team` commit
+`093a1cbc3c45cb52aedfc6f9f84f7a8dde50fe92`, which supersedes the original
+queue-design commit `d42e07952f6b197d3379cee3dffdf0c8f4e24baf`. Its
+`activeLeaseIds` and full `dispatchableTasks` refinement belongs to the Core
+Source capacity query and stateful dispatcher. This demo consumes the resulting
+exact Assignment and Lease dispatch envelope, so that refinement requires no
+Source, dispatcher, or expiry writer here. Wire formatting remains aligned with
+Core PR #746 head `43f28285d67bb2bc3aecb22c23df6c042d098664`.
+
 ## Task body: `WorkGraphTask/v1`
 
 A task is a native child Issue with exact configured Issue Type node ID and

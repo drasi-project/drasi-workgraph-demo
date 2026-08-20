@@ -32,4 +32,5 @@ pre/post reconciliation; detected races require manual remediation and are
 never hidden by deletion.
 
 See [the reporter contract](docs/workgraph-result-reporter.md) for exact schemas,
-identity configuration, lifecycle rules, and validation commands.
+identity configuration, lifecycle rules, current team/Core authority, and
+validation commands.
