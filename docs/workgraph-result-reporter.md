@@ -1,9 +1,11 @@
 # WorkGraph agent and reporter contract
 
-This is a breaking, closed contract for `drasi-project/drasi-workgraph-demo`.
-There is no generic task registry, legacy marker support, compatibility parser,
-arbitrary repository selector, arbitrary comment body, or generic mutation
-tool. All parsers reject unknown fields and noncanonical bytes.
+This is a closed contract for `drasi-project/drasi-workgraph-demo`. New writes
+use worker-queue Assignment/v2 and lease-bound Result/v2. Historical
+Assignment/v1 and Result/v1 remain readable, but worker-queue reporters never
+create them. There is no generic task registry, arbitrary repository selector,
+arbitrary comment body, Lease writer, or generic mutation tool. All parsers
+reject unknown fields and noncanonical bytes.
 
 ## Task body: `WorkGraphTask/v1`
 
@@ -61,41 +63,112 @@ WorkGraph: validate-issue parent #<number> human-reply <reply node ID>
 The fixed parent number plus immutable triggering node ID makes later cycles
 distinct. A retry accepts only one exact open type/creator/title/body match.
 
+## Worker capacity: `.github/workgraph/workers.yaml`
+
+```yaml
+version: 1
+workers:
+  - workerId: issue-validation-01
+    agentProfile: issue-validator
+    slots: 1
+    leaseDuration: PT30M
+  - workerId: issue-information-01
+    agentProfile: issue-info-requester
+    slots: 1
+    leaseDuration: PT30M
+```
+
+This file is desired capacity only; Assignments and Leases remain comments.
+The reporter fetches it from the fixed repository's `main` ref and fails closed
+if it is unavailable or malformed. Each worker has exactly `workerId`,
+`agentProfile`, `slots`, and `leaseDuration`. Worker IDs are unique 1-64
+character ASCII identifiers using letters, digits, `.`, `_`, or `-`; profiles
+are one of the two repository profiles; slots are 1-16; and duration is a
+positive whole-unit ISO-8601 duration no greater than 24 hours. `workerId` is
+deliberately distinct from `agentProfile`.
+
 ## Task comments
 
 All JSON contracts use a lowercase `json` fence, two-space JSON indentation,
 the displayed property order, and exactly one LF after the closing fence.
 
-### Assignment
+### Assignment/v2
 
-Assignment is task-only and has exactly one field:
+Assignment is durable task ownership by a configured worker queue. It does not
+consume a slot or launch a worker:
 
 ````text
-WorkGraphTaskAssignment/v1
+WorkGraphTaskAssignment/v2
 
 ```json
 {
-  "agentProfile": "issue-validator"
+  "agentProfile": "issue-validator",
+  "workerId": "issue-validation-01"
 }
 ```
 ````
 
-The only other value is `issue-info-requester`. Mapping is fixed:
-`validate-issue` → `issue-validator`; `request-info` →
-`issue-info-requester`. The configured Assignment reporter author is verified.
+The other configured pair is `issue-info-requester` /
+`issue-information-01`. Mapping is fixed: `validate-issue` →
+`issue-validator`; `request-info` → `issue-info-requester`. Selection from the
+trusted compatible-worker envelope is lowest queue depth, then
+lexicographically lowest worker ID. The reporter repeats selection, fetches
+authoritative worker config, and verifies the configured reporter. An identical
+v2 reconciles; conflicting v1/v2, foreign, malformed, or stale state is rejected.
+Canonical `WorkGraphTaskAssignment/v1` remains readable by historical lifecycle
+paths.
 
-### Result
+### Lease/v1
 
-Common Result fields are exactly `taskType`, `outcome`, `summary`, and
-`result`. There is no `assignmentId`. Outcome is `succeeded`, `failed`, or
-`blocked`. A completed validation is `succeeded` even when criteria fail.
+Only the external stateful dispatcher Reaction writes a Lease. No agent or MCP
+tool in this repository can create one:
 
 ````text
-WorkGraphTaskResult/v1
+WorkGraphTaskLease/v1
+
+```json
+{
+  "leaseId": "lease-001",
+  "assignmentCommentNodeId": "IC_assignment",
+  "workerId": "issue-validation-01",
+  "slotId": "issue-validation-01/1",
+  "acquiredAt": "2026-08-19T00:00:00Z",
+  "expiresAt": "2026-08-19T00:30:00Z"
+}
+```
+````
+
+A Lease is active only while task, exact Assignment/v2, configured worker and
+enabled slot agree; it is the unique newest Lease; current time precedes
+`expiresAt`; and no Result/v2 or matching trusted expiration ends it. Duplicate
+acquisitions fail closed. The reporter reads, but never writes:
+
+````text
+WorkGraphTaskLeaseExpiration/v1
+
+```json
+{
+  "leaseCommentNodeId": "IC_lease",
+  "leaseId": "lease-001",
+  "expiredAt": "2026-08-19T00:30:00Z",
+  "reason": "Lease deadline reached."
+}
+```
+````
+
+### Result/v2
+
+New Result fields are exactly `taskType`, `leaseId`, `outcome`, `summary`, and
+`result`. There is no `assignmentId` or wire `bodyDigest`. Outcome is
+`succeeded`, `failed`, or `blocked`.
+
+````text
+WorkGraphTaskResult/v2
 
 ```json
 {
   "taskType": "validate-issue",
+  "leaseId": "lease-001",
   "outcome": "succeeded",
   "summary": "Validated both required fields.",
   "result": {
@@ -124,11 +197,12 @@ A request-info Result records the exact parent comment and its creation time,
 needed to require a later human reply:
 
 ````text
-WorkGraphTaskResult/v1
+WorkGraphTaskResult/v2
 
 ```json
 {
   "taskType": "request-info",
+  "leaseId": "lease-info-001",
   "outcome": "succeeded",
   "summary": "Requested the missing issue information.",
   "result": {
@@ -141,10 +215,19 @@ WorkGraphTaskResult/v1
 The reporter verifies `requestCommentNodeId` against the configured-author
 parent comment. Resume logic reads that comment's authoritative creation time.
 
-The Result reporter POSTs when no Result exists and PATCHes the one canonical
-configured-author Result comment when requested canonical content changes.
-It rejects multiple, malformed, foreign-authored, wrong-task, or already
-accepted Results. It never changes Issue state and never closes the task.
+Canonical `WorkGraphTaskResult/v1` remains readable and is reviewed and accepted
+identically to Result/v2. The reporter writes only v2. Before POST or PATCH it revalidates
+task/parent/type/provenance, exact Assignment/v2, worker config, exact Lease and
+every field, worker/slot compatibility, deadline, Result/Expiration ends, newer
+conflicting state, destination, and races. Expired, stale, ended, mismatched,
+duplicate, or superseded attempts are rejected explicitly.
+
+The reporter POSTs when no Result exists. It PATCHes the one canonical Result
+only for exact digest-bound feedback followed by a newly granted active Lease.
+The semantic Result must materially change; request-info revisions preserve the
+reporter-owned parent request; and revised Result/v2 binds the new `leaseId`.
+It rejects multiple, malformed, foreign-authored, wrong-task, or accepted
+Results. It never changes Issue state and never closes the task.
 Immediately before PATCH it re-lists task comments and re-fetches the exact
 Result REST comment, rejecting a changed Result or any Acceptance. Immediately
 after PATCH it re-lists and fails closed if an Acceptance appeared or the
@@ -181,9 +264,15 @@ digest recorded by the one canonical Acceptance.
 The core projection uses the exact specialized properties and relations:
 
 - `WorkGraphTask`: `taskType`, `inputs`
-- `WorkGraphTaskAssignment`: `agentProfile`; `ASSIGNMENT_FOR` → task
-- `WorkGraphTaskResult`: computed `bodyDigest`, plus `taskType`, `outcome`,
-  `summary`, `result`; `RESULT_FOR` → task
+- `WorkGraphTaskAssignment`: `agentProfile`, and v2 `workerId`;
+  `ASSIGNMENT_FOR` → task; `ASSIGNED_TO` → worker
+- `WorkGraphWorker`: `workerId`, `agentProfile`, slot count, lease duration;
+  `HAS_SLOT` → `WorkGraphWorkerSlot`
+- `WorkGraphTaskLease`: exact acquisition fields; `LEASE_FOR` → task;
+  `LEASES_SLOT` → slot
+- `WorkGraphTaskLeaseExpiration`: exact lease-end fields
+- `WorkGraphTaskResult`: computed `bodyDigest`, plus `taskType`, v2 `leaseId`,
+  `outcome`, `summary`, `result`; `RESULT_FOR` → task
 - `WorkGraphTaskResultAcceptance`: `resultCommentNodeId`,
   `resultBodyDigest`, `summary`; `ACCEPTS_RESULT` → Result
 
@@ -207,8 +296,8 @@ feedback_and_redispatch
 ```
 
 `get_result_snapshot` is read-only. It verifies the open task, native parent,
-canonical Assignment, and exact current Result, including configured authors
-and task/profile mapping. It returns only the typed `workResult`,
+canonical Assignment, and exact current Result/v1 or v2, including configured
+authors and task/profile mapping. It returns only the typed `workResult`,
 `resultCommentNodeId`, and SHA-256 `resultBodyDigest`; the acceptor never
 computes or guesses a digest.
 
@@ -231,7 +320,7 @@ comments, and numeric authors. They parse readable canonical bodies and make
 the workflow decision. Every narrow reporter then independently re-fetches
 GitHub state and rejects any mismatch in supplied node IDs, exact configured
 Issue Type ID/name, creators/comment authors, native parent, current task,
-Assignment/Result/Acceptance, destination, status, or race checks before a
+Assignment/Lease/Result/Acceptance, worker/slot, destination, status, or race checks before a
 write. Opaque dispatch IDs are never selectors for a generic route, and no
 agent has a generic write tool.
 
@@ -276,8 +365,9 @@ attached, assigned, commented on, or retyped by these tools; creation retry
 replaces it with a fresh correctly typed task. No tool exposes an Issue Type
 mutation route.
 
-`post_parent_info_request` verifies the request task and referenced current
-validation Result, mentions the parent submitter, lists only failed criteria,
+`post_parent_info_request` first validates the same exact active Lease dispatch
+required by Result submission. It verifies the request task and referenced
+current validation Result, mentions the parent submitter, lists only failed criteria,
 and reconciles by validation Result comment node ID. It permits later cycles
 for later validation Results but never duplicates the same request. Before
 posting to the parent it also requires the supplied request-info task to be the
@@ -310,28 +400,31 @@ WorkGraphTaskFeedback/v1
 
 Stale reviewed digests are rejected. After the acceptor reviews a revised
 Result snapshot, the tool PATCHes that same feedback comment with the new
-digest and requested feedback, then returns:
+digest and requested feedback, then returns a queue request, not a worker
+launch:
 
 ```json
 {
-  "status": "external-dispatch-required",
+  "status": "queued-for-lease",
   "agentProfile": "issue-validator",
+  "workerId": "issue-validation-01",
   "taskIssueNumber": 17
 }
 ```
 
 There is no supported GitHub Agent Task redispatch REST surface available to
 this dependency-free reporter. The external WorkGraph dispatcher must consume
-this bounded request. The tool never invents an endpoint or chooses a new
-profile.
+this bounded request and grant a new Lease before worker invocation. The tool
+never invents an endpoint, chooses a new profile, or creates a Lease.
 
-Redispatch may add `feedbackCommentNodeId`, `feedbackUpdatedAt`,
-`resultCommentNodeId`, and `resultBodyDigest` to the trusted dispatch envelope.
-Workers read the exact current Result and feedback through their read tools,
-pass opaque IDs/digest unchanged, and submit a materially revised `workResult`
-when actionable feedback identifies a real mismatch. They do not reconcile an
-unchanged Result. The reporter still independently verifies all IDs, digest,
-authors, Assignment, task, destination, races, and revision safety. A
+Only after a new Lease is granted may feedback dispatch add
+`feedbackCommentNodeId`, `feedbackUpdatedAt`, `resultCommentNodeId`, and
+`resultBodyDigest` to the trusted dispatch envelope. Workers read the exact
+prior Result and feedback, pass opaque IDs/digest and the new Lease unchanged,
+and submit a materially revised `workResult` when actionable feedback identifies
+a real mismatch. They do not reconcile an unchanged Result. The reporter still
+independently verifies all IDs, digest, authors, Assignment, Lease, worker/slot,
+task, destination, races, and revision safety. A
 request-info worker never changes the reporter-owned parent request or exact
 failed criterion strings merely to satisfy a wording preference.
 
@@ -361,6 +454,8 @@ Configure immutable positive numeric IDs:
 - `COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID`
 - `COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID`
 - `COPILOT_MCP_WORKGRAPH_REDISPATCH_REPORTER_USER_ID`
+- `COPILOT_MCP_WORKGRAPH_DISPATCHER_USER_ID`
+- `COPILOT_MCP_WORKGRAPH_LEASE_REPORTER_USER_ID`
 
 Also configure secret `COPILOT_MCP_WORKGRAPH_TOKEN`. Every profile pins live
 type node ID `IT_kwDOCX0YF84CKGIJ`. Each tool verifies `/user` against its

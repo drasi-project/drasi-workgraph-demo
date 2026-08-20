@@ -1,0 +1,10 @@
+version: 1
+workers:
+  - workerId: issue-validation-01
+    agentProfile: issue-validator
+    slots: 1
+    leaseDuration: PT30M
+  - workerId: issue-information-01
+    agentProfile: issue-info-requester
+    slots: 1
+    leaseDuration: PT30M

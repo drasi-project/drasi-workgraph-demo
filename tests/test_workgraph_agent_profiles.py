@@ -16,6 +16,7 @@ PROFILE = (
 )
 DOC = ROOT / "docs" / "workgraph-result-reporter.md"
 README = ROOT / "README.md"
+WORKERS = ROOT / ".github" / "workgraph" / "workers.yaml"
 
 EXPECTED_TOOLS = {
     "issue-orchestrator": ["github/issue_read", "workgraph/transition_issue"],
@@ -48,6 +49,8 @@ IDENTITY_KEYS = [
     "COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID",
     "COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID",
     "COPILOT_MCP_WORKGRAPH_REDISPATCH_REPORTER_USER_ID",
+    "COPILOT_MCP_WORKGRAPH_DISPATCHER_USER_ID",
+    "COPILOT_MCP_WORKGRAPH_LEASE_REPORTER_USER_ID",
 ]
 
 
@@ -62,6 +65,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
         cls.profile = PROFILE.read_text(encoding="utf-8")
         cls.doc = DOC.read_text(encoding="utf-8")
         cls.readme = README.read_text(encoding="utf-8")
+        cls.workers = WORKERS.read_text(encoding="utf-8")
 
     def test_exactly_five_rest_launchable_profiles(self):
         self.assertEqual(set(self.agents), set(EXPECTED_TOOLS))
@@ -114,12 +118,18 @@ class WorkGraphProfilesTest(unittest.TestCase):
     def test_exact_comment_contracts_and_result_fields(self):
         for marker in [
             "WorkGraphTaskAssignment/v1",
+            "WorkGraphTaskAssignment/v2",
             "WorkGraphTaskResult/v1",
+            "WorkGraphTaskResult/v2",
+            "WorkGraphTaskLease/v1",
+            "WorkGraphTaskLeaseExpiration/v1",
             "WorkGraphTaskResultAcceptance/v1",
         ]:
             self.assertIn(marker, self.doc)
             self.assertIn(marker, self.reporter)
         self.assertIn('"agentProfile": "issue-validator"', self.doc)
+        self.assertIn('"workerId": "issue-validation-01"', self.doc)
+        self.assertIn('"leaseId": "lease-001"', self.doc)
         self.assertIn("There is no `assignmentId`", self.doc)
         self.assertNotIn('"assignmentId"', self.reporter)
         for field in [
@@ -130,6 +140,35 @@ class WorkGraphProfilesTest(unittest.TestCase):
             self.assertIn(field, self.doc)
             self.assertIn(field, self.reporter)
         self.assertIn("sha256:<64 lowercase hex>", self.reporter)
+        self.assertNotRegex(
+            self.reporter,
+            r"canonical\s*=\s*\{[^}]*bodyDigest",
+        )
+
+    def test_worker_config_schema_and_stable_metadata(self):
+        self.assertEqual(self.workers.count("\n  - workerId: "), 2)
+        self.assertIn("version: 1\nworkers:\n", self.workers)
+        expected = {
+            "issue-validation-01": "issue-validator",
+            "issue-information-01": "issue-info-requester",
+        }
+        entries = re.findall(
+            r"  - workerId: ([A-Za-z0-9._-]+)\n"
+            r"    agentProfile: ([A-Za-z0-9_-]+)\n"
+            r"    slots: (\d+)\n"
+            r"    leaseDuration: ([A-Z0-9]+)\n",
+            self.workers,
+        )
+        self.assertEqual(
+            {worker_id: profile for worker_id, profile, _, _ in entries},
+            expected,
+        )
+        for worker_id, profile, slots, duration in entries:
+            self.assertNotEqual(worker_id, profile)
+            self.assertEqual(slots, "1")
+            self.assertEqual(duration, "PT30M")
+        self.assertIn(".github/workgraph/workers.yaml", self.doc)
+        self.assertIn("desired capacity only", self.doc)
 
     def test_reporter_exposes_only_narrow_tools(self):
         names = re.findall(
@@ -231,7 +270,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
                     "resultBodyDigest",
                 ):
                     self.assertIn(field, profile)
-                self.assertIn("exact current Result and feedback comment", normalized)
+                self.assertIn("exact prior Result and feedback comment", normalized)
                 self.assertIn("materially revised", normalized)
                 self.assertIn("do not merely reconcile an unchanged", normalized.lower())
                 self.assertIn("narrow reporter remains authoritative", normalized)
@@ -279,16 +318,32 @@ class WorkGraphProfilesTest(unittest.TestCase):
     def test_core_graph_contract_names_are_exact(self):
         for value in (
             "`WorkGraphTask`: `taskType`, `inputs`",
-            "`WorkGraphTaskAssignment`: `agentProfile`",
+            "`WorkGraphTaskAssignment`: `agentProfile`, and v2 `workerId`",
             "`WorkGraphTaskResult`: computed `bodyDigest`",
             "`WorkGraphTaskResultAcceptance`: `resultCommentNodeId`",
             "`ASSIGNMENT_FOR`",
+            "`ASSIGNED_TO`",
+            "`HAS_SLOT`",
+            "`LEASE_FOR`",
+            "`LEASES_SLOT`",
             "`RESULT_FOR`",
             "`ACCEPTS_RESULT`",
             "`COMMENT_ON`",
             "`resultBodyDigest` equals that Result node's `bodyDigest`",
         ):
             self.assertIn(value, self.doc)
+
+    def test_workers_require_active_lease_and_no_agent_writes_one(self):
+        for name in ("issue-validator", "issue-info-requester"):
+            profile = self.agents[name]
+            normalized = " ".join(profile.split())
+            self.assertIn("active exact `WorkGraphTaskLease/v1`", normalized)
+            self.assertIn("Without every Lease field, stop and submit nothing", normalized)
+            self.assertIn("Never run without a Lease", normalized)
+            self.assertIn("Never", profile)
+        self.assertIn("No agent or MCP\ntool in this repository can create one", self.doc)
+        self.assertNotIn("submit_task_lease", self.reporter)
+        self.assertNotIn("create_lease", self.reporter)
 
     def test_repository_validation_profile_is_unchanged_two_criteria(self):
         self.assertTrue(

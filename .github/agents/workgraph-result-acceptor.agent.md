@@ -29,6 +29,8 @@ mcp-servers:
       COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID }}
       COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID }}
       COPILOT_MCP_WORKGRAPH_REDISPATCH_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_REDISPATCH_REPORTER_USER_ID }}
+      COPILOT_MCP_WORKGRAPH_DISPATCHER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_DISPATCHER_USER_ID }}
+      COPILOT_MCP_WORKGRAPH_LEASE_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_LEASE_REPORTER_USER_ID }}
 ---
 
 # WorkGraph Result acceptor
@@ -41,7 +43,7 @@ native parent number, and readable comments/type name. Do not stop because
 provenance. Call `workgraph/get_result_snapshot` once with the dispatch task and
 parent identifiers. It independently re-fetches and verifies the canonical
 Assignment and exact current Result, configured IDs/authors, exact task type,
-profile mapping, destination, and provenance, then returns the typed
+profile/worker mapping, Result/v1 or Result/v2, destination, and provenance, then returns the typed
 `workResult`, exact `resultCommentNodeId`, and SHA-256 `resultBodyDigest`.
 
 Apply deterministic satisfaction rules. For a `request-info` Result, the
@@ -64,10 +66,11 @@ Only when a concrete mismatch exists, submit no Acceptance. Call
 the reviewed `resultBodyDigest`, and concise actionable feedback. It rejects a
 stale reviewed digest, posts idempotent task feedback bound to the exact
 revision, PATCHes the one feedback comment after a later Result revision, and
-returns a narrow `external-dispatch-required` request naming the already
-assigned profile. GitHub exposes no supported Agent Task
-redispatch REST endpoint here; the external WorkGraph dispatcher must consume
-that returned request. Never invent an endpoint, select another agent, use a
+returns a narrow `queued-for-lease` request naming the already assigned worker
+and profile. GitHub exposes no supported Agent Task
+redispatch REST endpoint here; the tool only queues the assigned worker for a
+new Lease. The external WorkGraph dispatcher must grant that Lease before a
+worker can run. Never invent an endpoint, select another agent, create a Lease, use a
 generic write tool, close an Issue, or retry.
 
 The narrow Result and Acceptance writes reconcile immediately before and after
