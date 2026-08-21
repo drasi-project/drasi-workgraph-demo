@@ -16,6 +16,7 @@ PROFILE = (
 )
 DOC = ROOT / "docs" / "workgraph-result-reporter.md"
 README = ROOT / "README.md"
+WORKERS = ROOT / ".github" / "workgraph" / "workers.yaml"
 
 EXPECTED_TOOLS = {
     "issue-orchestrator": ["github/issue_read", "workgraph/transition_issue"],
@@ -36,7 +37,7 @@ EXPECTED_TOOLS = {
         "github/issue_read",
         "workgraph/get_result_snapshot",
         "workgraph/submit_result_acceptance",
-        "workgraph/feedback_and_redispatch",
+        "workgraph/submit_task_feedback",
     ],
 }
 
@@ -47,7 +48,7 @@ IDENTITY_KEYS = [
     "COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID",
     "COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID",
     "COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID",
-    "COPILOT_MCP_WORKGRAPH_REDISPATCH_REPORTER_USER_ID",
+    "COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID",
 ]
 
 
@@ -62,6 +63,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
         cls.profile = PROFILE.read_text(encoding="utf-8")
         cls.doc = DOC.read_text(encoding="utf-8")
         cls.readme = README.read_text(encoding="utf-8")
+        cls.workers = WORKERS.read_text(encoding="utf-8")
 
     def test_exactly_five_rest_launchable_profiles(self):
         self.assertEqual(set(self.agents), set(EXPECTED_TOOLS))
@@ -98,6 +100,13 @@ class WorkGraphProfilesTest(unittest.TestCase):
                 )
                 for key in IDENTITY_KEYS:
                     self.assertIn(key, content)
+        for name in ("issue-validator", "issue-info-requester"):
+            self.assertIn(
+                "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL", self.agents[name]
+            )
+            self.assertIn(
+                "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN", self.agents[name]
+            )
 
     def test_task_contract_is_exact_and_closed(self):
         for text in [self.doc, self.reporter]:
@@ -107,19 +116,28 @@ class WorkGraphProfilesTest(unittest.TestCase):
             self.assertIn("new-issue-default", text)
             self.assertIn("validationResultCommentNodeId", text)
         self.assertIn("minimal canonical YAML grammar", self.doc)
-        self.assertIn("There is no generic task registry", self.doc)
+        self.assertIn("generic task\nregistry", self.doc)
         self.assertIn('const TASK_TYPE_NAME = "WorkGraphTask"', self.reporter)
         self.assertNotIn("issue-risk-profile", self.reporter)
 
     def test_exact_comment_contracts_and_result_fields(self):
-        for marker in [
+        for marker in (
             "WorkGraphTaskAssignment/v1",
             "WorkGraphTaskResult/v1",
+            "WorkGraphTaskFeedback/v1",
             "WorkGraphTaskResultAcceptance/v1",
-        ]:
+        ):
             self.assertIn(marker, self.doc)
             self.assertIn(marker, self.reporter)
+        sources = "\n".join(
+            [self.doc, self.reporter, self.readme, *self.agents.values()]
+        )
+        self.assertNotRegex(sources, r"WorkGraphTask(?:Assignment|Result)/v[2-9]")
+        self.assertNotRegex(sources, r"WorkGraphTaskLease(?:Expiration)?/")
+        self.assertNotIn("lease" + "CommentNodeId", sources)
         self.assertIn('"agentProfile": "issue-validator"', self.doc)
+        self.assertIn('"workerId": "issue-validation-01"', self.doc)
+        self.assertIn('"leaseId": "lease-001"', self.doc)
         self.assertIn("There is no `assignmentId`", self.doc)
         self.assertNotIn('"assignmentId"', self.reporter)
         for field in [
@@ -130,12 +148,41 @@ class WorkGraphProfilesTest(unittest.TestCase):
             self.assertIn(field, self.doc)
             self.assertIn(field, self.reporter)
         self.assertIn("sha256:<64 lowercase hex>", self.reporter)
+        self.assertNotRegex(
+            self.reporter,
+            r"canonical\s*=\s*\{[^}]*bodyDigest",
+        )
+
+    def test_worker_config_schema_and_stable_metadata(self):
+        self.assertEqual(self.workers.count("\n  - workerId: "), 2)
+        self.assertIn("version: 1\nworkers:\n", self.workers)
+        expected = {
+            "issue-validation-01": "issue-validator",
+            "issue-information-01": "issue-info-requester",
+        }
+        entries = re.findall(
+            r"  - workerId: ([A-Za-z0-9._-]+)\n"
+            r"    agentProfile: ([A-Za-z0-9_-]+)\n"
+            r"    slots: (\d+)\n"
+            r"    leaseDuration: ([A-Z0-9]+)\n",
+            self.workers,
+        )
+        self.assertEqual(
+            {worker_id: profile for worker_id, profile, _, _ in entries},
+            expected,
+        )
+        for worker_id, profile, slots, duration in entries:
+            self.assertNotEqual(worker_id, profile)
+            self.assertEqual(slots, "1")
+            self.assertEqual(duration, "PT30M")
+        self.assertIn(".github/workgraph/workers.yaml", self.doc)
+        self.assertIn("desired capacity only", self.doc)
 
     def test_reporter_exposes_only_narrow_tools(self):
         names = re.findall(
             r'(?m)^    name: "(get_result_snapshot|submit_task_assignment|submit_task_result|'
             r'submit_result_acceptance|transition_issue|'
-            r'post_parent_info_request|feedback_and_redispatch)"',
+            r'post_parent_info_request|submit_task_feedback)"',
             self.reporter,
         )
         self.assertEqual(set(names), {
@@ -145,7 +192,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
             "submit_result_acceptance",
             "transition_issue",
             "post_parent_info_request",
-            "feedback_and_redispatch",
+            "submit_task_feedback",
         })
         self.assertNotIn("report_progress", self.reporter)
         self.assertNotIn("issue-risk", self.reporter)
@@ -169,16 +216,11 @@ class WorkGraphProfilesTest(unittest.TestCase):
             "no-op",
         ]:
             self.assertIn(value, orchestrator)
-        self.assertIn(
-            "reconcile expected state\nimmediately before writing", self.doc
-        )
-        self.assertIn("does not provide a\ntransaction", self.doc)
-        self.assertIn("greatest Issue number", self.doc)
-        self.assertIn("canonical title/body correlation", self.doc)
+        self.assertIn("Canonical title/body correlation", self.doc)
         self.assertIn("without creating another task", self.doc)
         self.assertIn("never type or untype an Issue", orchestrator)
         self.assertIn("initial create request", orchestrator)
-        self.assertIn("No tool exposes an Issue Type", self.doc)
+        self.assertIn("No tool exposes\nIssue Type mutation", self.doc)
 
     def test_worker_and_acceptor_provenance_rules(self):
         validator = self.agents["issue-validator"]
@@ -200,7 +242,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
         self.assertIn("exact current Result", acceptor)
         self.assertIn("SHA-256", acceptor)
         self.assertIn("submit no Acceptance", acceptor)
-        self.assertIn("external WorkGraph dispatcher", acceptor)
+        self.assertIn("Source may allocate a later Lease", acceptor)
         self.assertIn("PATCHes the one feedback comment", acceptor)
 
     def test_request_info_acceptance_uses_failed_criteria_deterministically(self):
@@ -216,8 +258,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
             "Wording preference alone is not a mismatch",
         ):
             self.assertIn(value, normalized)
-        self.assertIn("positively phrased criterion", self.doc)
-        self.assertIn("acceptor must not reinterpret", self.doc)
+        self.assertIn("exact current", self.doc)
 
     def test_workers_handle_optional_feedback_dispatch(self):
         for name in ("issue-validator", "issue-info-requester"):
@@ -231,22 +272,18 @@ class WorkGraphProfilesTest(unittest.TestCase):
                     "resultBodyDigest",
                 ):
                     self.assertIn(field, profile)
-                self.assertIn("exact current Result and feedback comment", normalized)
+                self.assertIn("exact prior Result and feedback comment", normalized)
                 self.assertIn("materially revised", normalized)
                 self.assertIn("do not merely reconcile an unchanged", normalized.lower())
                 self.assertIn("narrow reporter remains authoritative", normalized)
         requester = self.agents["issue-info-requester"]
         self.assertIn("exact `passed: false` validation criteria", requester)
         self.assertIn("cannot require\ninventing, removing, or rephrasing", requester)
-        self.assertIn("request-info worker never changes", self.doc)
+        self.assertIn("semantic\nResult must materially change", self.doc)
 
     def test_dispatch_ids_and_readable_evidence_are_separated(self):
-        self.assertIn("Dispatch and read-tool trust boundary", self.doc)
-        self.assertIn(
-            "`github/issue_read` does not expose Issue node IDs or Issue Type node IDs",
-            self.doc,
-        )
-        self.assertIn("independently re-fetches\nGitHub state", self.doc)
+        self.assertIn("opaque graph node IDs", self.doc)
+        self.assertIn("independently re-fetch", self.doc)
         for name, profile in self.agents.items():
             with self.subTest(agent=name):
                 self.assertIn("trusted graph dispatch envelope", profile)
@@ -258,10 +295,10 @@ class WorkGraphProfilesTest(unittest.TestCase):
                 self.assertIn("independently", profile)
 
     def test_fail_closed_race_and_feedback_revision_are_documented(self):
-        self.assertIn("Unavoidable REST race and remediation", self.doc)
-        self.assertIn("performs no compensating delete", self.doc)
-        self.assertIn("Manual remediation is required", self.doc)
-        self.assertIn("Feedback is bound to the exact current Result digest", self.doc)
+        self.assertIn("fail-closed pre/post reconciliation", self.doc)
+        self.assertIn("no compensating delete", self.doc)
+        self.assertIn("requires manual remediation", self.doc)
+        self.assertIn("binds actionable feedback to the exact current", self.doc)
         self.assertIn("resultBodyDigest", self.reporter)
         self.assertIn("Result/Acceptance race left the task inconsistent", self.reporter)
         self.assertNotIn("deleteComment", self.reporter)
@@ -271,24 +308,35 @@ class WorkGraphProfilesTest(unittest.TestCase):
             [self.reporter, self.doc, self.readme, *self.agents.values()]
         )
         self.assertIn("A Result never closes a task", self.readme)
-        self.assertIn("It never changes Issue state and never closes the task", self.doc)
+        self.assertIn("A Result never changes Issue state and never\ncloses the task", self.doc)
         self.assertNotRegex(self.reporter, r'["`]state["`]\s*:')
         self.assertNotIn("closeIssue", self.reporter)
         self.assertIn("external WorkGraph runtime may close", sources)
 
-    def test_core_graph_contract_names_are_exact(self):
+    def test_source_lease_contract_is_exact(self):
         for value in (
-            "`WorkGraphTask`: `taskType`, `inputs`",
-            "`WorkGraphTaskAssignment`: `agentProfile`",
-            "`WorkGraphTaskResult`: computed `bodyDigest`",
-            "`WorkGraphTaskResultAcceptance`: `resultCommentNodeId`",
-            "`ASSIGNMENT_FOR`",
-            "`RESULT_FOR`",
-            "`ACCEPTS_RESULT`",
-            "`COMMENT_ON`",
-            "`resultBodyDigest` equals that Result node's `bodyDigest`",
+            '"taskNodeId": "I_task"',
+            '"assignmentCommentNodeId": "IC_assignment"',
+            '"slotId": "issue-validation-01/1"',
+            '"taskType": "validate-issue"',
+            "POST {webhook.path}/lease/validate",
+            "exactly those five fields",
+            "exact\neight-field active Lease snapshot",
+            "Source remains authoritative",
         ):
             self.assertIn(value, self.doc)
+
+    def test_workers_require_source_lease_and_no_agent_writes_one(self):
+        for name in ("issue-validator", "issue-info-requester"):
+            profile = self.agents[name]
+            normalized = " ".join(profile.split())
+            self.assertIn("active Source-issued Lease", normalized)
+            self.assertIn("Without every Lease field, stop and submit nothing", normalized)
+            self.assertIn("Never run without a Lease", normalized)
+            self.assertIn("Never", profile)
+        self.assertIn("never allocates", self.doc)
+        self.assertNotIn("submit_task_lease", self.reporter)
+        self.assertNotIn("create_lease", self.reporter)
 
     def test_repository_validation_profile_is_unchanged_two_criteria(self):
         self.assertTrue(
