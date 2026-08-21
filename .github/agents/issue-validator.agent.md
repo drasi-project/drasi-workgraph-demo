@@ -24,17 +24,17 @@ mcp-servers:
       COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID }}
       COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID }}
       COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID }}
-      COPILOT_MCP_WORKGRAPH_REDISPATCH_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_REDISPATCH_REPORTER_USER_ID }}
-      COPILOT_MCP_WORKGRAPH_DISPATCHER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_DISPATCHER_USER_ID }}
-      COPILOT_MCP_WORKGRAPH_LEASE_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_LEASE_REPORTER_USER_ID }}
+      COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID }}
+      COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL: ${{ vars.COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL }}
+      COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN: ${{ secrets.COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN }}
 ---
 
 # Issue validator
 
-Run only when the trusted graph dispatch envelope supplies one active exact
-`WorkGraphTaskLease/v1`: `leaseCommentNodeId`, `leaseId`, `workerId`, `slotId`,
-`acquiredAt`, `expiresAt`, task/parent identifiers, and
-`assignmentCommentNodeId`. Without every Lease field, stop and submit nothing.
+Run only when the trusted graph dispatch envelope supplies one active
+Source-issued Lease: `leaseId`, task node ID, `assignmentCommentNodeId`, `workerId`,
+`slotId`, `taskType`, `acquiredAt`, and `expiresAt`, plus task/parent Issue identifiers.
+Without every Lease field, stop and submit nothing.
 Pass opaque node IDs through unchanged; do not require
 `github/issue_read` to expose them. Navigate from the invoked open task to its
 native parent; that relation is authoritative. Check only readable fields:
@@ -56,12 +56,11 @@ and non-empty plain-text `evidence`. A completed check has `outcome:
 "succeeded"` even if criteria fail. Construct a Result with exactly `taskType`, unchanged `leaseId`, `outcome`,
 `summary`, and typed `result`. There is no `assignmentId` or `bodyDigest`.
 
-Call `workgraph/submit_task_result` once with every unchanged dispatch Lease
+Call `workgraph/submit_task_result` once with every unchanged Source Lease
 reference and `workResult`. The narrow reporter independently re-fetches and
-strictly parses worker config and verifies exact
-node IDs, configured type ID/name, creators/authors, authoritative parent,
-Assignment/v2, Lease/v1, worker/slot, deadline, destination, prior Result or
-Expiration, supersession, and races before writing `WorkGraphTaskResult/v2`.
+verifies exact node IDs, configured type ID/name, creators/authors, authoritative
+parent, Assignment/v1, destination, prior Result, and races, then validates the
+exact active Lease with Source immediately before writing `WorkGraphTaskResult/v1`.
 
 Feedback dispatch is valid only with a newly granted active Lease and may include `feedbackCommentNodeId`,
 `feedbackUpdatedAt`, `resultCommentNodeId`, and `resultBodyDigest`. When present,
@@ -74,6 +73,6 @@ or this fixed validation profile, preserve the factual criteria and materially
 clarify the Result rather than inventing another criterion. The narrow reporter
 remains authoritative for exact IDs, digest, authors, Assignment, task,
 destination, races, and revision safety; it PATCHes the existing canonical
-Result comment with Result/v2 bound to the new `leaseId`. It never closes the
-task. Never run without a Lease, create a Lease, write to the parent, close
+Result comment with Result/v1 bound to the new `leaseId`. It never closes the
+task. Never run without a Lease, allocate a Lease, write to the parent, close
 anything, or retry.

@@ -24,9 +24,7 @@ mcp-servers:
       COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID }}
       COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID }}
       COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID }}
-      COPILOT_MCP_WORKGRAPH_REDISPATCH_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_REDISPATCH_REPORTER_USER_ID }}
-      COPILOT_MCP_WORKGRAPH_DISPATCHER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_DISPATCHER_USER_ID }}
-      COPILOT_MCP_WORKGRAPH_LEASE_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_LEASE_REPORTER_USER_ID }}
+      COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID }}
 ---
 
 # Issue assigner
@@ -58,7 +56,7 @@ creator, canonical body, parent, comments, destination, and reporter identity
 before writing only:
 
 ````text
-WorkGraphTaskAssignment/v2
+WorkGraphTaskAssignment/v1
 
 ```json
 {
@@ -69,5 +67,5 @@ WorkGraphTaskAssignment/v2
 ````
 
 The other configured pair is `issue-info-requester` /
-`issue-information-01`. Never create a Lease, launch a worker, add fields, write
+`issue-information-01`. Never allocate a Lease, launch a worker, add fields, write
 to the parent, close an Issue, or retry.

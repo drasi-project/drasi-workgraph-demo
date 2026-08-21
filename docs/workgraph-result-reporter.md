@@ -1,28 +1,22 @@
 # WorkGraph agent and reporter contract
 
-This is a closed contract for `drasi-project/drasi-workgraph-demo`. New writes
-use worker-queue Assignment/v2 and lease-bound Result/v2. Historical
-Assignment/v1 and Result/v1 remain readable, but worker-queue reporters never
-create them. There is no generic task registry, arbitrary repository selector,
-arbitrary comment body, Lease writer, or generic mutation tool. All parsers
-reject unknown fields and noncanonical bytes.
+This is a closed, breaking contract for `drasi-project/drasi-workgraph-demo`.
+All GitHub WorkGraph comment protocols are v1-only. There are no aliases,
+migration parsers, arbitrary repository selectors, raw comment bodies, generic
+mutation tools, or GitHub Lease comments.
 
-The current process authority is `drasi-project/team` commit
-`093a1cbc3c45cb52aedfc6f9f84f7a8dde50fe92`, which supersedes the original
-queue-design commit `d42e07952f6b197d3379cee3dffdf0c8f4e24baf`. Its
-`activeLeaseIds` and full `dispatchableTasks` refinement belongs to the Core
-Source capacity query and stateful dispatcher. This demo consumes the resulting
-exact Assignment and Lease dispatch envelope, so that refinement requires no
-Source, dispatcher, or expiry writer here. Wire formatting remains aligned with
-Core PR #746 head `43f28285d67bb2bc3aecb22c23df6c042d098664`.
+The GitHub WorkGraph Source owns worker queues and active Leases. It projects
+worker capacity from `.github/workgraph/workers.yaml`, creates synthetic active
+Lease graph nodes, validates exact active allocations, and remains the final
+authority for Result ingestion, release, and stale rejection. The reporter
+keeps narrow GitHub validation and idempotent writes; it never allocates,
+persists, releases, polls, or retries a Lease.
 
 ## Task body: `WorkGraphTask/v1`
 
-A task is a native child Issue with exact configured Issue Type node ID and
-exact type name `WorkGraphTask`. Its configured launcher identity is verified
-by immutable numeric user ID. The complete body is exactly the marker, one
-blank line, one lowercase `yaml` fence, one of these payloads, the closing
-fence, and one final LF:
+A task is a native child Issue with exact configured Issue Type node ID and type
+name `WorkGraphTask`. Its launcher is verified by immutable numeric user ID.
+The complete body is one of:
 
 ````text
 WorkGraphTask/v1
@@ -44,24 +38,9 @@ inputs:
 ```
 ````
 
-The minimal canonical YAML grammar is:
-
-```text
-document       = "taskType: " task-type LF
-                 "inputs:" LF
-                 "  " input-key ": " input-value
-task-type      = "validate-issue" | "request-info"
-input-key      = "validationProfile" | "validationResultCommentNodeId"
-input-value    = "new-issue-default" | node-id
-node-id        = 1*256(ALPHA | DIGIT | "_" | "-")
-```
-
-The key/value pair is fixed by task type. There are no quotes, comments,
-aliases, tags, blank payload lines, alternate indentation, extra fields, or
-generic YAML constructs. The request-info node ID must be non-empty.
-
-The task body schema remains unchanged. Transition correlation is instead an
-exact launcher-generated title:
+The minimal canonical YAML grammar allows no quotes, comments, aliases, tags,
+blank payload lines, alternate indentation, extra fields, or generic task
+registry. Transition titles provide exact create/retry correlation:
 
 ```text
 WorkGraph: validate-issue parent #<number> start-validation
@@ -69,10 +48,9 @@ WorkGraph: request-info parent #<number> validation-result <Result node ID>
 WorkGraph: validate-issue parent #<number> human-reply <reply node ID>
 ```
 
-The fixed parent number plus immutable triggering node ID makes later cycles
-distinct. A retry accepts only one exact open type/creator/title/body match.
+## Source worker capacity
 
-## Worker capacity: `.github/workgraph/workers.yaml`
+`.github/workgraph/workers.yaml` is desired capacity only:
 
 ```yaml
 version: 1
@@ -87,27 +65,24 @@ workers:
     leaseDuration: PT30M
 ```
 
-This file is desired capacity only; Assignments and Leases remain comments.
-The reporter fetches it from the fixed repository's `main` ref and fails closed
-if it is unavailable or malformed. Each worker has exactly `workerId`,
-`agentProfile`, `slots`, and `leaseDuration`. Worker IDs are unique 1-64
-character ASCII identifiers using letters, digits, `.`, `_`, or `-`; profiles
-are one of the two repository profiles; slots are 1-16; and duration is a
-positive whole-unit ISO-8601 duration no greater than 24 hours. `workerId` is
-deliberately distinct from `agentProfile`.
+The Assignment reporter fetches this file from the fixed repository's `main`
+ref and verifies deterministic worker selection. The Source independently
+loads its configured ref and owns queue depth, slots, and active allocations.
+`workerId` remains deliberately distinct from `agentProfile`.
 
-## Task comments
+## GitHub comment protocols
 
-All JSON contracts use a lowercase `json` fence, two-space JSON indentation,
-the displayed property order, and exactly one LF after the closing fence.
+Every JSON comment uses a lowercase `json` fence, two-space indentation, the
+displayed property order, and exactly one LF after the closing fence. Unknown
+or reordered fields and noncanonical bytes are rejected.
 
-### Assignment/v2
+### `WorkGraphTaskAssignment/v1`
 
-Assignment is durable task ownership by a configured worker queue. It does not
-consume a slot or launch a worker:
+Assignment is durable ownership by a configured worker queue. It does not
+consume a slot or launch a worker.
 
 ````text
-WorkGraphTaskAssignment/v2
+WorkGraphTaskAssignment/v1
 
 ```json
 {
@@ -117,62 +92,74 @@ WorkGraphTaskAssignment/v2
 ```
 ````
 
-The other configured pair is `issue-info-requester` /
-`issue-information-01`. Mapping is fixed: `validate-issue` →
-`issue-validator`; `request-info` → `issue-info-requester`. Selection from the
-trusted compatible-worker envelope is lowest queue depth, then
-lexicographically lowest worker ID. The reporter repeats selection, fetches
-authoritative worker config, and verifies the configured reporter. An identical
-v2 reconciles; conflicting v1/v2, foreign, malformed, or stale state is rejected.
-Canonical `WorkGraphTaskAssignment/v1` remains readable by historical lifecycle
-paths.
+The fields are exactly `agentProfile` and `workerId`. Mapping is fixed:
+`validate-issue` -> `issue-validator`; `request-info` ->
+`issue-info-requester`. Selection from the trusted compatible-worker envelope
+uses lowest queue depth, then lexicographically lowest worker ID. An identical
+Assignment reconciles; malformed, foreign, conflicting, or stale state fails
+closed.
 
-### Lease/v1
+### Source-issued active Lease
 
-Only the external stateful dispatcher Reaction writes a Lease. No agent or MCP
-tool in this repository can create one:
-
-````text
-WorkGraphTaskLease/v1
+A Lease is synthetic Source graph state, not a GitHub comment protocol. The
+active dispatch envelope contains exactly:
 
 ```json
 {
   "leaseId": "lease-001",
+  "taskNodeId": "I_task",
   "assignmentCommentNodeId": "IC_assignment",
   "workerId": "issue-validation-01",
   "slotId": "issue-validation-01/1",
+  "taskType": "validate-issue",
   "acquiredAt": "2026-08-19T00:00:00Z",
   "expiresAt": "2026-08-19T00:30:00Z"
 }
 ```
-````
 
-A Lease is active only while task, exact Assignment/v2, configured worker and
-enabled slot agree; it is the unique newest Lease; current time precedes
-`expiresAt`; and no Result/v2 or matching trusted expiration ends it. Duplicate
-acquisitions fail closed. The reporter reads, but never writes:
+Agents pass every field unchanged. Reporter tool arguments call `taskNodeId`
+`taskIssueNodeId`; all other names match the envelope. The reporter validates
+the canonical timestamps, requires `acquiredAt < expiresAt`, and rejects a
+locally expired Lease before contacting Source.
 
-````text
-WorkGraphTaskLeaseExpiration/v1
+Immediately before each irreversible GitHub Result POST/PATCH or parent-info
+POST, the reporter sends:
+
+```http
+POST {webhook.path}/lease/validate
+Authorization: Bearer <COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN>
+Content-Type: application/json
+```
 
 ```json
 {
-  "leaseCommentNodeId": "IC_lease",
+  "taskNodeId": "I_task",
   "leaseId": "lease-001",
-  "expiredAt": "2026-08-19T00:30:00Z",
-  "reason": "Lease deadline reached."
+  "assignmentCommentNodeId": "IC_assignment",
+  "workerId": "issue-validation-01",
+  "slotId": "issue-validation-01/1"
 }
 ```
-````
 
-### Result/v2
+The request has exactly those five fields. A `200` response must be the exact
+eight-field active Lease snapshot shown above, byte-for-value equal to the
+dispatch envelope and validated task type. `401` is authentication failure,
+`409` is stale/mismatched/expired allocation, and `503` is Source state
+failure. Any non-200, malformed JSON, extra field, or mismatch fails closed.
+The reporter does not retry. The bearer token is separate from the GitHub token
+and webhook HMAC and is never logged.
 
-New Result fields are exactly `taskType`, `leaseId`, `outcome`, `summary`, and
-`result`. There is no `assignmentId` or wire `bodyDigest`. Outcome is
-`succeeded`, `failed`, or `blocked`.
+Point-in-time validation plus the local deadline check is the accepted
+prototype boundary. Atomic coordination across the subsequent GitHub write is
+out of scope; Source remains authoritative when it ingests the Result.
+
+### `WorkGraphTaskResult/v1`
+
+Result fields are exactly `taskType`, `leaseId`, `outcome`, `summary`, and
+task-specific `result`. There is no `assignmentId` or wire `bodyDigest`.
 
 ````text
-WorkGraphTaskResult/v2
+WorkGraphTaskResult/v1
 
 ```json
 {
@@ -198,101 +185,41 @@ WorkGraphTaskResult/v2
 ```
 ````
 
-The criteria array has exactly two entries in repository-profile order. Every
-entry has exactly `criterion`, boolean `passed`, and non-empty plain-text
-`evidence`.
+A request-info Result has `taskType: "request-info"` and exactly
+`result.requestCommentNodeId`, identifying the configured-author parent
+request. Outcome is `succeeded`, `failed`, or `blocked`.
 
-A request-info Result records the exact parent comment and its creation time,
-needed to require a later human reply:
+`submit_task_result` performs all existing read-only GitHub reconciliation
+first: repository, task type, launcher, native parent, exact Assignment,
+configured authors, Result, Feedback, Acceptance, destination, and revision
+safety. An exact existing Result returns idempotently without Source
+validation. For a write, it rechecks GitHub state, validates Source immediately
+before the GitHub POST/PATCH, and performs no intervening work except issuing
+that request.
 
-````text
-WorkGraphTaskResult/v2
+The reporter POSTs when no Result exists. It PATCHes the canonical Result only
+for exact digest-bound Feedback followed by a new active Lease. The semantic
+Result must materially change. It rejects malformed, foreign, multiple,
+accepted, or conflicting Results. A Result never changes Issue state and never
+closes the task.
 
-```json
-{
-  "taskType": "request-info",
-  "leaseId": "lease-info-001",
-  "outcome": "succeeded",
-  "summary": "Requested the missing issue information.",
-  "result": {
-    "requestCommentNodeId": "IC_parent_info"
-  }
-}
-```
-````
+### Feedback and Acceptance
 
-The reporter verifies `requestCommentNodeId` against the configured-author
-parent comment. Resume logic reads that comment's authoritative creation time.
+`WorkGraphTaskFeedback/v1` binds actionable feedback to the exact current
+Result comment ID and SHA-256 body digest. `submit_task_feedback` posts or
+patches one canonical feedback comment. It does not return a queue request or
+allocate a Lease. Source may observe Feedback and later allocate a new Lease.
 
-Canonical `WorkGraphTaskResult/v1` remains readable and is reviewed and accepted
-identically to Result/v2. The reporter writes only v2. Before POST or PATCH it revalidates
-task/parent/type/provenance, exact Assignment/v2, worker config, exact Lease and
-every field, worker/slot compatibility, deadline, Result/Expiration ends, newer
-conflicting state, destination, and races. Expired, stale, ended, mismatched,
-duplicate, or superseded attempts are rejected explicitly.
+`WorkGraphTaskResultAcceptance/v1` contains exactly
+`resultCommentNodeId`, `resultBodyDigest`, and `summary`. The digest is SHA-256
+over the exact UTF-8 Result comment bytes. Acceptance verifies the exact current
+Result immediately before and after writing. Neither Result nor Acceptance
+closes the task; an external WorkGraph runtime may close it after consuming
+Acceptance.
 
-The reporter POSTs when no Result exists. It PATCHes the one canonical Result
-only for exact digest-bound feedback followed by a newly granted active Lease.
-The semantic Result must materially change; request-info revisions preserve the
-reporter-owned parent request; and revised Result/v2 binds the new `leaseId`.
-It rejects multiple, malformed, foreign-authored, wrong-task, or accepted
-Results. It never changes Issue state and never closes the task.
-Immediately before PATCH it re-lists task comments and re-fetches the exact
-Result REST comment, rejecting a changed Result or any Acceptance. Immediately
-after PATCH it re-lists and fails closed if an Acceptance appeared or the
-Result does not exactly match the requested revision.
+## Narrow tools and state machine
 
-### Acceptance
-
-````text
-WorkGraphTaskResultAcceptance/v1
-
-```json
-{
-  "resultCommentNodeId": "IC_result",
-  "resultBodyDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-  "summary": "Result is satisfactory."
-}
-```
-````
-
-The digest is SHA-256 over the exact UTF-8 bytes of the current Result comment,
-including its final LF. Acceptance must target the exact current Result node ID
-and lowercase digest. A stale digest, revised body, wrong target, wrong author,
-or conflicting Acceptance fails closed. Result and Acceptance are separate;
-neither reporter closes a task. An external WorkGraph runtime may close the
-task only after consuming Acceptance.
-
-Immediately before an Acceptance POST, the reporter re-lists comments and
-re-fetches the exact current Result, checking its node ID and digest again.
-Immediately after POST it re-lists and verifies that the Result still has the
-digest recorded by the one canonical Acceptance.
-
-## Core graph projection
-
-The core projection uses the exact specialized properties and relations:
-
-- `WorkGraphTask`: `taskType`, `inputs`
-- `WorkGraphTaskAssignment`: `agentProfile`, and v2 `workerId`;
-  `ASSIGNMENT_FOR` → task; `ASSIGNED_TO` → worker
-- `WorkGraphWorker`: `workerId`, `agentProfile`, slot count, lease duration;
-  `HAS_SLOT` → `WorkGraphWorkerSlot`
-- `WorkGraphTaskLease`: exact acquisition fields; `LEASE_FOR` → task;
-  `LEASES_SLOT` → slot
-- `WorkGraphTaskLeaseExpiration`: exact lease-end fields
-- `WorkGraphTaskResult`: computed `bodyDigest`, plus `taskType`, v2 `leaseId`,
-  `outcome`, `summary`, `result`; `RESULT_FOR` → task
-- `WorkGraphTaskResultAcceptance`: `resultCommentNodeId`,
-  `resultBodyDigest`, `summary`; `ACCEPTS_RESULT` → Result
-
-Each specialized comment also has `COMMENT_ON` to its task. Result
-`bodyDigest` is SHA-256 over the exact full marker comment body and is not a
-field in the Result wire JSON. A current Acceptance matches only when its
-`resultBodyDigest` equals that Result node's `bodyDigest`.
-
-## State machine and narrow tools
-
-The only MCP tools are:
+The MCP exposes only:
 
 ```text
 get_result_snapshot
@@ -301,182 +228,58 @@ submit_task_result
 submit_result_acceptance
 transition_issue
 post_parent_info_request
-feedback_and_redispatch
+submit_task_feedback
 ```
 
-`get_result_snapshot` is read-only. It verifies the open task, native parent,
-canonical Assignment, and exact current Result/v1 or v2, including configured
-authors and task/profile mapping. It returns only the typed `workResult`,
-`resultCommentNodeId`, and SHA-256 `resultBodyDigest`; the acceptor never
-computes or guesses a digest.
+`get_result_snapshot` is read-only and returns the typed Result, exact comment
+node ID, and reporter-computed SHA-256 digest. `post_parent_info_request`
+preserves task/parent/type/author/Assignment/Result/Feedback/Acceptance
+reconciliation, validates Source immediately before the parent POST, and
+reconciles an identical existing request without validation. Its later
+`submit_task_result` call independently validates Source again.
 
-All task reporters take verified task and native-parent numbers/node IDs.
-Callers cannot select a repository, HTTP route, author, raw body, label, or
-Issue state.
+`transition_issue` preserves the strict parent state machine:
 
-### Dispatch and read-tool trust boundary
+- `status:new` -> create validation -> `status:awaiting-validation`
+- accepted failed validation -> create request-info ->
+  `status:awaiting-need-info`
+- accepted request-info plus later human reply -> create validation ->
+  `status:awaiting-validation`
+- accepted passing validation -> `status:awaiting-triage`
 
-The graph dispatcher supplies positive Issue numbers and opaque GraphQL node
-IDs for the task, parent, and relevant comments. Agents treat those opaque IDs
-as trusted routing references and pass them unchanged to narrow tools.
-`github/issue_read` does not expose Issue node IDs or Issue Type node IDs, so an
-agent must not require those fields from its readable evidence or stop merely
-because they are absent.
+Canonical title/body correlation reconciles partial create, native-child
+attachment, and status writes without creating another task. No tool exposes
+Issue Type mutation. The Source launch envelope supplies opaque graph node IDs;
+agents pass them unchanged while reporters independently re-fetch GitHub state.
 
-Agents use `issue_read` for the fields it exposes: repository and Issue
-numbers, state/labels, title/body, Issue Type name, native parent/children,
-comments, and numeric authors. They parse readable canonical bodies and make
-the workflow decision. Every narrow reporter then independently re-fetches
-GitHub state and rejects any mismatch in supplied node IDs, exact configured
-Issue Type ID/name, creators/comment authors, native parent, current task,
-Assignment/Lease/Result/Acceptance, worker/slot, destination, status, or race checks before a
-write. Opaque dispatch IDs are never selectors for a generic route, and no
-agent has a generic write tool.
+GitHub REST cannot transact Result and Acceptance writes. The reporter performs
+fail-closed pre/post reconciliation and no compensating delete. A detected race
+requires manual remediation while preserving comments as an audit trail.
 
-`transition_issue` re-reads authoritative native children and binds supplied
-task IDs to the unique current task of the required type: the matching child
-with the greatest Issue number. It rejects an older matching closed task and
-every unexpected open sibling. It re-reads the parent immediately before label
-mutation, requires the expected status still to match, and recomputes the
-replacement from those current labels so concurrently added unrelated labels
-are preserved:
+## Configuration and least privilege
 
-- `status:new` + `start-validation`: requires no open child, creates and
-  attaches validation, then replaces only the WorkGraph status label with
-  `status:awaiting-validation`.
-- `status:awaiting-validation` + `advance-validation`: requires a closed child,
-  current configured-author Result, and configured-author Acceptance matching
-  its current digest. Two passed criteria advance to `status:awaiting-triage`;
-  otherwise it creates/attaches request-info and advances to
-  `status:awaiting-need-info`.
-- `status:awaiting-need-info` + `resume-after-human-reply`: requires the
-  accepted, externally closed request-info task and a non-agent human comment
-  created strictly after its recorded parent info comment; it creates/attaches
-  validation and advances to awaiting-validation.
-- `status:awaiting-triage` is an orchestrator no-op.
+All profiles configure:
 
-The tool rejects stale supplied status. Task creation, native child attachment,
-and status replacement are one narrow MCP call and reconcile expected state
-immediately before writing. GitHub REST does not provide a
-transaction spanning those routes, so every task-producing transition uses the
-canonical title/body correlation above. On retry, it first reconciles one
-already attached match, then one exact open unattached fixed-repository match,
-before creating. Multiple candidates, a candidate attached elsewhere, or any
-other open child fail closed. A retry therefore completes a partial
-create/attach/status sequence without creating another task or leaving the
-known correlated task orphaned.
-
-Task creation always includes the configured `WorkGraphTask` Issue Type in the
-initial create request. Only a create response and later authoritative reads
-with the exact configured type ID and name are adoptable. A correlated Issue
-created without that type, with another type, or later typed/untyped is never
-attached, assigned, commented on, or retyped by these tools; creation retry
-replaces it with a fresh correctly typed task. No tool exposes an Issue Type
-mutation route.
-
-`post_parent_info_request` first validates the same exact active Lease dispatch
-required by Result submission. It verifies the request task and referenced
-current validation Result, mentions the parent submitter, lists only failed criteria,
-and reconciles by validation Result comment node ID. It permits later cycles
-for later validation Results but never duplicates the same request. Before
-posting to the parent it also requires the supplied request-info task to be the
-current request task and to have exactly one canonical configured-author
-Assignment naming `issue-info-requester`.
-
-The exact criterion strings with `passed: false` are authoritative requested
-items. A positively phrased criterion such as `The Issue body is present`
-still names missing information when its validation entry is false. An
-acceptor must not reinterpret that grammar; a valid reporter-produced
-request-info Result is satisfactory absent a concrete factual or canonical
-contract mismatch.
-
-`feedback_and_redispatch` verifies the caller-reviewed Result node ID and
-digest against the exact current Result and existing Assignment, then maintains
-one canonical configured-author feedback comment:
-Feedback is bound to the exact current Result digest.
-
-````text
-WorkGraphTaskFeedback/v1
-
-```json
-{
-  "resultCommentNodeId": "IC_result",
-  "resultBodyDigest": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-  "feedback": "Clarify the body evidence."
-}
-```
-````
-
-Stale reviewed digests are rejected. After the acceptor reviews a revised
-Result snapshot, the tool PATCHes that same feedback comment with the new
-digest and requested feedback, then returns a queue request, not a worker
-launch:
-
-```json
-{
-  "status": "queued-for-lease",
-  "agentProfile": "issue-validator",
-  "workerId": "issue-validation-01",
-  "taskIssueNumber": 17
-}
-```
-
-There is no supported GitHub Agent Task redispatch REST surface available to
-this dependency-free reporter. The external WorkGraph dispatcher must consume
-this bounded request and grant a new Lease before worker invocation. The tool
-never invents an endpoint, chooses a new profile, or creates a Lease.
-
-Only after a new Lease is granted may feedback dispatch add
-`feedbackCommentNodeId`, `feedbackUpdatedAt`, `resultCommentNodeId`, and
-`resultBodyDigest` to the trusted dispatch envelope. Workers read the exact
-prior Result and feedback, pass opaque IDs/digest and the new Lease unchanged,
-and submit a materially revised `workResult` when actionable feedback identifies
-a real mismatch. They do not reconcile an unchanged Result. The reporter still
-independently verifies all IDs, digest, authors, Assignment, Lease, worker/slot,
-task, destination, races, and revision safety. A
-request-info worker never changes the reporter-owned parent request or exact
-failed criterion strings merely to satisfy a wording preference.
-
-## Unavoidable REST race and remediation
-
-The pre/post reconciliation windows are the strongest fail-closed behavior
-available without a GitHub transaction. A Result may still change immediately
-after the final Acceptance check, or an Acceptance may appear immediately
-after the final Result check. Any detected race returns an inconsistent-state
-error and performs no compensating delete; this MCP intentionally exposes no
-delete route.
-
-Manual remediation is required: stop dispatch for the task, inspect the one
-Result and all Acceptance comments, and create a fresh WorkGraph task/cycle
-from the authoritative parent state. Preserve the inconsistent comments as an
-audit trail; do not delete or reinterpret an Acceptance whose digest no longer
-matches.
-
-## Identity and least privilege
-
-Configure immutable positive numeric IDs:
-
+- `COPILOT_MCP_WORKGRAPH_TOKEN`
+- `COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID`
 - `COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID`
 - `COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID`
 - `COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID`
 - `COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID`
 - `COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID`
 - `COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID`
-- `COPILOT_MCP_WORKGRAPH_REDISPATCH_REPORTER_USER_ID`
-- `COPILOT_MCP_WORKGRAPH_DISPATCHER_USER_ID`
-- `COPILOT_MCP_WORKGRAPH_LEASE_REPORTER_USER_ID`
+- `COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID`
 
-Also configure secret `COPILOT_MCP_WORKGRAPH_TOKEN`. Every profile pins live
-type node ID `IT_kwDOCX0YF84CKGIJ`. Each tool verifies `/user` against its
-configured role and verifies relevant stored comment authors. Roles may map to
-one installation bot in a prototype, but remain separately named provenance
-checks. Tokens need only fixed-repository metadata read and the specific Issue
-comment/task/label routes used by the configured profile. All five profiles are
-`user-invocable: true` and `disable-model-invocation: false` so selected GitHub
-Agent Task sessions execute the profile and its narrow tools. This follows the
-observed Agent Task runtime requirement; setting the latter to `true` produced
-completed no-op sessions even when the profile was explicitly selected. They
-expose no generic Issue write tool.
+The validator and info-requester profiles additionally configure:
+
+- `COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL`
+- `COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN`
+
+The URL must be HTTPS, have no embedded credentials, query, or fragment, and end in
+`/lease/validate`. Tests alone may use loopback HTTP. Reporter identity values
+are immutable positive numeric GitHub user IDs. Tokens need only fixed-
+repository metadata reads, the profile's narrow Issue routes, and, for the
+Source token, read-only exact active-Lease validation.
 
 ## Validation
 

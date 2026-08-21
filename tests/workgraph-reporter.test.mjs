@@ -4,18 +4,15 @@ import { once } from "node:events";
 import { createServer } from "node:http";
 import path from "node:path";
 import test from "node:test";
+import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath } from "node:url";
 import {
   formatAcceptance,
-  formatAssignment as formatV2Assignment,
-  formatHistoricalAssignment,
-  formatHistoricalTaskResult,
-  formatLease,
-  formatLeaseExpiration,
+  formatAssignment,
   parseWorkersYaml,
   selectWorker,
   formatTask,
-  formatTaskResult as formatV2TaskResult,
+  formatTaskResult,
   parseTask,
   resultDigest,
 } from "../.github/mcp/workgraph-reporter.mjs";
@@ -30,9 +27,7 @@ const IDS = {
   acceptance: 13,
   orchestrator: 14,
   info: 15,
-  redispatch: 16,
-  dispatcher: 17,
-  leaseReporter: 18,
+  feedback: 16,
   submitter: 20,
   human: 21,
 };
@@ -72,6 +67,7 @@ const INFO_LEASE = {
 };
 const PASS_RESULT = {
   taskType: "validate-issue",
+  leaseId: ACTIVE_LEASE.leaseId,
   outcome: "succeeded",
   summary: "Both required fields are present.",
   result: {
@@ -91,18 +87,6 @@ const FAIL_RESULT = {
     ],
   },
 };
-
-function formatAssignment(profile, workerId) {
-  return workerId
-    ? formatV2Assignment(profile, workerId)
-    : formatHistoricalAssignment(profile);
-}
-
-function formatTaskResult(result) {
-  return result.leaseId
-    ? formatV2TaskResult(result)
-    : formatHistoricalTaskResult(result);
-}
 
 function leasedResult(result, leaseId = ACTIVE_LEASE.leaseId) {
   return {
@@ -127,15 +111,8 @@ function compatibleWorkers(profile = "issue-validator") {
   ];
 }
 
-function activeLeaseInput(
-  lease = ACTIVE_LEASE,
-  leaseCommentNodeId = "IC_lease",
-) {
-  return {
-    assignmentCommentNodeId: lease.assignmentCommentNodeId,
-    leaseCommentNodeId,
-    ...lease,
-  };
+function activeLeaseInput(lease = ACTIVE_LEASE) {
+  return { ...lease };
 }
 
 function taskPayload(taskType = "validate-issue", resultNode = "IC_validation") {
@@ -196,39 +173,27 @@ function makeComment(
   };
 }
 
-function assignmentComment(profile = "issue-validator", author = IDS.assignment) {
-  return makeComment(formatAssignment(profile), author, "IC_assignment", 201);
-}
-
-function assignmentV2Comment(
+function assignmentComment(
   profile = "issue-validator",
   workerId = "issue-validation-01",
   nodeId = "IC_assignment",
+  author = IDS.assignment,
 ) {
   return makeComment(
     formatAssignment(profile, workerId),
-    IDS.assignment,
+    author,
     nodeId,
     201,
   );
 }
 
-function leaseComment(lease = ACTIVE_LEASE, nodeId = "IC_lease") {
-  return makeComment(
-    formatLease(lease),
-    IDS.dispatcher,
-    nodeId,
-    204,
-    lease.acquiredAt,
-  );
-}
-
 function resultComment(result = PASS_RESULT, author = IDS.result, nodeId = "IC_result") {
-  return makeComment(formatTaskResult(result), author, nodeId, 202);
+  const current = result.leaseId ? result : leasedResult(result);
+  return makeComment(formatTaskResult(current), author, nodeId, 202);
 }
 
 function acceptanceComment(result = PASS_RESULT, author = IDS.acceptance) {
-  const body = formatTaskResult(result);
+  const body = formatTaskResult(result.leaseId ? result : leasedResult(result));
   return makeComment(
     formatAcceptance({
       resultCommentNodeId: "IC_result",
@@ -261,6 +226,13 @@ async function fakeGitHub({
   failures = {},
   incorrectlyTypedCreates = 0,
   workerConfig = WORKERS_YAML,
+  activeLease = {
+    ...ACTIVE_LEASE,
+    taskNodeId: TASK_NODE,
+    taskType: "validate-issue",
+  },
+  leaseValidationStatus = 200,
+  leaseValidationResponse = null,
 } = {}) {
   const state = {
     identityId: IDS.result,
@@ -274,6 +246,9 @@ async function fakeGitHub({
     incorrectlyTypedCreates,
     createPayloads: [],
     workerConfig,
+    activeLease,
+    leaseValidationStatus,
+    leaseValidationResponse,
     hooks: {},
     subIssueRepositoryUrl:
       "https://api.github.com/repos/drasi-project/drasi-workgraph-demo",
@@ -306,6 +281,27 @@ async function fakeGitHub({
     const url = new URL(request.url, "http://localhost");
     const route = url.pathname;
     state.operations.push(`${request.method} ${route}`);
+    if (request.method === "POST" && route === "/lease/validate") {
+      if (request.headers.authorization !== "Bearer source-token") {
+        send(response, 401, { message: "bad lease token" });
+        return;
+      }
+      const payload = await jsonBody(request);
+      state.hooks.beforeLeaseValidation?.(payload, state);
+      const expected = {
+        taskNodeId: state.activeLease.taskNodeId,
+        leaseId: state.activeLease.leaseId,
+        assignmentCommentNodeId: state.activeLease.assignmentCommentNodeId,
+        workerId: state.activeLease.workerId,
+        slotId: state.activeLease.slotId,
+      };
+      if (state.leaseValidationStatus !== 200 || !isDeepStrictEqual(payload, expected)) {
+        send(response, state.leaseValidationStatus === 200 ? 409 : state.leaseValidationStatus, {});
+        return;
+      }
+      send(response, 200, state.leaseValidationResponse ?? state.activeLease);
+      return;
+    }
     if (request.headers.authorization !== "Bearer test-token") {
       send(response, 401, { message: "bad token" });
       return;
@@ -529,9 +525,9 @@ async function runTool(fake, actorId, name, input) {
       COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID: String(IDS.acceptance),
       COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID: String(IDS.orchestrator),
       COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID: String(IDS.info),
-      COPILOT_MCP_WORKGRAPH_REDISPATCH_REPORTER_USER_ID: String(IDS.redispatch),
-      COPILOT_MCP_WORKGRAPH_DISPATCHER_USER_ID: String(IDS.dispatcher),
-      COPILOT_MCP_WORKGRAPH_LEASE_REPORTER_USER_ID: String(IDS.leaseReporter),
+      COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID: String(IDS.feedback),
+      COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL: `${fake.api}/lease/validate`,
+      COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN: "source-token",
       WORKGRAPH_TEST_NOW: "2026-08-19T00:00:00Z",
     },
     stdio: ["pipe", "pipe", "pipe"],
@@ -583,11 +579,11 @@ test("exact canonical task YAML supports only the two contracts", () => {
 test("exact Assignment, validation pass/failure, request-info, and Acceptance bytes", () => {
   assert.equal(
     formatAssignment("issue-validator", "issue-validation-01"),
-    'WorkGraphTaskAssignment/v2\n\n```json\n{\n  "agentProfile": "issue-validator",\n  "workerId": "issue-validation-01"\n}\n```\n',
+    'WorkGraphTaskAssignment/v1\n\n```json\n{\n  "agentProfile": "issue-validator",\n  "workerId": "issue-validation-01"\n}\n```\n',
   );
   for (const result of [PASS_RESULT, FAIL_RESULT]) {
     const body = formatTaskResult(leasedResult(result));
-    assert.equal(body.startsWith("WorkGraphTaskResult/v2\n\n```json\n{\n"), true);
+    assert.equal(body.startsWith("WorkGraphTaskResult/v1\n\n```json\n{\n"), true);
     assert.equal(body.includes("assignmentId"), false);
     assert.equal(body.includes("bodyDigest"), false);
     assert.equal(body.endsWith("```\n"), true);
@@ -645,11 +641,11 @@ test("exact Assignment, validation pass/failure, request-info, and Acceptance by
       /malformed|duration/,
     );
     assert.match(
-      formatV2Assignment("issue-validator", "issue-validation.01"),
+      formatAssignment("issue-validator", "issue-validation.01"),
       /"workerId": "issue-validation\.01"/,
     );
     assert.match(
-      formatV2TaskResult(leasedResult(PASS_RESULT, "lease:attempt.01")),
+      formatTaskResult(leasedResult(PASS_RESULT, "lease:attempt.01")),
       /"leaseId": "lease:attempt\.01"/,
     );
   });
@@ -673,7 +669,7 @@ test("exposes only seven narrow tools and ignores MCP notifications", async () =
         "submit_result_acceptance",
         "transition_issue",
         "post_parent_info_request",
-        "feedback_and_redispatch",
+        "submit_task_feedback",
       ],
     );
     tools.forEach((tool) =>
@@ -686,7 +682,7 @@ test("verified Result snapshot supplies the acceptor digest", async () => {
   await withFake(
     {
       comments: {
-        [TASK_NUMBER]: [assignmentV2Comment(), resultComment(PASS_RESULT)],
+        [TASK_NUMBER]: [assignmentComment(), resultComment(PASS_RESULT)],
       },
     },
     async (fake) => {
@@ -706,14 +702,13 @@ test("verified Result snapshot supplies the acceptor digest", async () => {
   );
 });
 
-test("Acceptance reviews and digest-binds Result/v2 identically to Result/v1", async () => {
+test("Acceptance reviews and digest-binds the lease-bound Result/v1", async () => {
   const result = leasedResult(PASS_RESULT);
   await withFake(
     {
       comments: {
         [TASK_NUMBER]: [
-          assignmentV2Comment(),
-          leaseComment(),
+          assignmentComment(),
           resultComment(result),
         ],
       },
@@ -867,11 +862,11 @@ test("assignment rejects nondeterministic selection and malformed authoritative 
   });
 });
 
-test("Result v2 ends its Lease, reconciles exact retries, and rejects same-Lease revision", async () => {
+test("Result/v1 validates the Source Lease immediately before write and reconciles retries", async () => {
   await withFake(
     {
       comments: {
-        [TASK_NUMBER]: [assignmentV2Comment(), leaseComment()],
+        [TASK_NUMBER]: [assignmentComment()],
       },
     },
     async (fake) => {
@@ -884,8 +879,16 @@ test("Result v2 ends its Lease, reconciles exact retries, and rejects same-Lease
       const first = await runTool(fake, IDS.result, "submit_task_result", input);
       assert.equal(first.result.isError, false);
       assert.equal(first.result.structuredContent.revised, false);
+      const write = fake.state.operations.findIndex(
+        (operation) => operation === "POST /repos/drasi-project/drasi-workgraph-demo/issues/17/comments",
+      );
+      assert.equal(fake.state.operations[write - 1], "POST /lease/validate");
       const duplicate = await runTool(fake, IDS.result, "submit_task_result", input);
       assert.equal(duplicate.result.structuredContent.reconciled, true);
+      assert.equal(
+        fake.state.operations.filter((operation) => operation === "POST /lease/validate").length,
+        1,
+      );
       const revisedResult = {
         ...result,
         summary: "The issue still needs a body.",
@@ -896,7 +899,7 @@ test("Result v2 ends its Lease, reconciles exact retries, and rejects same-Lease
         workResult: revisedResult,
       });
       assert.equal(revised.result.isError, true);
-      assert.match(revised.result.content[0].text, /ended by Result/);
+      assert.match(revised.result.content[0].text, /only after feedback/);
       assert.equal(fake.state.tasks.get(TASK_NUMBER).state, "open");
       assert.equal(
         fake.state.operations.some(
@@ -912,7 +915,7 @@ test("Result submits a valid passing validation without closing the task", async
   await withFake(
     {
       comments: {
-        [TASK_NUMBER]: [assignmentV2Comment(), leaseComment()],
+        [TASK_NUMBER]: [assignmentComment()],
       },
     },
     async (fake) => {
@@ -938,93 +941,86 @@ test("Result submits a valid passing validation without closing the task", async
   );
 });
 
-test("Result rejects expired, mismatched, duplicate, superseded, and ended Leases", async () => {
+test("Result rejects locally expired and Source-rejected Leases without writing", async () => {
   const expiredLease = {
     ...ACTIVE_LEASE,
     acquiredAt: "2026-08-18T23:00:00Z",
     expiresAt: "2026-08-18T23:59:59Z",
   };
-  const newerLease = {
-    ...ACTIVE_LEASE,
-    leaseId: "lease-002",
-    acquiredAt: "2026-08-18T23:45:00Z",
-    expiresAt: "2026-08-19T00:45:00Z",
-  };
   const cases = [
     {
       name: "expired",
-      lease: expiredLease,
-      extras: [],
       input: activeLeaseInput(expiredLease),
-      expected: /expired; stale late Result rejected/,
+      options: {},
+      expected: /expired/,
+      validates: false,
     },
     {
-      name: "wrong slot",
-      lease: ACTIVE_LEASE,
-      extras: [],
+      name: "Source mismatch",
       input: { ...activeLeaseInput(), slotId: "issue-validation-01/2" },
-      expected: /not an enabled slot/,
+      options: {},
+      expected: /HTTP 409/,
+      validates: true,
     },
     {
       name: "wrong assignment",
-      lease: ACTIVE_LEASE,
-      extras: [],
       input: {
         ...activeLeaseInput(),
         assignmentCommentNodeId: "IC_other_assignment",
       },
-      expected: /exact Assignment\/v2/,
+      options: {},
+      expected: /exact Assignment\/v1/,
+      validates: false,
     },
     {
-      name: "duplicate",
-      lease: ACTIVE_LEASE,
-      extras: [leaseComment(ACTIVE_LEASE, "IC_duplicate_lease")],
+      name: "Source unauthorized",
       input: activeLeaseInput(),
-      expected: /duplicate Lease acquisitions/,
+      options: { leaseValidationStatus: 401 },
+      expected: /HTTP 401/,
+      validates: true,
     },
     {
-      name: "superseded",
-      lease: ACTIVE_LEASE,
-      extras: [leaseComment(newerLease, "IC_newer_lease")],
+      name: "Source unavailable",
       input: activeLeaseInput(),
-      expected: /superseded/,
+      options: { leaseValidationStatus: 503 },
+      expected: /HTTP 503/,
+      validates: true,
     },
     {
-      name: "expired artifact",
-      lease: ACTIVE_LEASE,
-      extras: [
-        makeComment(
-          formatLeaseExpiration({
-            leaseCommentNodeId: "IC_lease",
-            leaseId: ACTIVE_LEASE.leaseId,
-            expiredAt: "2026-08-18T23:59:59Z",
-            reason: "Lease deadline reached.",
-          }),
-          IDS.leaseReporter,
-          "IC_expiration",
-          205,
-        ),
-      ],
+      name: "Source response mismatch",
       input: activeLeaseInput(),
-      expected: /ended by expiration/,
+      options: {
+        leaseValidationResponse: {
+          ...ACTIVE_LEASE,
+          taskNodeId: TASK_NODE,
+          taskType: "validate-issue",
+          expiresAt: "2026-08-19T00:29:59Z",
+        },
+      },
+      expected: /does not match the dispatch/,
+      validates: true,
     },
     {
-      name: "result ended",
-      lease: ACTIVE_LEASE,
-      extras: [resultComment(leasedResult(PASS_RESULT))],
+      name: "Source response extra field",
       input: activeLeaseInput(),
-      expected: /ended by Result/,
+      options: {
+        leaseValidationResponse: {
+          ...ACTIVE_LEASE,
+          taskNodeId: TASK_NODE,
+          taskType: "validate-issue",
+          internalSlotNumber: 1,
+        },
+      },
+      expected: /properties must be exactly/,
+      validates: true,
     },
   ];
   for (const scenario of cases) {
     await withFake(
       {
+        ...scenario.options,
         comments: {
-          [TASK_NUMBER]: [
-            assignmentV2Comment(),
-            leaseComment(scenario.lease),
-            ...scenario.extras,
-          ],
+          [TASK_NUMBER]: [assignmentComment()],
         },
       },
       async (fake) => {
@@ -1035,6 +1031,12 @@ test("Result rejects expired, mismatched, duplicate, superseded, and ended Lease
         });
         assert.equal(response.result.isError, true, scenario.name);
         assert.match(response.result.content[0].text, scenario.expected, scenario.name);
+        assert.equal(fake.state.comments.get(TASK_NUMBER).length, 1);
+        assert.equal(
+          fake.state.operations.includes("POST /lease/validate"),
+          scenario.validates,
+          scenario.name,
+        );
       },
     );
   }
@@ -1051,7 +1053,6 @@ test("Result rejects wrong Assignment/Result authors and task target", async () 
             "IC_assignment",
             201,
           ),
-          leaseComment(),
         ],
       },
     },
@@ -1071,7 +1072,6 @@ test("Result rejects wrong Assignment/Result authors and task target", async () 
         [TASK_NUMBER]: [
           assignmentComment(),
           resultComment(PASS_RESULT, 999),
-          leaseComment(),
         ],
       },
     },
@@ -1119,7 +1119,7 @@ test("Result rejects wrong repository, type, and parent provenance", async () =>
     await withFake(
       {
         comments: {
-          [TASK_NUMBER]: [assignmentV2Comment(), leaseComment()],
+          [TASK_NUMBER]: [assignmentComment()],
         },
       },
       async (fake) => {
@@ -1150,6 +1150,11 @@ test("request-info posts one idempotent parent comment and submits typed Result"
       parentStatus: "status:awaiting-need-info",
       tasks: [validation, request],
       children: [17, 18],
+      activeLease: {
+        ...INFO_LEASE,
+        taskNodeId: "I_request",
+        taskType: "request-info",
+      },
       comments: {
         17: [
           assignmentComment(),
@@ -1157,12 +1162,11 @@ test("request-info posts one idempotent parent comment and submits typed Result"
           acceptanceComment(FAIL_RESULT),
         ],
         18: [
-          assignmentV2Comment(
+          assignmentComment(
             "issue-info-requester",
             "issue-information-01",
             "IC_assignment_request",
           ),
-          leaseComment(INFO_LEASE, "IC_lease_request"),
         ],
       },
     },
@@ -1172,7 +1176,7 @@ test("request-info posts one idempotent parent comment and submits typed Result"
         validationTaskIssueNumber: 17,
         validationTaskIssueNodeId: TASK_NODE,
         validationResultCommentNodeId: "IC_result",
-        ...activeLeaseInput(INFO_LEASE, "IC_lease_request"),
+        ...activeLeaseInput(INFO_LEASE),
       };
       const first = await runTool(
         fake,
@@ -1181,6 +1185,11 @@ test("request-info posts one idempotent parent comment and submits typed Result"
         infoInput,
       );
       assert.equal(first.result.isError, false);
+      const parentWrite = fake.state.operations.findIndex(
+        (operation) => operation ===
+          "POST /repos/drasi-project/drasi-workgraph-demo/issues/7/comments",
+      );
+      assert.equal(fake.state.operations[parentWrite - 1], "POST /lease/validate");
       assert.match(fake.state.comments.get(PARENT_NUMBER)[0].body, /@submitter/);
       assert.match(fake.state.comments.get(PARENT_NUMBER)[0].body, /The Issue body is present/);
       const duplicate = await runTool(
@@ -1191,6 +1200,10 @@ test("request-info posts one idempotent parent comment and submits typed Result"
       );
       assert.equal(duplicate.result.structuredContent.reconciled, true);
       assert.equal(fake.state.comments.get(PARENT_NUMBER).length, 1);
+      assert.equal(
+        fake.state.operations.filter((operation) => operation === "POST /lease/validate").length,
+        1,
+      );
 
       const infoResult = {
         taskType: "request-info",
@@ -1204,10 +1217,19 @@ test("request-info posts one idempotent parent comment and submits typed Result"
       };
       const submitted = await runTool(fake, IDS.result, "submit_task_result", {
         ...baseInput(request),
-        ...activeLeaseInput(INFO_LEASE, "IC_lease_request"),
+        ...activeLeaseInput(INFO_LEASE),
         workResult: infoResult,
       });
       assert.equal(submitted.result.isError, false);
+      const resultWrite = fake.state.operations.findLastIndex(
+        (operation) => operation ===
+          "POST /repos/drasi-project/drasi-workgraph-demo/issues/18/comments",
+      );
+      assert.equal(fake.state.operations[resultWrite - 1], "POST /lease/validate");
+      assert.equal(
+        fake.state.operations.filter((operation) => operation === "POST /lease/validate").length,
+        2,
+      );
       assert.equal(
         fake.state.comments.get(18).at(-1).body,
         formatTaskResult(infoResult),
@@ -1426,11 +1448,11 @@ test("accepted request-info resumes only from a later human reply", async () => 
   );
 });
 
-test("feedback is idempotent and queues the assigned worker for a new Lease", async () => {
+test("feedback is idempotent and does not allocate a Lease", async () => {
   await withFake(
     {
       comments: {
-        [TASK_NUMBER]: [assignmentV2Comment(), resultComment(PASS_RESULT)],
+        [TASK_NUMBER]: [assignmentComment(), resultComment(PASS_RESULT)],
       },
     },
     async (fake) => {
@@ -1442,28 +1464,28 @@ test("feedback is idempotent and queues the assigned worker for a new Lease", as
       };
       const first = await runTool(
         fake,
-        IDS.redispatch,
-        "feedback_and_redispatch",
+        IDS.feedback,
+        "submit_task_feedback",
         input,
       );
       assert.equal(first.result.isError, false, first.result.content?.[0]?.text);
-      assert.deepEqual(first.result.structuredContent.redispatch, {
-        status: "queued-for-lease",
-        agentProfile: "issue-validator",
-        workerId: "issue-validation-01",
-        taskIssueNumber: TASK_NUMBER,
-      });
+      assert.deepEqual(Object.keys(first.result.structuredContent).sort(), [
+        "feedbackCommentNodeId",
+        "reconciled",
+        "resultBodyDigest",
+        "revised",
+      ]);
       const duplicate = await runTool(
         fake,
-        IDS.redispatch,
-        "feedback_and_redispatch",
+        IDS.feedback,
+        "submit_task_feedback",
         input,
       );
       assert.equal(duplicate.result.structuredContent.reconciled, true);
       const stale = await runTool(
         fake,
-        IDS.redispatch,
-        "feedback_and_redispatch",
+        IDS.feedback,
+        "submit_task_feedback",
         {
           ...input,
           resultBodyDigest: `sha256:${"0".repeat(64)}`,
@@ -1775,7 +1797,7 @@ test("parent info request requires the current request task Assignment", async (
           validationTaskIssueNumber: 17,
           validationTaskIssueNodeId: TASK_NODE,
           validationResultCommentNodeId: "IC_result",
-          ...activeLeaseInput(INFO_LEASE, "IC_lease_request"),
+          ...activeLeaseInput(INFO_LEASE),
         },
       );
       assert.equal(response.result.isError, true);
@@ -1785,11 +1807,11 @@ test("parent info request requires the current request task Assignment", async (
   );
 });
 
-test("feedback revision requires and consumes a newly granted active Lease", async () => {
+test("feedback revision requires a newly Source-validated active Lease", async () => {
   await withFake(
     {
       comments: {
-        [TASK_NUMBER]: [assignmentV2Comment(), resultComment(PASS_RESULT)],
+        [TASK_NUMBER]: [assignmentComment(), resultComment(PASS_RESULT)],
       },
     },
     async (fake) => {
@@ -1801,12 +1823,11 @@ test("feedback revision requires and consumes a newly granted active Lease", asy
       };
       const first = await runTool(
         fake,
-        IDS.redispatch,
-        "feedback_and_redispatch",
+        IDS.feedback,
+        "submit_task_feedback",
         input,
       );
       assert.equal(first.result.isError, false, first.result.content?.[0]?.text);
-      fake.state.comments.get(TASK_NUMBER).push(leaseComment());
       const revisedResult = leasedResult({
         ...PASS_RESULT,
         summary: "Revised result evidence.",
@@ -1829,6 +1850,11 @@ test("feedback revision requires and consumes a newly granted active Lease", asy
         },
       );
       assert.equal(revisedResultResponse.result.isError, false);
+      const patch = fake.state.operations.findLastIndex(
+        (operation) => operation ===
+          "PATCH /repos/drasi-project/drasi-workgraph-demo/issues/comments/202",
+      );
+      assert.equal(fake.state.operations[patch - 1], "POST /lease/validate");
       assert.equal(
         revisedResultResponse.result.structuredContent.resultBodyDigest,
         resultDigest(formatTaskResult(revisedResult)),
@@ -1850,45 +1876,7 @@ test("feedback revision requires and consumes a newly granted active Lease", asy
   );
 });
 
-test("Result/Expiration and Result/Acceptance writes fail closed on races", async () => {
-  await withFake(
-    {
-      comments: {
-        [TASK_NUMBER]: [assignmentV2Comment(), leaseComment()],
-      },
-    },
-    async (fake) => {
-      fake.state.hooks.afterPostComment = (_number, comment, state) => {
-        if (comment.body.includes("WorkGraphTaskResult/v2")) {
-          state.comments.get(TASK_NUMBER).push(
-            makeComment(
-              formatLeaseExpiration({
-                leaseCommentNodeId: "IC_lease",
-                leaseId: ACTIVE_LEASE.leaseId,
-                expiredAt: "2026-08-19T00:00:00Z",
-                reason: "Lease deadline reached.",
-              }),
-              IDS.leaseReporter,
-              "IC_racing_expiration",
-              250,
-            ),
-          );
-        }
-      };
-      const response = await runTool(
-        fake,
-        IDS.result,
-        "submit_task_result",
-        {
-          ...baseInput(),
-          ...activeLeaseInput(),
-          workResult: leasedResult(PASS_RESULT),
-        },
-      );
-      assert.equal(response.result.isError, true);
-      assert.match(response.result.content[0].text, /ended by expiration/);
-    },
-  );
+test("Result/Acceptance writes fail closed on races", async () => {
   await withFake(
     {
       comments: {
