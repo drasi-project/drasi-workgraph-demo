@@ -50,6 +50,10 @@ IDENTITY_KEYS = [
     "COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID",
     "COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID",
 ]
+COMMON_ENV_KEYS = {
+    "COPILOT_MCP_WORKGRAPH_TOKEN",
+    "COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID",
+}
 
 
 class WorkGraphProfilesTest(unittest.TestCase):
@@ -98,15 +102,19 @@ class WorkGraphProfilesTest(unittest.TestCase):
                     "${{ secrets.COPILOT_MCP_WORKGRAPH_TOKEN }}",
                     content,
                 )
-                for key in IDENTITY_KEYS:
-                    self.assertIn(key, content)
-        for name in ("issue-validator", "issue-info-requester"):
-            self.assertIn(
-                "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL", self.agents[name]
-            )
-            self.assertIn(
-                "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN", self.agents[name]
-            )
+                expected = COMMON_ENV_KEYS | set(IDENTITY_KEYS)
+                if name == "issue-assigner":
+                    expected = COMMON_ENV_KEYS | set(IDENTITY_KEYS[:2])
+                if name in ("issue-validator", "issue-info-requester"):
+                    expected |= {
+                        "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL",
+                        "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN",
+                    }
+                frontmatter = content.split("---", 2)[1]
+                env_keys = set(
+                    re.findall(r"(?m)^      ([A-Z0-9_]+):", frontmatter)
+                )
+                self.assertEqual(env_keys, expected)
 
     def test_task_contract_is_exact_and_closed(self):
         for text in [self.doc, self.reporter]:

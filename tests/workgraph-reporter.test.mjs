@@ -498,7 +498,7 @@ function baseInput(task = makeTask()) {
   };
 }
 
-async function runTool(fake, actorId, name, input) {
+async function runTool(fake, actorId, name, input, { unsetEnv = [] } = {}) {
   fake.state.identityId = actorId;
   const messages = [
     { jsonrpc: "2.0", id: 1, method: "initialize", params: {} },
@@ -511,25 +511,27 @@ async function runTool(fake, actorId, name, input) {
       params: { name, arguments: input },
     },
   ];
+  const env = {
+    ...process.env,
+    NODE_ENV: "test",
+    WORKGRAPH_TEST_GITHUB_API_URL: fake.api,
+    COPILOT_MCP_WORKGRAPH_TOKEN: "test-token",
+    COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID: TYPE_ID,
+    COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID: String(IDS.launcher),
+    COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID: String(IDS.assignment),
+    COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID: String(IDS.result),
+    COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID: String(IDS.acceptance),
+    COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID: String(IDS.orchestrator),
+    COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID: String(IDS.info),
+    COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID: String(IDS.feedback),
+    COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL: `${fake.api}/lease/validate`,
+    COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN: "source-token",
+    WORKGRAPH_TEST_NOW: "2026-08-19T00:00:00Z",
+  };
+  for (const key of unsetEnv) delete env[key];
   const child = spawn(process.execPath, [REPORTER], {
     cwd: ROOT,
-    env: {
-      ...process.env,
-      NODE_ENV: "test",
-      WORKGRAPH_TEST_GITHUB_API_URL: fake.api,
-      COPILOT_MCP_WORKGRAPH_TOKEN: "test-token",
-      COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID: TYPE_ID,
-      COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID: String(IDS.launcher),
-      COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID: String(IDS.assignment),
-      COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID: String(IDS.result),
-      COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID: String(IDS.acceptance),
-      COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID: String(IDS.orchestrator),
-      COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID: String(IDS.info),
-      COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID: String(IDS.feedback),
-      COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL: `${fake.api}/lease/validate`,
-      COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN: "source-token",
-      WORKGRAPH_TEST_NOW: "2026-08-19T00:00:00Z",
-    },
+    env,
     stdio: ["pipe", "pipe", "pipe"],
   });
   let stdout = "";
@@ -771,6 +773,63 @@ test("assignment submission is task-only, exact, and idempotent", async () => {
     );
     assert.equal(fake.state.comments.get(PARENT_NUMBER).length, 0);
   });
+});
+
+test("assignment config requires only its shared actors", async () => {
+  const input = {
+    ...baseInput(),
+    agentProfile: "issue-validator",
+    workerId: "issue-validation-01",
+    compatibleWorkers: compatibleWorkers(),
+  };
+  const unrelated = [
+    "COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID",
+    "COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID",
+    "COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID",
+    "COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID",
+    "COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID",
+    "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL",
+    "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN",
+  ];
+  await withFake({}, async (fake) => {
+    const first = await runTool(
+      fake,
+      IDS.assignment,
+      "submit_task_assignment",
+      input,
+      { unsetEnv: unrelated },
+    );
+    assert.equal(first.result.isError, false);
+    const second = await runTool(
+      fake,
+      IDS.assignment,
+      "submit_task_assignment",
+      input,
+      { unsetEnv: unrelated },
+    );
+    assert.equal(second.result.structuredContent.reconciled, true);
+    assert.equal(
+      fake.state.comments.get(TASK_NUMBER)[0].body,
+      formatAssignment("issue-validator", "issue-validation-01"),
+    );
+  });
+  for (const key of [
+    "COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID",
+    "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
+  ]) {
+    await withFake({}, async (fake) => {
+      const response = await runTool(
+        fake,
+        IDS.assignment,
+        "submit_task_assignment",
+        input,
+        { unsetEnv: [key] },
+      );
+      assert.equal(response.result.isError, true);
+      assert.match(response.result.content[0].text, new RegExp(key));
+      assert.equal(fake.state.comments.get(TASK_NUMBER).length, 0);
+    });
+  }
 });
 
 test("assignment rejects wrong target mapping and foreign author", async () => {
