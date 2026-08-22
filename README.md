@@ -12,10 +12,10 @@ REST-launchable profiles:
 
 Tasks are native child Issues with exact type name `WorkGraphTask`, configured
 live type node ID `IT_kwDOCX0YF84CKGIJ`, and one canonical `WorkGraphTask/v1`
-YAML body. `.github/workgraph/workers.yaml` defines two stable capacity-one
-workers with 30-minute leases. The GitHub WorkGraph Source owns their queues and
-synthetic active Leases. Queue ownership uses `WorkGraphTaskAssignment/v1`;
-workers write lease-bound `WorkGraphTaskResult/v1`. All GitHub WorkGraph comment
+YAML body. `.github/workgraph/agents.yaml` defines capacity and Lease duration
+for each custom-agent ID. The GitHub WorkGraph Source owns capacity and
+synthetic active Leases. Agent selection uses `WorkGraphTaskAssignment/v1`;
+agents write lease-bound `WorkGraphTaskResult/v1`. All GitHub WorkGraph comment
 protocols are v1-only, and Lease is never a GitHub comment. Validation uses only the two criteria in
 `.github/workgraph/profiles/issue-validation/new-issue-default.md`.
 
@@ -35,4 +35,6 @@ never hidden by deletion.
 
 See [the reporter contract](docs/workgraph-result-reporter.md) for exact schemas,
 identity configuration, lifecycle rules, current team/Core authority, and
-validation commands.
+network-free validation commands. The
+[GitHub protocol integration tests](docs/workgraph-github-protocol-tests.md)
+are a separate explicit live layer with marker-scoped cleanup.

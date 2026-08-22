@@ -28,15 +28,15 @@ const CRITERIA = [
   "The Issue has a non-empty title",
   "The Issue body is present",
 ];
-const AGENT_BY_TASK = {
+const AGENT_ID_BY_TASK = {
   "validate-issue": "issue-validator",
   "request-info": "issue-info-requester",
 };
 const MAX_TEXT_BYTES = 4096;
 const MAX_ID = 256;
 const MAX_TITLE = 256;
-const WORKER_CONFIG_PATH = ".github/workgraph/workers.yaml";
-const WORKER_CONFIG_REF = "main";
+const AGENT_CONFIG_PATH = ".github/workgraph/agents.yaml";
+const AGENT_CONFIG_REF = "main";
 const REFS = [
   "taskIssueNumber",
   "taskIssueNodeId",
@@ -206,12 +206,11 @@ export function parseTask(body) {
   return task;
 }
 
-export function formatAssignment(agentProfile, workerId) {
-  if (!Object.values(AGENT_BY_TASK).includes(agentProfile)) {
-    throw new WorkGraphError("agentProfile is not supported");
+export function formatAssignment(agentId) {
+  if (!Object.values(AGENT_ID_BY_TASK).includes(agentId)) {
+    throw new WorkGraphError("agentId is not supported");
   }
-  opaque(workerId, "workerId");
-  return canonicalJson(ASSIGNMENT_MARKER, { agentProfile, workerId });
+  return canonicalJson(ASSIGNMENT_MARKER, { agentId });
 }
 
 function parseCanonicalJson(body, marker, validator) {
@@ -232,11 +231,10 @@ function parseCanonicalJson(body, marker, validator) {
 }
 
 function validateAssignment(value) {
-  exact(value, ["agentProfile", "workerId"], "Assignment");
-  if (!Object.values(AGENT_BY_TASK).includes(value.agentProfile)) {
-    throw new WorkGraphError("Assignment.agentProfile is not supported");
+  exact(value, ["agentId"], "Assignment");
+  if (!Object.values(AGENT_ID_BY_TASK).includes(value.agentId)) {
+    throw new WorkGraphError("Assignment.agentId is not supported");
   }
-  opaque(value.workerId, "Assignment.workerId");
 }
 
 function validateResult(value) {
@@ -310,47 +308,18 @@ function parseResult(body) {
   return parseCanonicalJson(body, RESULT_MARKER, validateResult);
 }
 
-function validateQueueWorker(value, index) {
-  exact(value, ["workerId", "agentProfile", "queueDepth"], `compatibleWorkers[${index}]`);
-  opaque(value.workerId, `compatibleWorkers[${index}].workerId`);
-  if (!Object.values(AGENT_BY_TASK).includes(value.agentProfile)) {
-    throw new WorkGraphError(`compatibleWorkers[${index}].agentProfile is unsupported`);
-  }
-  if (!Number.isSafeInteger(value.queueDepth) || value.queueDepth < 0) {
-    throw new WorkGraphError(`compatibleWorkers[${index}].queueDepth must be non-negative`);
-  }
-}
-
-export function selectWorker(compatibleWorkers, agentProfile) {
-  if (!Array.isArray(compatibleWorkers) || compatibleWorkers.length === 0) {
-    throw new WorkGraphError("compatibleWorkers must be a non-empty array");
-  }
-  const seen = new Set();
-  const compatible = compatibleWorkers.filter((worker, index) => {
-    validateQueueWorker(worker, index);
-    if (seen.has(worker.workerId)) {
-      throw new WorkGraphError("compatibleWorkers workerId values must be unique");
-    }
-    seen.add(worker.workerId);
-    return worker.agentProfile === agentProfile;
-  });
-  if (compatible.length === 0) {
-    throw new WorkGraphError("compatibleWorkers has no worker for agentProfile");
-  }
-  compatible.sort(
-    (left, right) =>
-      left.queueDepth - right.queueDepth ||
-      (left.workerId < right.workerId ? -1 : left.workerId > right.workerId ? 1 : 0),
-  );
-  return compatible[0];
-}
-
 function durationSeconds(value, label) {
   const match =
     typeof value === "string"
       ? value.match(/^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/)
       : null;
-  if (!match || match.slice(1).every((part) => part === undefined)) {
+  const hasTime =
+    match !== null && match.slice(2).some((part) => part !== undefined);
+  if (
+    !match ||
+    match.slice(1).every((part) => part === undefined) ||
+    (value.includes("T") && !hasTime)
+  ) {
     throw new WorkGraphError(`${label} must be a whole-unit ISO-8601 duration`);
   }
   const seconds =
@@ -364,46 +333,42 @@ function durationSeconds(value, label) {
   return seconds;
 }
 
-export function parseWorkersYaml(body) {
+export function parseAgentsYaml(body) {
   if (
     typeof body !== "string" ||
     new TextEncoder().encode(body).length > 256 * 1024 ||
     body.includes("\r")
   ) {
-    throw new WorkGraphError("worker config must be bounded LF UTF-8 text");
+    throw new WorkGraphError("agent config must be bounded LF UTF-8 text");
   }
-  const root = body.match(/^version: 1\nworkers:\n([\s\S]+)$/);
+  const root = body.match(/^version: 1\nagents:\n([\s\S]+)$/);
   if (!root) {
-    throw new WorkGraphError("worker config must have version 1 and a workers list");
+    throw new WorkGraphError("agent config must have version 1 and an agents list");
   }
   const entryPattern =
-    /  - workerId: ([A-Za-z0-9._-]{1,64})\n    agentProfile: ([A-Za-z0-9_-]+)\n    slots: (\d+)\n    leaseDuration: ([A-Z0-9]+)\n/g;
-  const workers = [];
+    /  - agentId: ([A-Za-z0-9._-]{1,64})\n    slots: (\d+)\n    leaseDuration: ([A-Z0-9]+)\n/g;
+  const agents = [];
   let consumed = "";
   for (const match of root[1].matchAll(entryPattern)) {
     consumed += match[0];
-    const worker = {
-      workerId: match[1],
-      agentProfile: match[2],
-      slots: Number(match[3]),
-      leaseDuration: match[4],
+    const agent = {
+      agentId: match[1],
+      slots: Number(match[2]),
+      leaseDuration: match[3],
     };
-    if (!Object.values(AGENT_BY_TASK).includes(worker.agentProfile)) {
-      throw new WorkGraphError("worker config agentProfile is unsupported");
+    if (!Number.isSafeInteger(agent.slots) || agent.slots < 1 || agent.slots > 16) {
+      throw new WorkGraphError("agent config slots must be between 1 and 16");
     }
-    if (!Number.isSafeInteger(worker.slots) || worker.slots < 1 || worker.slots > 16) {
-      throw new WorkGraphError("worker config slots must be between 1 and 16");
-    }
-    durationSeconds(worker.leaseDuration, "worker config leaseDuration");
-    workers.push(worker);
+    durationSeconds(agent.leaseDuration, "agent config leaseDuration");
+    agents.push(agent);
   }
-  if (consumed !== root[1] || workers.length === 0 || workers.length > 64) {
-    throw new WorkGraphError("worker config contains unsupported or malformed fields");
+  if (consumed !== root[1] || agents.length === 0 || agents.length > 64) {
+    throw new WorkGraphError("agent config contains unsupported or malformed fields");
   }
-  if (new Set(workers.map((worker) => worker.workerId)).size !== workers.length) {
-    throw new WorkGraphError("worker config workerId values must be unique");
+  if (new Set(agents.map((agent) => agent.agentId)).size !== agents.length) {
+    throw new WorkGraphError("agent config agentId values must be unique");
   }
-  return workers;
+  return agents;
 }
 
 function validateAcceptance(value) {
@@ -466,11 +431,32 @@ function envId(name) {
   return value;
 }
 
-function config(toolName) {
-  const token = process.env.COPILOT_MCP_WORKGRAPH_TOKEN ?? "";
+const IDENTITY_ENV = {
+  launcherId: "COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID",
+  assignmentId: "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
+  resultId: "COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID",
+  acceptanceId: "COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID",
+  orchestratorId: "COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID",
+  infoId: "COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID",
+  feedbackId: "COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID",
+};
+
+function configuredIdentities(keys) {
+  return Object.fromEntries(
+    keys.map((key) => [key, envId(IDENTITY_ENV[key])]),
+  );
+}
+
+function requiredEnv(name) {
+  const value = process.env[name] ?? "";
+  if (!value) throw new WorkGraphError(`${name} is required`);
+  return value;
+}
+
+function config(toolName, args) {
+  const token = requiredEnv("COPILOT_MCP_WORKGRAPH_TOKEN");
   const taskTypeId =
     process.env.COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID ?? "";
-  if (!token) throw new WorkGraphError("COPILOT_MCP_WORKGRAPH_TOKEN is required");
   identifier(taskTypeId, "COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID");
   let api = API;
   if (
@@ -483,25 +469,68 @@ function config(toolName) {
     }
     api = url.toString().replace(/\/$/, "");
   }
-  const shared = {
+  const common = {
     token,
     taskTypeId,
-    launcherId: envId("COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID"),
-    assignmentId: envId("COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID"),
     api,
   };
-  if (toolName === "submit_task_assignment") return shared;
+  let identities;
+  let lease = false;
+  if (toolName === "submit_task_assignment") {
+    identities = ["launcherId", "assignmentId"];
+  } else if (
+    toolName === "get_result_snapshot" ||
+    toolName === "submit_result_acceptance"
+  ) {
+    identities = ["launcherId", "assignmentId", "resultId", "acceptanceId"];
+  } else if (toolName === "submit_task_feedback") {
+    identities = ["launcherId", "assignmentId", "resultId", "feedbackId"];
+  } else if (toolName === "submit_task_result") {
+    identities = ["launcherId", "assignmentId", "resultId"];
+    if (
+      FEEDBACK_ARGUMENTS.some((key) =>
+        Object.prototype.hasOwnProperty.call(args, key),
+      )
+    ) {
+      identities.push("feedbackId");
+    }
+    if (args?.workResult?.taskType === "request-info") {
+      identities.push("infoId");
+    }
+    lease = true;
+  } else if (toolName === "post_parent_info_request") {
+    identities = [
+      "launcherId",
+      "assignmentId",
+      "resultId",
+      "acceptanceId",
+      "infoId",
+    ];
+    lease = true;
+  } else if (toolName === "transition_issue") {
+    identities = [
+      "launcherId",
+      "assignmentId",
+      "resultId",
+      "acceptanceId",
+      "orchestratorId",
+      "infoId",
+      "feedbackId",
+    ];
+  } else {
+    throw new WorkGraphError(`unknown tool ${toolName}`);
+  }
   return {
-    ...shared,
-    resultId: envId("COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID"),
-    acceptanceId: envId("COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID"),
-    orchestratorId: envId("COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID"),
-    infoId: envId("COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID"),
-    feedbackId: envId("COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID"),
-    leaseValidationToken:
-      process.env.COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN ?? "",
-    leaseValidationUrl:
-      process.env.COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL ?? "",
+    ...common,
+    ...configuredIdentities(identities),
+    ...(lease
+      ? {
+          leaseValidationToken:
+            requiredEnv("COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN"),
+          leaseValidationUrl:
+            requiredEnv("COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL"),
+        }
+      : {}),
   };
 }
 
@@ -566,10 +595,10 @@ class GitHub {
   comment(id) {
     return this.request("GET", `/repos/${OWNER}/${REPO}/issues/comments/${id}`);
   }
-  workerConfig() {
+  agentConfig() {
     return this.request(
       "GET",
-      `/repos/${OWNER}/${REPO}/contents/${WORKER_CONFIG_PATH}?ref=${WORKER_CONFIG_REF}`,
+      `/repos/${OWNER}/${REPO}/contents/${AGENT_CONFIG_PATH}?ref=${AGENT_CONFIG_REF}`,
     );
   }
   async paginate(route) {
@@ -637,17 +666,17 @@ class GitHub {
   }
 }
 
-async function authoritativeWorkers(github) {
-  const response = await github.workerConfig();
+async function authoritativeAgents(github) {
+  const response = await github.agentConfig();
   if (
     !object(response) ||
-    response.path !== WORKER_CONFIG_PATH ||
+    response.path !== AGENT_CONFIG_PATH ||
     response.encoding !== "base64" ||
     typeof response.content !== "string" ||
     typeof response.sha !== "string" ||
     !/^[0-9a-f]{40}$/.test(response.sha)
   ) {
-    throw new WorkGraphError("authoritative worker config response is invalid");
+    throw new WorkGraphError("authoritative agent config response is invalid");
   }
   let bytes;
   const encoded = response.content.replace(/\n/g, "");
@@ -656,20 +685,20 @@ async function authoritativeWorkers(github) {
       encoded,
     )
   ) {
-    throw new WorkGraphError("authoritative worker config is not valid base64");
+    throw new WorkGraphError("authoritative agent config is not valid base64");
   }
   try {
     bytes = Buffer.from(encoded, "base64");
   } catch {
-    throw new WorkGraphError("authoritative worker config is not valid base64");
+    throw new WorkGraphError("authoritative agent config is not valid base64");
   }
   let body;
   try {
     body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } catch {
-    throw new WorkGraphError("authoritative worker config is not valid UTF-8");
+    throw new WorkGraphError("authoritative agent config is not valid UTF-8");
   }
-  return parseWorkersYaml(body);
+  return parseAgentsYaml(body);
 }
 
 function verifyIdentity(identity, expected, label) {
@@ -745,7 +774,7 @@ function oneAssignment(
   comments,
   taskPayload,
   cfg,
-  { workerId = null, assignmentCommentNodeId = null } = {},
+  { agentId = null, assignmentCommentNodeId = null } = {},
 ) {
   const found = candidates(comments, ASSIGNMENT_MARKER, parseAssignment);
   if (
@@ -759,16 +788,16 @@ function oneAssignment(
     comment: found.parsed[0].comment,
     payload: found.parsed[0].payload,
   };
-  if (entry.payload.agentProfile !== AGENT_BY_TASK[taskPayload.taskType]) {
-    throw new WorkGraphError("Assignment agentProfile does not match taskType");
+  if (entry.payload.agentId !== AGENT_ID_BY_TASK[taskPayload.taskType]) {
+    throw new WorkGraphError("Assignment agentId does not match taskType");
   }
   if (
-    workerId !== null &&
-    (entry.payload.workerId !== workerId ||
+    agentId !== null &&
+    (entry.payload.agentId !== agentId ||
       entry.comment.node_id !== assignmentCommentNodeId)
   ) {
     throw new WorkGraphError(
-      "active work requires the exact Assignment/v1 worker and comment ID",
+      "active work requires the exact Assignment/v1 agent and comment ID",
     );
   }
   return entry;
@@ -842,40 +871,32 @@ function verifyResultSnapshot(comment, expected, cfg) {
 }
 
 async function submitAssignment(input, github, cfg) {
-  refs(input, ["agentProfile", "workerId", "compatibleWorkers"]);
-  if (!Object.values(AGENT_BY_TASK).includes(input.agentProfile)) {
-    throw new WorkGraphError("arguments.agentProfile is unsupported");
-  }
-  opaque(input.workerId, "arguments.workerId");
-  const selected = selectWorker(input.compatibleWorkers, input.agentProfile);
-  if (selected.workerId !== input.workerId) {
-    throw new WorkGraphError(
-      "workerId must be the lowest queue depth, then lexicographically lowest workerId",
-    );
+  refs(input, ["agentId"]);
+  if (!Object.values(AGENT_ID_BY_TASK).includes(input.agentId)) {
+    throw new WorkGraphError("arguments.agentId is unsupported");
   }
   const ctx = await context(github, input, cfg, {
     actorId: cfg.assignmentId,
     actorLabel: "Assignment reporter",
     open: true,
   });
-  if (input.agentProfile !== AGENT_BY_TASK[ctx.taskPayload.taskType]) {
-    throw new WorkGraphError("agentProfile does not match taskType");
+  if (input.agentId !== AGENT_ID_BY_TASK[ctx.taskPayload.taskType]) {
+    throw new WorkGraphError("agentId does not match taskType");
   }
-  const workers = await authoritativeWorkers(github);
-  const configured = workers.find((worker) => worker.workerId === input.workerId);
-  if (!configured || configured.agentProfile !== input.agentProfile) {
+  const agents = await authoritativeAgents(github);
+  const configured = agents.find((agent) => agent.agentId === input.agentId);
+  if (!configured) {
     throw new WorkGraphError(
-      "selected worker is absent from authoritative config or incompatible",
+      "agentId is absent from authoritative config",
     );
   }
   const comments = await github.comments(input.taskIssueNumber);
   const found = candidates(comments, ASSIGNMENT_MARKER, parseAssignment);
-  const body = formatAssignment(input.agentProfile, input.workerId);
+  const body = formatAssignment(input.agentId);
   if (found.marked.length > 0) {
     if (
       found.marked.length === 1 &&
-      found.parsed[0].payload?.agentProfile === input.agentProfile &&
-      found.parsed[0].payload.workerId === input.workerId &&
+      found.parsed[0].payload?.agentId === input.agentId &&
       found.parsed[0].comment.user?.id === cfg.assignmentId &&
       found.parsed[0].comment.body === body
     ) {
@@ -894,12 +915,12 @@ async function submitAssignment(input, github, cfg) {
   if (beforeCtx.taskPayload.taskType !== ctx.taskPayload.taskType) {
     throw new WorkGraphError("task changed immediately before Assignment");
   }
-  const beforeWorkers = await authoritativeWorkers(github);
-  const beforeWorker = beforeWorkers.find(
-    (worker) => worker.workerId === input.workerId,
+  const beforeAgents = await authoritativeAgents(github);
+  const beforeAgent = beforeAgents.find(
+    (agent) => agent.agentId === input.agentId,
   );
-  if (!beforeWorker || beforeWorker.agentProfile !== input.agentProfile) {
-    throw new WorkGraphError("worker config changed immediately before Assignment");
+  if (!beforeAgent) {
+    throw new WorkGraphError("agent config changed immediately before Assignment");
   }
   const beforeComments = await github.comments(input.taskIssueNumber);
   if (candidates(beforeComments, ASSIGNMENT_MARKER, parseAssignment).marked.length > 0) {
@@ -913,7 +934,7 @@ async function submitAssignment(input, github, cfg) {
   );
   const afterComments = await github.comments(input.taskIssueNumber);
   const afterAssignment = oneAssignment(afterComments, ctx.taskPayload, cfg, {
-    workerId: input.workerId,
+    agentId: input.agentId,
     assignmentCommentNodeId: comment.node_id,
   });
   if (afterAssignment.comment.body !== body) {
@@ -951,7 +972,7 @@ async function verifyInfoResult(result, parentComments, taskPayload, cfg) {
 const LEASE_ARGUMENTS = [
   "assignmentCommentNodeId",
   "leaseId",
-  "workerId",
+  "agentId",
   "slotId",
   "acquiredAt",
   "expiresAt",
@@ -987,13 +1008,13 @@ async function validateSourceLease(input, taskPayload, cfg) {
     leaseId: input.leaseId,
     taskNodeId: input.taskIssueNodeId,
     assignmentCommentNodeId: input.assignmentCommentNodeId,
-    workerId: input.workerId,
+    agentId: input.agentId,
     slotId: input.slotId,
     taskType: taskPayload.taskType,
     acquiredAt: input.acquiredAt,
     expiresAt: input.expiresAt,
   };
-  for (const key of ["leaseId", "taskNodeId", "assignmentCommentNodeId", "workerId", "slotId"]) {
+  for (const key of ["leaseId", "taskNodeId", "assignmentCommentNodeId", "agentId", "slotId"]) {
     opaque(expected[key], `Source Lease.${key}`);
   }
   timestamp(expected.acquiredAt, "Source Lease.acquiredAt");
@@ -1014,7 +1035,7 @@ async function validateSourceLease(input, taskPayload, cfg) {
         taskNodeId: expected.taskNodeId,
         leaseId: expected.leaseId,
         assignmentCommentNodeId: expected.assignmentCommentNodeId,
-        workerId: expected.workerId,
+        agentId: expected.agentId,
         slotId: expected.slotId,
       }),
       signal: AbortSignal.timeout(30_000),
@@ -1055,7 +1076,7 @@ function validateFeedbackRevision(input, comments, current, cfg) {
     throw new WorkGraphError("feedback dispatch does not bind the exact current Result revision");
   }
   if (Date.parse(input.acquiredAt) < Date.parse(input.feedbackUpdatedAt)) {
-    throw new WorkGraphError("feedback worker Lease predates the feedback request");
+    throw new WorkGraphError("feedback agent Lease predates the feedback request");
   }
   const oldSemantic = { ...current.payload };
   delete oldSemantic.leaseId;
@@ -1078,11 +1099,6 @@ async function submitResult(input, github, cfg) {
   const hasFeedback = FEEDBACK_ARGUMENTS.some((key) =>
     Object.prototype.hasOwnProperty.call(input, key),
   );
-  refs(input, [
-    "workResult",
-    ...LEASE_ARGUMENTS,
-    ...(hasFeedback ? FEEDBACK_ARGUMENTS : []),
-  ]);
   if (
     hasFeedback &&
     !FEEDBACK_ARGUMENTS.every((key) =>
@@ -1091,10 +1107,15 @@ async function submitResult(input, github, cfg) {
   ) {
     throw new WorkGraphError("feedback dispatch fields must be supplied together");
   }
+  refs(input, [
+    "workResult",
+    ...LEASE_ARGUMENTS,
+    ...(hasFeedback ? FEEDBACK_ARGUMENTS : []),
+  ]);
   for (const key of [
     "assignmentCommentNodeId",
     "leaseId",
-    "workerId",
+    "agentId",
     "slotId",
   ]) {
     opaque(input[key], `arguments.${key}`);
@@ -1115,7 +1136,7 @@ async function submitResult(input, github, cfg) {
   ]);
   const body = formatTaskResult(input.workResult);
   oneAssignment(comments, ctx.taskPayload, cfg, {
-    workerId: input.workerId,
+    agentId: input.agentId,
     assignmentCommentNodeId: input.assignmentCommentNodeId,
   });
   const resultCandidates = candidates(comments, RESULT_MARKER, parseResult);
@@ -1143,7 +1164,7 @@ async function submitResult(input, github, cfg) {
     }
     const beforeComments = await github.comments(input.taskIssueNumber);
     oneAssignment(beforeComments, ctx.taskPayload, cfg, {
-      workerId: input.workerId,
+      agentId: input.agentId,
       assignmentCommentNodeId: input.assignmentCommentNodeId,
     });
     if (candidates(beforeComments, RESULT_MARKER, parseResult).marked.length !== 0) {
@@ -1183,7 +1204,7 @@ async function submitResult(input, github, cfg) {
   const beforeEntry = oneResult(beforeComments, ctx.taskPayload, cfg);
   verifyResultSnapshot(beforeEntry.comment, current, cfg);
   oneAssignment(beforeComments, ctx.taskPayload, cfg, {
-    workerId: input.workerId,
+    agentId: input.agentId,
     assignmentCommentNodeId: input.assignmentCommentNodeId,
   });
   validateFeedbackRevision(input, beforeComments, beforeEntry, cfg);
@@ -1369,7 +1390,7 @@ async function postInfo(input, github, cfg) {
   requireCurrentChild(requestChildren, input, "request-info");
   const requestComments = await github.comments(input.taskIssueNumber);
   oneAssignment(requestComments, ctx.taskPayload, cfg, {
-    workerId: input.workerId,
+    agentId: input.agentId,
     assignmentCommentNodeId: input.assignmentCommentNodeId,
   });
   const validationInput = {
@@ -1432,7 +1453,7 @@ async function postInfo(input, github, cfg) {
   }
   const beforeRequestComments = await github.comments(input.taskIssueNumber);
   oneAssignment(beforeRequestComments, ctx.taskPayload, cfg, {
-    workerId: input.workerId,
+    agentId: input.agentId,
     assignmentCommentNodeId: input.assignmentCommentNodeId,
   });
   const beforeParentComments = await github.comments(input.parentIssueNumber);
@@ -1923,7 +1944,11 @@ async function transitionIssue(input, github, cfg) {
   return { taskIssueNumber: task.number, taskIssueNodeId: task.node_id, status: "status:awaiting-validation" };
 }
 
-function feedbackBody(resultCommentNodeId, resultBodyDigest, feedback) {
+export function formatFeedback(
+  resultCommentNodeId,
+  resultBodyDigest,
+  feedback,
+) {
   const payload = { resultCommentNodeId, resultBodyDigest, feedback };
   validateFeedback(payload);
   return canonicalJson(FEEDBACK_MARKER, payload);
@@ -1969,7 +1994,7 @@ async function submitFeedback(input, github, cfg) {
   if (currentDigest !== input.resultBodyDigest) {
     throw new WorkGraphError("feedback targets a stale Result digest");
   }
-  const body = feedbackBody(
+  const body = formatFeedback(
     input.resultCommentNodeId,
     currentDigest,
     input.feedback,
@@ -2055,22 +2080,7 @@ const tools = [
     description: "Submit or reconcile one strict task Assignment.",
     inputSchema: schema({
       ...referenceProperties,
-      agentProfile: { type: "string", enum: Object.values(AGENT_BY_TASK) },
-      workerId: { type: "string" },
-      compatibleWorkers: {
-        type: "array",
-        minItems: 1,
-        items: {
-          type: "object",
-          additionalProperties: false,
-          properties: {
-            workerId: { type: "string" },
-            agentProfile: { type: "string", enum: Object.values(AGENT_BY_TASK) },
-            queueDepth: { type: "integer", minimum: 0 },
-          },
-          required: ["workerId", "agentProfile", "queueDepth"],
-        },
-      },
+      agentId: { type: "string", enum: Object.values(AGENT_ID_BY_TASK) },
     }),
   },
   {
@@ -2082,7 +2092,7 @@ const tools = [
         workResult: { type: "object" },
         assignmentCommentNodeId: { type: "string" },
         leaseId: { type: "string" },
-        workerId: { type: "string" },
+        agentId: { type: "string" },
         slotId: { type: "string" },
         acquiredAt: { type: "string" },
         expiresAt: { type: "string" },
@@ -2143,7 +2153,7 @@ const tools = [
       validationResultCommentNodeId: { type: "string" },
       assignmentCommentNodeId: { type: "string" },
       leaseId: { type: "string" },
-      workerId: { type: "string" },
+      agentId: { type: "string" },
       slotId: { type: "string" },
       acquiredAt: { type: "string" },
       expiresAt: { type: "string" },
@@ -2162,7 +2172,7 @@ const tools = [
 ];
 
 async function callTool(name, args) {
-  const cfg = config(name);
+  const cfg = config(name, args);
   const github = new GitHub(cfg);
   if (name === "get_result_snapshot") return getResultSnapshot(args, github, cfg);
   if (name === "submit_task_assignment") return submitAssignment(args, github, cfg);

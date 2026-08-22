@@ -16,7 +16,7 @@ PROFILE = (
 )
 DOC = ROOT / "docs" / "workgraph-result-reporter.md"
 README = ROOT / "README.md"
-WORKERS = ROOT / ".github" / "workgraph" / "workers.yaml"
+AGENTS_CONFIG = ROOT / ".github" / "workgraph" / "agents.yaml"
 
 EXPECTED_TOOLS = {
     "issue-orchestrator": ["github/issue_read", "workgraph/transition_issue"],
@@ -41,18 +41,54 @@ EXPECTED_TOOLS = {
     ],
 }
 
-IDENTITY_KEYS = [
-    "COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID",
-    "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
-    "COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID",
-    "COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID",
-    "COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID",
-    "COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID",
-    "COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID",
-]
 COMMON_ENV_KEYS = {
     "COPILOT_MCP_WORKGRAPH_TOKEN",
     "COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID",
+    "COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID",
+}
+LEASE_ENV_KEYS = {
+    "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL",
+    "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN",
+}
+EXPECTED_ENV_KEYS = {
+    "issue-assigner": COMMON_ENV_KEYS
+    | {"COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID"},
+    "issue-validator": COMMON_ENV_KEYS
+    | {
+        "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
+        "COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID",
+        "COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID",
+    }
+    | LEASE_ENV_KEYS,
+    "issue-info-requester": COMMON_ENV_KEYS
+    | {
+        "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
+        "COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID",
+        "COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID",
+        "COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID",
+        "COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID",
+    }
+    | LEASE_ENV_KEYS,
+    "workgraph-result-acceptor": COMMON_ENV_KEYS
+    | {
+        "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
+        "COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID",
+        "COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID",
+        "COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID",
+    },
+    "issue-orchestrator": COMMON_ENV_KEYS
+    | {
+        "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
+        "COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID",
+        "COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID",
+        "COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID",
+        "COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID",
+        "COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID",
+    },
+}
+SECRET_ENV_KEYS = {
+    "COPILOT_MCP_WORKGRAPH_TOKEN",
+    "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN",
 }
 
 
@@ -67,7 +103,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
         cls.profile = PROFILE.read_text(encoding="utf-8")
         cls.doc = DOC.read_text(encoding="utf-8")
         cls.readme = README.read_text(encoding="utf-8")
-        cls.workers = WORKERS.read_text(encoding="utf-8")
+        cls.agent_config = AGENTS_CONFIG.read_text(encoding="utf-8")
 
     def test_exactly_five_rest_launchable_profiles(self):
         self.assertEqual(set(self.agents), set(EXPECTED_TOOLS))
@@ -88,13 +124,29 @@ class WorkGraphProfilesTest(unittest.TestCase):
                 self.assertEqual(tools, EXPECTED_TOOLS[name])
                 self.assertNotIn("github/issue_write", frontmatter)
                 self.assertNotIn("github/add_issue_comment", frontmatter)
+                server_block = frontmatter.split("mcp-servers:", 1)[1].split(
+                    "env:", 1
+                )[0]
+                server_tools = re.findall(
+                    r"(?m)^      - (\S+)$",
+                    server_block.split("\n    tools:", 1)[1],
+                )
+                self.assertEqual(
+                    server_tools,
+                    [
+                        tool.removeprefix("workgraph/")
+                        for tool in EXPECTED_TOOLS[name]
+                        if tool.startswith("workgraph/")
+                    ],
+                )
+                self.assertNotRegex(frontmatter, r"(?m)^\s*resources:")
 
-    def test_profiles_pin_type_and_separate_identities(self):
+    def test_profiles_expose_only_required_environment(self):
         for name, content in self.agents.items():
             with self.subTest(name=name):
                 self.assertIn(
                     "COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID: "
-                    "IT_kwDOCX0YF84CKGIJ",
+                    "${{ vars.COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID }}",
                     content,
                 )
                 self.assertIn(
@@ -102,19 +154,14 @@ class WorkGraphProfilesTest(unittest.TestCase):
                     "${{ secrets.COPILOT_MCP_WORKGRAPH_TOKEN }}",
                     content,
                 )
-                expected = COMMON_ENV_KEYS | set(IDENTITY_KEYS)
-                if name == "issue-assigner":
-                    expected = COMMON_ENV_KEYS | set(IDENTITY_KEYS[:2])
-                if name in ("issue-validator", "issue-info-requester"):
-                    expected |= {
-                        "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL",
-                        "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN",
-                    }
                 frontmatter = content.split("---", 2)[1]
-                env_keys = set(
-                    re.findall(r"(?m)^      ([A-Z0-9_]+):", frontmatter)
+                env = dict(
+                    re.findall(r"(?m)^      ([A-Z0-9_]+): (.+)$", frontmatter)
                 )
-                self.assertEqual(env_keys, expected)
+                self.assertEqual(set(env), EXPECTED_ENV_KEYS[name])
+                for key, value in env.items():
+                    namespace = "secrets" if key in SECRET_ENV_KEYS else "vars"
+                    self.assertEqual(value, f"${{{{ {namespace}.{key} }}}}")
 
     def test_task_contract_is_exact_and_closed(self):
         for text in [self.doc, self.reporter]:
@@ -127,6 +174,17 @@ class WorkGraphProfilesTest(unittest.TestCase):
         self.assertIn("generic task\nregistry", self.doc)
         self.assertIn('const TASK_TYPE_NAME = "WorkGraphTask"', self.reporter)
         self.assertNotIn("issue-risk-profile", self.reporter)
+        production = "\n".join(
+            [self.reporter, self.doc, self.readme, *self.agents.values()]
+        )
+        for legacy in (
+            "agentProfile",
+            "workerId",
+            "compatibleWorkers",
+            "queueDepth",
+            "workers.yaml",
+        ):
+            self.assertNotIn(legacy, production)
 
     def test_exact_comment_contracts_and_result_fields(self):
         for marker in (
@@ -143,11 +201,10 @@ class WorkGraphProfilesTest(unittest.TestCase):
         self.assertNotRegex(sources, r"WorkGraphTask(?:Assignment|Result)/v[2-9]")
         self.assertNotRegex(sources, r"WorkGraphTaskLease(?:Expiration)?/")
         self.assertNotIn("lease" + "CommentNodeId", sources)
-        self.assertIn('"agentProfile": "issue-validator"', self.doc)
-        self.assertIn('"workerId": "issue-validation-01"', self.doc)
+        self.assertIn('"agentId": "issue-validator"', self.doc)
         self.assertIn('"leaseId": "lease-001"', self.doc)
         self.assertIn("There is no `assignmentId`", self.doc)
-        self.assertNotIn('"assignmentId"', self.reporter)
+        self.assertNotIn('"assignmentId":', self.reporter)
         for field in [
             "requestCommentNodeId",
             "resultCommentNodeId",
@@ -161,29 +218,23 @@ class WorkGraphProfilesTest(unittest.TestCase):
             r"canonical\s*=\s*\{[^}]*bodyDigest",
         )
 
-    def test_worker_config_schema_and_stable_metadata(self):
-        self.assertEqual(self.workers.count("\n  - workerId: "), 2)
-        self.assertIn("version: 1\nworkers:\n", self.workers)
-        expected = {
-            "issue-validation-01": "issue-validator",
-            "issue-information-01": "issue-info-requester",
-        }
+    def test_agent_config_schema_and_stable_metadata(self):
+        self.assertEqual(self.agent_config.count("\n  - agentId: "), 2)
+        self.assertIn("version: 1\nagents:\n", self.agent_config)
         entries = re.findall(
-            r"  - workerId: ([A-Za-z0-9._-]+)\n"
-            r"    agentProfile: ([A-Za-z0-9_-]+)\n"
+            r"  - agentId: ([A-Za-z0-9._-]+)\n"
             r"    slots: (\d+)\n"
             r"    leaseDuration: ([A-Z0-9]+)\n",
-            self.workers,
+            self.agent_config,
         )
         self.assertEqual(
-            {worker_id: profile for worker_id, profile, _, _ in entries},
-            expected,
+            {agent_id for agent_id, _, _ in entries},
+            {"issue-validator", "issue-info-requester"},
         )
-        for worker_id, profile, slots, duration in entries:
-            self.assertNotEqual(worker_id, profile)
+        for agent_id, slots, duration in entries:
             self.assertEqual(slots, "1")
             self.assertEqual(duration, "PT30M")
-        self.assertIn(".github/workgraph/workers.yaml", self.doc)
+        self.assertIn(".github/workgraph/agents.yaml", self.doc)
         self.assertIn("desired capacity only", self.doc)
 
     def test_reporter_exposes_only_narrow_tools(self):
@@ -230,7 +281,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
         self.assertIn("initial create request", orchestrator)
         self.assertIn("No tool exposes\nIssue Type mutation", self.doc)
 
-    def test_worker_and_acceptor_provenance_rules(self):
+    def test_agent_and_acceptor_provenance_rules(self):
         validator = self.agents["issue-validator"]
         self.assertIn(
             "native parent; that relation is authoritative",
@@ -268,7 +319,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
             self.assertIn(value, normalized)
         self.assertIn("exact current", self.doc)
 
-    def test_workers_handle_optional_feedback_dispatch(self):
+    def test_agents_handle_optional_feedback_dispatch(self):
         for name in ("issue-validator", "issue-info-requester"):
             profile = self.agents[name]
             normalized = " ".join(profile.split())
@@ -325,7 +376,8 @@ class WorkGraphProfilesTest(unittest.TestCase):
         for value in (
             '"taskNodeId": "I_task"',
             '"assignmentCommentNodeId": "IC_assignment"',
-            '"slotId": "issue-validation-01/1"',
+            '"agentId": "issue-validator"',
+            '"slotId": "issue-validator/1"',
             '"taskType": "validate-issue"',
             "POST {webhook.path}/lease/validate",
             "exactly those five fields",
@@ -334,7 +386,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
         ):
             self.assertIn(value, self.doc)
 
-    def test_workers_require_source_lease_and_no_agent_writes_one(self):
+    def test_agents_require_source_lease_and_no_agent_writes_one(self):
         for name in ("issue-validator", "issue-info-requester"):
             profile = self.agents[name]
             normalized = " ".join(profile.split())

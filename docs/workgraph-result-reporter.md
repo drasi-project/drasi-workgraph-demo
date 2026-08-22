@@ -5,8 +5,8 @@ All GitHub WorkGraph comment protocols are v1-only. There are no aliases,
 migration parsers, arbitrary repository selectors, raw comment bodies, generic
 mutation tools, or GitHub Lease comments.
 
-The GitHub WorkGraph Source owns worker queues and active Leases. It projects
-worker capacity from `.github/workgraph/workers.yaml`, creates synthetic active
+The GitHub WorkGraph Source owns agent capacity and active Leases. It projects
+capacity from `.github/workgraph/agents.yaml`, creates synthetic active
 Lease graph nodes, validates exact active allocations, and remains the final
 authority for Result ingestion, release, and stale rejection. The reporter
 keeps narrow GitHub validation and idempotent writes; it never allocates,
@@ -48,27 +48,30 @@ WorkGraph: request-info parent #<number> validation-result <Result node ID>
 WorkGraph: validate-issue parent #<number> human-reply <reply node ID>
 ```
 
-## Source worker capacity
+## Source agent capacity
 
-`.github/workgraph/workers.yaml` is desired capacity only:
+`.github/workgraph/agents.yaml` is desired capacity only:
 
 ```yaml
 version: 1
-workers:
-  - workerId: issue-validation-01
-    agentProfile: issue-validator
+agents:
+  - agentId: issue-validator
     slots: 1
     leaseDuration: PT30M
-  - workerId: issue-information-01
-    agentProfile: issue-info-requester
+  - agentId: issue-info-requester
     slots: 1
     leaseDuration: PT30M
 ```
 
 The Assignment reporter fetches this file from the fixed repository's `main`
-ref and verifies deterministic worker selection. The Source independently
-loads its configured ref and owns queue depth, slots, and active allocations.
-`workerId` remains deliberately distinct from `agentProfile`.
+ref and verifies the mapped agent is configured. The Source independently
+loads its configured ref and owns slots and active allocations.
+
+The config grammar is exact and shared with Core: LF UTF-8 no larger than
+256 KiB, `version: 1`, an `agents` list of at most 64 exact entries, and no
+unknown or reordered fields. `agentId` is case-sensitive, 1–64 ASCII
+letters/digits/`-._`, and unique. `slots` is 1–16. `leaseDuration` is a
+whole-unit ISO-8601 duration from 1 through 86,400 seconds.
 
 ## GitHub comment protocols
 
@@ -78,26 +81,24 @@ or reordered fields and noncanonical bytes are rejected.
 
 ### `WorkGraphTaskAssignment/v1`
 
-Assignment is durable ownership by a configured worker queue. It does not
-consume a slot or launch a worker.
+Assignment selects a configured custom agent. It does not consume a slot or
+launch an agent.
 
 ````text
 WorkGraphTaskAssignment/v1
 
 ```json
 {
-  "agentProfile": "issue-validator",
-  "workerId": "issue-validation-01"
+  "agentId": "issue-validator"
 }
 ```
 ````
 
-The fields are exactly `agentProfile` and `workerId`. Mapping is fixed:
+The only field is `agentId`. Mapping is fixed:
 `validate-issue` -> `issue-validator`; `request-info` ->
-`issue-info-requester`. Selection from the trusted compatible-worker envelope
-uses lowest queue depth, then lexicographically lowest worker ID. An identical
-Assignment reconciles; malformed, foreign, conflicting, or stale state fails
-closed.
+`issue-info-requester`. The reporter independently verifies that agent in the
+repository capacity config. An identical Assignment reconciles; malformed,
+foreign, conflicting, or stale state fails closed.
 
 ### Source-issued active Lease
 
@@ -109,8 +110,8 @@ active dispatch envelope contains exactly:
   "leaseId": "lease-001",
   "taskNodeId": "I_task",
   "assignmentCommentNodeId": "IC_assignment",
-  "workerId": "issue-validation-01",
-  "slotId": "issue-validation-01/1",
+  "agentId": "issue-validator",
+  "slotId": "issue-validator/1",
   "taskType": "validate-issue",
   "acquiredAt": "2026-08-19T00:00:00Z",
   "expiresAt": "2026-08-19T00:30:00Z"
@@ -136,8 +137,8 @@ Content-Type: application/json
   "taskNodeId": "I_task",
   "leaseId": "lease-001",
   "assignmentCommentNodeId": "IC_assignment",
-  "workerId": "issue-validation-01",
-  "slotId": "issue-validation-01/1"
+  "agentId": "issue-validator",
+  "slotId": "issue-validator/1"
 }
 ```
 
@@ -258,22 +259,22 @@ requires manual remediation while preserving comments as an audit trail.
 
 ## Configuration and least privilege
 
-All profiles configure:
+Every profile configures the GitHub token, task Issue Type ID, and launcher ID.
+Each profile then exposes only the identities and Lease settings needed by its
+narrow tools:
 
-- `COPILOT_MCP_WORKGRAPH_TOKEN`
-- `COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID`
-- `COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID`
-- `COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID`
-- `COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID`
-- `COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID`
-- `COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID`
-- `COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID`
-- `COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID`
+| Profile | Additional identities | Source Lease settings |
+| --- | --- | --- |
+| `issue-assigner` | Assignment | No |
+| `issue-validator` | Assignment, Result, Feedback | Yes |
+| `issue-info-requester` | Assignment, Result, Acceptance, Info, Feedback | Yes |
+| `workgraph-result-acceptor` | Assignment, Result, Acceptance, Feedback | No |
+| `issue-orchestrator` | Assignment, Result, Acceptance, Orchestrator, Info, Feedback | No |
 
-The validator and info-requester profiles additionally configure:
-
-- `COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL`
-- `COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN`
+Tokens use `${{ secrets.* }}` references. Type and identity values use
+`${{ vars.* }}` references. The reporter loads configuration per tool and, for
+Result, per initial/request-info/feedback-revision path. A missing required
+value fails before GitHub access; unrelated values are not required.
 
 The URL must be HTTPS, have no embedded credentials, query, or fragment, and end in
 `/lease/validate`. Tests alone may use loopback HTTP. Reporter identity values
@@ -285,6 +286,9 @@ Source token, read-only exact active-Lease validation.
 
 ```bash
 node --check .github/mcp/workgraph-reporter.mjs
-node --test tests/workgraph-reporter.test.mjs
+node --test tests/workgraph-reporter.test.mjs tests/workgraph-live-support.test.mjs
 python3 -m unittest discover -s tests -v
 ```
+
+The separate opt-in live protocol layer is documented in
+[`workgraph-github-protocol-tests.md`](workgraph-github-protocol-tests.md).

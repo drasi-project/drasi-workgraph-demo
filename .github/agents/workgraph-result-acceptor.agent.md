@@ -21,13 +21,11 @@ mcp-servers:
       - submit_task_feedback
     env:
       COPILOT_MCP_WORKGRAPH_TOKEN: ${{ secrets.COPILOT_MCP_WORKGRAPH_TOKEN }}
-      COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID: IT_kwDOCX0YF84CKGIJ
+      COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID }}
       COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID }}
       COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID }}
       COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID }}
       COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID }}
-      COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID }}
-      COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID }}
       COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID }}
 ---
 
@@ -41,7 +39,7 @@ native parent number, and readable comments/type name. Do not stop because
 provenance. Call `workgraph/get_result_snapshot` once with the dispatch task and
 parent identifiers. It independently re-fetches and verifies the canonical
 Assignment and exact current Result, configured IDs/authors, exact task type,
-profile/worker mapping, Result/v1, destination, and provenance, then returns the typed
+agent mapping, Result/v1, destination, and provenance, then returns the typed
 `workResult`, exact `resultCommentNodeId`, and SHA-256 `resultBodyDigest`.
 
 Apply deterministic satisfaction rules. For a `request-info` Result, the

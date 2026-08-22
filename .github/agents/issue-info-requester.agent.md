@@ -19,12 +19,11 @@ mcp-servers:
       - submit_task_result
     env:
       COPILOT_MCP_WORKGRAPH_TOKEN: ${{ secrets.COPILOT_MCP_WORKGRAPH_TOKEN }}
-      COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID: IT_kwDOCX0YF84CKGIJ
+      COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID }}
       COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID }}
       COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID }}
       COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID }}
       COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID }}
-      COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID }}
       COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID }}
       COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID }}
       COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL: ${{ vars.COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL }}
@@ -35,14 +34,14 @@ mcp-servers:
 
 Run only when the trusted graph dispatch envelope supplies one active
 Source-issued Lease: `leaseId`, task node ID, `assignmentCommentNodeId`,
-`workerId`, `slotId`, `taskType`, `acquiredAt`, and `expiresAt`.
+`agentId`, `slotId`, `taskType`, `acquiredAt`, and `expiresAt`.
 Without every Lease field, stop and submit nothing. The envelope also supplies
 all task/parent/comment Issue numbers and opaque GraphQL node IDs needed by the
 narrow calls. Pass opaque node
 IDs through unchanged; do not require `github/issue_read` to expose them. Check
 only readable state: the invoked open `request-info` WorkGraphTask type name,
-body, native parent number, task comments, and apparent Assignment naming
-`issue-info-requester`. Do not stop because `issue_read` omits Issue node IDs,
+body, native parent number, task comments, and apparent Assignment naming the
+`issue-info-requester` agent ID. Do not stop because `issue_read` omits Issue node IDs,
 Issue Type node IDs, or other opaque provenance. Read its non-empty
 `inputs.validationResultCommentNodeId`. Find that exact current configured-
 author validation Result on a sibling validation task under the same parent.
@@ -87,6 +86,6 @@ the exact `passed: false` validation criteria. Feedback cannot require
 inventing, removing, or rephrasing criterion names contrary to that validation
 Result. If feedback only objects to a criterion's positive grammatical form,
 the existing request is correct and must not be revised; that is an acceptor
-error, not a worker mismatch. The narrow reporter remains authoritative for
+error, not an agent mismatch. The narrow reporter remains authoritative for
 exact IDs, digest, authors, Assignment, task, destination, races, and revision
 safety and binds the revised Result/v1 to the new `leaseId`.

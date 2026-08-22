@@ -9,8 +9,8 @@ import { fileURLToPath } from "node:url";
 import {
   formatAcceptance,
   formatAssignment,
-  parseWorkersYaml,
-  selectWorker,
+  formatFeedback,
+  parseAgentsYaml,
   formatTask,
   formatTaskResult,
   parseTask,
@@ -39,29 +39,27 @@ const CRITERIA = [
   "The Issue has a non-empty title",
   "The Issue body is present",
 ];
-const WORKERS_YAML =
-  "version: 1\nworkers:\n" +
-  "  - workerId: issue-validation-01\n" +
-  "    agentProfile: issue-validator\n" +
+const AGENTS_YAML =
+  "version: 1\nagents:\n" +
+  "  - agentId: issue-validator\n" +
   "    slots: 1\n" +
   "    leaseDuration: PT30M\n" +
-  "  - workerId: issue-information-01\n" +
-  "    agentProfile: issue-info-requester\n" +
+  "  - agentId: issue-info-requester\n" +
   "    slots: 1\n" +
   "    leaseDuration: PT30M\n";
 const ACTIVE_LEASE = {
   leaseId: "lease-001",
   assignmentCommentNodeId: "IC_assignment",
-  workerId: "issue-validation-01",
-  slotId: "issue-validation-01/1",
+  agentId: "issue-validator",
+  slotId: "issue-validator/1",
   acquiredAt: "2026-08-18T23:30:00Z",
   expiresAt: "2026-08-19T00:30:00Z",
 };
 const INFO_LEASE = {
   leaseId: "lease-info-001",
   assignmentCommentNodeId: "IC_assignment_request",
-  workerId: "issue-information-01",
-  slotId: "issue-information-01/1",
+  agentId: "issue-info-requester",
+  slotId: "issue-info-requester/1",
   acquiredAt: "2026-08-18T23:30:00Z",
   expiresAt: "2026-08-19T00:30:00Z",
 };
@@ -96,19 +94,6 @@ function leasedResult(result, leaseId = ACTIVE_LEASE.leaseId) {
     summary: result.summary,
     result: structuredClone(result.result),
   };
-}
-
-function compatibleWorkers(profile = "issue-validator") {
-  return [
-    {
-      workerId:
-        profile === "issue-validator"
-          ? "issue-validation-01"
-          : "issue-information-01",
-      agentProfile: profile,
-      queueDepth: 0,
-    },
-  ];
 }
 
 function activeLeaseInput(lease = ACTIVE_LEASE) {
@@ -174,13 +159,12 @@ function makeComment(
 }
 
 function assignmentComment(
-  profile = "issue-validator",
-  workerId = "issue-validation-01",
+  agentId = "issue-validator",
   nodeId = "IC_assignment",
   author = IDS.assignment,
 ) {
   return makeComment(
-    formatAssignment(profile, workerId),
+    formatAssignment(agentId),
     author,
     nodeId,
     201,
@@ -225,7 +209,7 @@ async function fakeGitHub({
   parentComments = [],
   failures = {},
   incorrectlyTypedCreates = 0,
-  workerConfig = WORKERS_YAML,
+  agentConfig = AGENTS_YAML,
   activeLease = {
     ...ACTIVE_LEASE,
     taskNodeId: TASK_NODE,
@@ -245,7 +229,7 @@ async function fakeGitHub({
     failures: { ...failures },
     incorrectlyTypedCreates,
     createPayloads: [],
-    workerConfig,
+    agentConfig,
     activeLease,
     leaseValidationStatus,
     leaseValidationResponse,
@@ -292,7 +276,7 @@ async function fakeGitHub({
         taskNodeId: state.activeLease.taskNodeId,
         leaseId: state.activeLease.leaseId,
         assignmentCommentNodeId: state.activeLease.assignmentCommentNodeId,
-        workerId: state.activeLease.workerId,
+        agentId: state.activeLease.agentId,
         slotId: state.activeLease.slotId,
       };
       if (state.leaseValidationStatus !== 200 || !isDeepStrictEqual(payload, expected)) {
@@ -316,12 +300,12 @@ async function fakeGitHub({
     if (
       request.method === "GET" &&
       route ===
-        "/repos/drasi-project/drasi-workgraph-demo/contents/.github/workgraph/workers.yaml"
+        "/repos/drasi-project/drasi-workgraph-demo/contents/.github/workgraph/agents.yaml"
     ) {
       send(response, 200, {
-        path: ".github/workgraph/workers.yaml",
+        path: ".github/workgraph/agents.yaml",
         encoding: "base64",
-        content: Buffer.from(state.workerConfig, "utf8").toString("base64"),
+        content: Buffer.from(state.agentConfig, "utf8").toString("base64"),
         sha: "1".repeat(40),
       });
       return;
@@ -580,8 +564,8 @@ test("exact canonical task YAML supports only the two contracts", () => {
 
 test("exact Assignment, validation pass/failure, request-info, and Acceptance bytes", () => {
   assert.equal(
-    formatAssignment("issue-validator", "issue-validation-01"),
-    'WorkGraphTaskAssignment/v1\n\n```json\n{\n  "agentProfile": "issue-validator",\n  "workerId": "issue-validation-01"\n}\n```\n',
+    formatAssignment("issue-validator"),
+    'WorkGraphTaskAssignment/v1\n\n```json\n{\n  "agentId": "issue-validator"\n}\n```\n',
   );
   for (const result of [PASS_RESULT, FAIL_RESULT]) {
     const body = formatTaskResult(leasedResult(result));
@@ -607,44 +591,148 @@ test("exact Assignment, validation pass/failure, request-info, and Acceptance by
     resultBodyDigest: resultDigest(formatTaskResult(PASS_RESULT)),
     summary: "Result is satisfactory.",
   });
+  const feedback = formatFeedback(
+    "IC_result",
+    resultDigest(formatTaskResult(PASS_RESULT)),
+    "Clarify the evidence.",
+  );
 
-  test("worker config is strict and worker selection is deterministic", () => {
-    assert.deepEqual(parseWorkersYaml(WORKERS_YAML), [
+  test("agent config is strict and uses canonical agent IDs", () => {
+    assert.deepEqual(parseAgentsYaml(AGENTS_YAML), [
       {
-        workerId: "issue-validation-01",
-        agentProfile: "issue-validator",
+        agentId: "issue-validator",
         slots: 1,
         leaseDuration: "PT30M",
       },
       {
-        workerId: "issue-information-01",
-        agentProfile: "issue-info-requester",
+        agentId: "issue-info-requester",
         slots: 1,
         leaseDuration: "PT30M",
       },
     ]);
+    assert.throws(
+      () => parseAgentsYaml(AGENTS_YAML.replace("slots: 1", "slots: 0")),
+      /slots/,
+    );
+    const configWith = (agentIds) =>
+      "version: 1\nagents:\n" +
+      agentIds
+        .map(
+          (agentId) =>
+            `  - agentId: ${agentId}\n` +
+            "    slots: 1\n" +
+            "    leaseDuration: PT1S\n",
+        )
+        .join("");
     assert.equal(
-      selectWorker(
-        [
-          { workerId: "worker-z", agentProfile: "issue-validator", queueDepth: 1 },
-          { workerId: "worker-b", agentProfile: "issue-validator", queueDepth: 0 },
-          { workerId: "worker-a", agentProfile: "issue-validator", queueDepth: 0 },
-        ],
-        "issue-validator",
-      ).workerId,
-      "worker-a",
+      parseAgentsYaml(
+        configWith(Array.from({ length: 64 }, (_, index) => `Agent.${index}`)),
+      ).length,
+      64,
     );
     assert.throws(
-      () => parseWorkersYaml(WORKERS_YAML.replace("slots: 1", "slots: 0")),
+      () =>
+        parseAgentsYaml(
+          configWith(Array.from({ length: 65 }, (_, index) => `Agent.${index}`)),
+        ),
+      /malformed/,
+    );
+    assert.deepEqual(
+      parseAgentsYaml(configWith(["Agent", "agent"])).map(
+        (agent) => agent.agentId,
+      ),
+      ["Agent", "agent"],
+    );
+    assert.equal(
+      parseAgentsYaml(configWith(["A".repeat(64)]))[0].agentId.length,
+      64,
+    );
+    assert.throws(
+      () => parseAgentsYaml(configWith(["A".repeat(65)])),
+      /malformed/,
+    );
+    assert.deepEqual(
+      parseAgentsYaml(
+        "version: 1\nagents:\n" +
+          "  - agentId: Agent_1.test-name\n" +
+          "    slots: 16\n" +
+          "    leaseDuration: PT24H\n",
+      ),
+      [
+        {
+          agentId: "Agent_1.test-name",
+          slots: 16,
+          leaseDuration: "PT24H",
+        },
+      ],
+    );
+    assert.throws(
+      () =>
+        parseAgentsYaml(
+          AGENTS_YAML.replace(
+            "agentId: issue-validator",
+            "agentId: invalid/agent",
+          ),
+        ),
+      /malformed/,
+    );
+    assert.throws(
+      () => parseAgentsYaml(AGENTS_YAML.replace("leaseDuration: PT30M", "leaseDuration: P1Y")),
+      /malformed|duration/,
+    );
+    assert.throws(
+      () => parseAgentsYaml(AGENTS_YAML.replace("leaseDuration: PT30M", "leaseDuration: P1DT")),
+      /duration/,
+    );
+    assert.throws(
+      () => parseAgentsYaml(AGENTS_YAML.replace("slots: 1", "slots: 17")),
       /slots/,
     );
     assert.throws(
-      () => parseWorkersYaml(WORKERS_YAML.replace("leaseDuration: PT30M", "leaseDuration: P1Y")),
-      /malformed|duration/,
+      () =>
+        parseAgentsYaml(
+          AGENTS_YAML.replace("leaseDuration: PT30M", "leaseDuration: PT86401S"),
+        ),
+      /24 hours/,
     );
-    assert.match(
-      formatAssignment("issue-validator", "issue-validation.01"),
-      /"workerId": "issue-validation\.01"/,
+    assert.throws(
+      () =>
+        parseAgentsYaml(
+          AGENTS_YAML.replace(
+            "agentId: issue-info-requester",
+            "agentId: issue-validator",
+          ),
+        ),
+      /unique/,
+    );
+    assert.throws(
+      () => parseAgentsYaml(AGENTS_YAML.replace("agents:", "workers:")),
+      /agents list/,
+    );
+    assert.throws(
+      () => parseAgentsYaml(AGENTS_YAML.replace(/\n/g, "\r\n")),
+      /bounded LF UTF-8/,
+    );
+    assert.throws(
+      () => parseAgentsYaml("x".repeat(256 * 1024 + 1)),
+      /bounded LF UTF-8/,
+    );
+    assert.throws(
+      () =>
+        parseAgentsYaml(
+          AGENTS_YAML.replace("    slots: 1\n", "    extra: no\n    slots: 1\n"),
+        ),
+      /malformed/,
+    );
+    assert.throws(
+      () =>
+        parseAgentsYaml(
+          AGENTS_YAML.replace(
+            "agentId: issue-validator",
+            "agentProfile: issue-validator\n    workerId: legacy",
+          ),
+        ),
+      /malformed/,
     );
     assert.match(
       formatTaskResult(leasedResult(PASS_RESULT, "lease:attempt.01")),
@@ -652,15 +740,26 @@ test("exact Assignment, validation pass/failure, request-info, and Acceptance by
     );
   });
   assert.match(acceptance, /^WorkGraphTaskResultAcceptance\/v1/);
+  assert.equal(
+    feedback,
+    `WorkGraphTaskFeedback/v1
+
+\`\`\`json
+{
+  "resultCommentNodeId": "IC_result",
+  "resultBodyDigest": "${resultDigest(formatTaskResult(PASS_RESULT))}",
+  "feedback": "Clarify the evidence."
+}
+\`\`\`
+`,
+  );
 });
 
 test("exposes only seven narrow tools and ignores MCP notifications", async () => {
   await withFake({}, async (fake) => {
     const { tools } = await runTool(fake, IDS.assignment, "submit_task_assignment", {
       ...baseInput(),
-      agentProfile: "issue-validator",
-      workerId: "issue-validation-01",
-      compatibleWorkers: compatibleWorkers(),
+      agentId: "issue-validator",
     });
     assert.deepEqual(
       tools.map((tool) => tool.name),
@@ -677,6 +776,42 @@ test("exposes only seven narrow tools and ignores MCP notifications", async () =
     tools.forEach((tool) =>
       assert.equal(tool.inputSchema.additionalProperties, false),
     );
+    const resultTool = tools.find((tool) => tool.name === "submit_task_result");
+    const assignmentTool = tools.find(
+      (tool) => tool.name === "submit_task_assignment",
+    );
+    assert.deepEqual(
+      Object.keys(assignmentTool.inputSchema.properties).sort(),
+      [...Object.keys(baseInput()), "agentId"].sort(),
+    );
+    assert.deepEqual(
+      [...assignmentTool.inputSchema.required].sort(),
+      [...Object.keys(baseInput()), "agentId"].sort(),
+    );
+    assert.deepEqual(
+      [...resultTool.inputSchema.required].sort(),
+      [
+        "acquiredAt",
+        "assignmentCommentNodeId",
+        "expiresAt",
+        "leaseId",
+        "parentIssueNodeId",
+        "parentIssueNumber",
+        "slotId",
+        "taskIssueNodeId",
+        "taskIssueNumber",
+        "workResult",
+        "agentId",
+      ].sort(),
+    );
+    for (const optional of [
+      "feedbackCommentNodeId",
+      "feedbackUpdatedAt",
+      "resultCommentNodeId",
+      "resultBodyDigest",
+    ]) {
+      assert.equal(resultTool.inputSchema.required.includes(optional), false);
+    }
   });
 });
 
@@ -693,6 +828,15 @@ test("verified Result snapshot supplies the acceptor digest", async () => {
         IDS.acceptance,
         "get_result_snapshot",
         baseInput(),
+        {
+          unsetEnv: [
+            "COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL",
+            "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN",
+          ],
+        },
       );
       assert.deepEqual(response.result.structuredContent, {
         resultCommentNodeId: "IC_result",
@@ -749,9 +893,7 @@ test("assignment submission is task-only, exact, and idempotent", async () => {
   await withFake({}, async (fake) => {
     const input = {
       ...baseInput(),
-      agentProfile: "issue-validator",
-      workerId: "issue-validation-01",
-      compatibleWorkers: compatibleWorkers(),
+      agentId: "issue-validator",
     };
     const first = await runTool(
       fake,
@@ -769,7 +911,7 @@ test("assignment submission is task-only, exact, and idempotent", async () => {
     assert.equal(second.result.structuredContent.reconciled, true);
     assert.equal(
       fake.state.comments.get(TASK_NUMBER)[0].body,
-      formatAssignment("issue-validator", "issue-validation-01"),
+      formatAssignment("issue-validator"),
     );
     assert.equal(fake.state.comments.get(PARENT_NUMBER).length, 0);
   });
@@ -778,9 +920,7 @@ test("assignment submission is task-only, exact, and idempotent", async () => {
 test("assignment config requires only its shared actors", async () => {
   const input = {
     ...baseInput(),
-    agentProfile: "issue-validator",
-    workerId: "issue-validation-01",
-    compatibleWorkers: compatibleWorkers(),
+    agentId: "issue-validator",
   };
   const unrelated = [
     "COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID",
@@ -810,7 +950,7 @@ test("assignment config requires only its shared actors", async () => {
     assert.equal(second.result.structuredContent.reconciled, true);
     assert.equal(
       fake.state.comments.get(TASK_NUMBER)[0].body,
-      formatAssignment("issue-validator", "issue-validation-01"),
+      formatAssignment("issue-validator"),
     );
   });
   for (const key of [
@@ -832,13 +972,230 @@ test("assignment config requires only its shared actors", async () => {
   }
 });
 
+test("each reporter path fails closed when any required config value is missing", async () => {
+    const common = [
+      "COPILOT_MCP_WORKGRAPH_TOKEN",
+      "COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID",
+      "COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID",
+    ];
+    const assignment = "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID";
+    const result = "COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID";
+    const acceptance = "COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID";
+    const orchestrator = "COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID";
+    const info = "COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID";
+    const feedback = "COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID";
+    const lease = [
+      "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL",
+      "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN",
+    ];
+    const resultInput = {
+      ...baseInput(),
+      ...activeLeaseInput(),
+      workResult: leasedResult(PASS_RESULT),
+    };
+    const cases = [
+      {
+        name: "Assignment",
+        actor: IDS.assignment,
+        tool: "submit_task_assignment",
+        input: {
+          ...baseInput(),
+          agentId: "issue-validator",
+        },
+        required: [...common, assignment],
+      },
+      {
+        name: "Result snapshot",
+        actor: IDS.acceptance,
+        tool: "get_result_snapshot",
+        input: baseInput(),
+        required: [...common, assignment, result, acceptance],
+      },
+      {
+        name: "Acceptance",
+        actor: IDS.acceptance,
+        tool: "submit_result_acceptance",
+        input: {
+          ...baseInput(),
+          resultCommentNodeId: "IC_result",
+          resultBodyDigest: `sha256:${"0".repeat(64)}`,
+          summary: "Reviewed.",
+        },
+        required: [...common, assignment, result, acceptance],
+      },
+      {
+        name: "Feedback",
+        actor: IDS.feedback,
+        tool: "submit_task_feedback",
+        input: {
+          ...baseInput(),
+          resultCommentNodeId: "IC_result",
+          resultBodyDigest: `sha256:${"0".repeat(64)}`,
+          feedback: "Revise.",
+        },
+        required: [...common, assignment, result, feedback],
+      },
+      {
+        name: "Result",
+        actor: IDS.result,
+        tool: "submit_task_result",
+        input: resultInput,
+        required: [...common, assignment, result, ...lease],
+      },
+      {
+        name: "feedback Result revision",
+        actor: IDS.result,
+        tool: "submit_task_result",
+        input: {
+          ...resultInput,
+          feedbackCommentNodeId: "IC_feedback",
+          feedbackUpdatedAt: "2026-08-18T23:00:00Z",
+          resultCommentNodeId: "IC_result",
+          resultBodyDigest: `sha256:${"0".repeat(64)}`,
+        },
+        required: [...common, assignment, result, feedback, ...lease],
+      },
+      {
+        name: "request-info Result",
+        actor: IDS.result,
+        tool: "submit_task_result",
+        input: {
+          ...resultInput,
+          workResult: {
+            taskType: "request-info",
+            leaseId: INFO_LEASE.leaseId,
+            outcome: "succeeded",
+            summary: "Requested information.",
+            result: { requestCommentNodeId: "IC_info" },
+          },
+        },
+        required: [...common, assignment, result, info, ...lease],
+      },
+      {
+        name: "parent info request",
+        actor: IDS.info,
+        tool: "post_parent_info_request",
+        input: {
+          ...baseInput(),
+          validationTaskIssueNumber: 18,
+          validationTaskIssueNodeId: "I_validation",
+          validationResultCommentNodeId: "IC_result",
+          ...activeLeaseInput(),
+        },
+        required: [
+          ...common,
+          assignment,
+          result,
+          acceptance,
+          info,
+          ...lease,
+        ],
+      },
+      {
+        name: "transition",
+        actor: IDS.orchestrator,
+        tool: "transition_issue",
+        input: {
+          parentIssueNumber: PARENT_NUMBER,
+          parentIssueNodeId: PARENT_NODE,
+          expectedStatus: "status:new",
+          transition: "start-validation",
+        },
+        required: [
+          ...common,
+          assignment,
+          result,
+          acceptance,
+          orchestrator,
+          info,
+          feedback,
+        ],
+      },
+    ];
+    for (const scenario of cases) {
+      for (const key of scenario.required) {
+        await withFake({}, async (fake) => {
+          const response = await runTool(
+            fake,
+            scenario.actor,
+            scenario.tool,
+            scenario.input,
+            { unsetEnv: [key] },
+          );
+          assert.equal(response.result.isError, true, `${scenario.name}: ${key}`);
+          assert.match(
+            response.result.content[0].text,
+            new RegExp(key),
+            `${scenario.name}: ${key}`,
+          );
+          assert.deepEqual(fake.state.operations, []);
+        });
+      }
+    }
+});
+
+test("Result Lease and feedback bindings are exact and fail before GitHub reads", async () => {
+    const complete = {
+      ...baseInput(),
+      ...activeLeaseInput(),
+      workResult: leasedResult(PASS_RESULT),
+    };
+    for (const key of [
+      "assignmentCommentNodeId",
+      "leaseId",
+      "agentId",
+      "slotId",
+      "acquiredAt",
+      "expiresAt",
+    ]) {
+      await withFake({}, async (fake) => {
+        const input = { ...complete };
+        delete input[key];
+        const response = await runTool(
+          fake,
+          IDS.result,
+          "submit_task_result",
+          input,
+        );
+        assert.equal(response.result.isError, true, key);
+        assert.match(response.result.content[0].text, /properties must be exactly/);
+        assert.deepEqual(fake.state.operations, []);
+      });
+    }
+    await withFake({}, async (fake) => {
+      const response = await runTool(
+        fake,
+        IDS.result,
+        "submit_task_result",
+        { ...complete, unexpectedLeaseField: "nope" },
+      );
+      assert.equal(response.result.isError, true);
+      assert.match(response.result.content[0].text, /properties must be exactly/);
+      assert.deepEqual(fake.state.operations, []);
+    });
+    await withFake({}, async (fake) => {
+      const response = await runTool(
+        fake,
+        IDS.result,
+        "submit_task_result",
+        { ...complete, feedbackCommentNodeId: "IC_feedback" },
+      );
+      assert.equal(response.result.isError, true);
+      assert.match(
+        response.result.content[0].text,
+        /feedback dispatch fields must be supplied together/,
+      );
+      assert.deepEqual(fake.state.operations, []);
+    });
+});
+
 test("assignment rejects wrong target mapping and foreign author", async () => {
   await withFake(
     {
       comments: {
         [TASK_NUMBER]: [
           makeComment(
-            formatAssignment("issue-validator", "issue-validation-01"),
+            formatAssignment("issue-validator"),
             999,
             "IC_assignment",
             201,
@@ -853,9 +1210,7 @@ test("assignment rejects wrong target mapping and foreign author", async () => {
         "submit_task_assignment",
         {
           ...baseInput(),
-          agentProfile: "issue-validator",
-          workerId: "issue-validation-01",
-          compatibleWorkers: compatibleWorkers(),
+          agentId: "issue-validator",
         },
       );
       assert.equal(response.result.isError, true);
@@ -866,58 +1221,68 @@ test("assignment rejects wrong target mapping and foreign author", async () => {
         "submit_task_assignment",
         {
           ...baseInput(),
-          agentProfile: "issue-info-requester",
-          workerId: "issue-information-01",
-          compatibleWorkers: compatibleWorkers("issue-info-requester"),
+          agentId: "issue-info-requester",
         },
       );
       assert.equal(response.result.isError, true);
       assert.match(response.result.content[0].text, /does not match taskType/);
     },
   );
-});
-
-test("assignment rejects nondeterministic selection and malformed authoritative config", async () => {
-  await withFake({}, async (fake) => {
-    const response = await runTool(
-      fake,
-      IDS.assignment,
-      "submit_task_assignment",
-      {
-        ...baseInput(),
-        agentProfile: "issue-validator",
-        workerId: "worker-z",
-        compatibleWorkers: [
-          {
-            workerId: "worker-z",
-            agentProfile: "issue-validator",
-            queueDepth: 1,
-          },
-          {
-            workerId: "issue-validation-01",
-            agentProfile: "issue-validator",
-            queueDepth: 0,
-          },
+  await withFake(
+    {
+      comments: {
+        [TASK_NUMBER]: [
+          makeComment(
+            'WorkGraphTaskAssignment/v1\n\n```json\n{\n  "agentProfile": "issue-validator",\n  "workerId": "legacy"\n}\n```\n',
+            IDS.assignment,
+            "IC_assignment",
+            201,
+          ),
         ],
       },
-    );
-    assert.equal(response.result.isError, true);
-    assert.match(response.result.content[0].text, /lowest queue depth/);
-  });
-  await withFake({ workerConfig: "version: 1\nworkers: []\n" }, async (fake) => {
+    },
+    async (fake) => {
+      const response = await runTool(
+        fake,
+        IDS.assignment,
+        "submit_task_assignment",
+        { ...baseInput(), agentId: "issue-validator" },
+      );
+      assert.equal(response.result.isError, true);
+      assert.match(response.result.content[0].text, /malformed|conflicting/);
+    },
+  );
+});
+
+test("assignment rejects absent agents and malformed authoritative config", async () => {
+  await withFake(
+    {
+      agentConfig:
+        "version: 1\nagents:\n" +
+        "  - agentId: issue-info-requester\n" +
+        "    slots: 1\n" +
+        "    leaseDuration: PT30M\n",
+    },
+    async (fake) => {
+      const response = await runTool(
+        fake,
+        IDS.assignment,
+        "submit_task_assignment",
+        { ...baseInput(), agentId: "issue-validator" },
+      );
+      assert.equal(response.result.isError, true);
+      assert.match(response.result.content[0].text, /absent from authoritative config/);
+    },
+  );
+  await withFake({ agentConfig: "version: 1\nagents: []\n" }, async (fake) => {
     const response = await runTool(
       fake,
       IDS.assignment,
       "submit_task_assignment",
-      {
-        ...baseInput(),
-        agentProfile: "issue-validator",
-        workerId: "issue-validation-01",
-        compatibleWorkers: compatibleWorkers(),
-      },
+      { ...baseInput(), agentId: "issue-validator" },
     );
     assert.equal(response.result.isError, true);
-    assert.match(response.result.content[0].text, /worker config/);
+    assert.match(response.result.content[0].text, /agent config/);
   });
 });
 
@@ -935,7 +1300,20 @@ test("Result/v1 validates the Source Lease immediately before write and reconcil
         ...activeLeaseInput(),
         workResult: result,
       };
-      const first = await runTool(fake, IDS.result, "submit_task_result", input);
+      const first = await runTool(
+        fake,
+        IDS.result,
+        "submit_task_result",
+        input,
+        {
+          unsetEnv: [
+            "COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID",
+          ],
+        },
+      );
       assert.equal(first.result.isError, false);
       assert.equal(first.result.structuredContent.revised, false);
       const write = fake.state.operations.findIndex(
@@ -1016,7 +1394,7 @@ test("Result rejects locally expired and Source-rejected Leases without writing"
     },
     {
       name: "Source mismatch",
-      input: { ...activeLeaseInput(), slotId: "issue-validation-01/2" },
+      input: { ...activeLeaseInput(), slotId: "issue-validator/2" },
       options: {},
       expected: /HTTP 409/,
       validates: true,
@@ -1107,7 +1485,7 @@ test("Result rejects wrong Assignment/Result authors and task target", async () 
       comments: {
         [TASK_NUMBER]: [
           makeComment(
-            formatAssignment("issue-validator", "issue-validation-01"),
+            formatAssignment("issue-validator"),
             999,
             "IC_assignment",
             201,
@@ -1223,7 +1601,6 @@ test("request-info posts one idempotent parent comment and submits typed Result"
         18: [
           assignmentComment(
             "issue-info-requester",
-            "issue-information-01",
             "IC_assignment_request",
           ),
         ],
@@ -1242,6 +1619,12 @@ test("request-info posts one idempotent parent comment and submits typed Result"
         IDS.info,
         "post_parent_info_request",
         infoInput,
+        {
+          unsetEnv: [
+            "COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID",
+          ],
+        },
       );
       assert.equal(first.result.isError, false);
       const parentWrite = fake.state.operations.findIndex(
@@ -1274,11 +1657,23 @@ test("request-info posts one idempotent parent comment and submits typed Result"
             first.result.structuredContent.requestCommentNodeId,
         },
       };
-      const submitted = await runTool(fake, IDS.result, "submit_task_result", {
-        ...baseInput(request),
-        ...activeLeaseInput(INFO_LEASE),
-        workResult: infoResult,
-      });
+      const submitted = await runTool(
+        fake,
+        IDS.result,
+        "submit_task_result",
+        {
+          ...baseInput(request),
+          ...activeLeaseInput(INFO_LEASE),
+          workResult: infoResult,
+        },
+        {
+          unsetEnv: [
+            "COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID",
+          ],
+        },
+      );
       assert.equal(submitted.result.isError, false);
       const resultWrite = fake.state.operations.findLastIndex(
         (operation) => operation ===
@@ -1314,6 +1709,15 @@ test("Acceptance is idempotent and rejects stale digest, wrong author, and wrong
         IDS.acceptance,
         "submit_result_acceptance",
         correct,
+        {
+          unsetEnv: [
+            "COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL",
+            "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN",
+          ],
+        },
       );
       assert.equal(first.result.isError, false);
       const duplicate = await runTool(
@@ -1421,6 +1825,12 @@ test("accepted validation pass advances to triage and failure creates request-in
             taskIssueNodeId: TASK_NODE,
             resultCommentNodeId: "IC_result",
           },
+          {
+            unsetEnv: [
+              "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL",
+              "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN",
+            ],
+          },
         );
         assert.equal(response.result.isError, false);
         assert.equal(response.result.structuredContent.status, expectedStatus);
@@ -1526,6 +1936,15 @@ test("feedback is idempotent and does not allocate a Lease", async () => {
         IDS.feedback,
         "submit_task_feedback",
         input,
+        {
+          unsetEnv: [
+            "COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL",
+            "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN",
+          ],
+        },
       );
       assert.equal(first.result.isError, false, first.result.content?.[0]?.text);
       assert.deepEqual(Object.keys(first.result.structuredContent).sort(), [
@@ -1906,6 +2325,13 @@ test("feedback revision requires a newly Source-validated active Lease", async (
           resultCommentNodeId: "IC_result",
           resultBodyDigest: input.resultBodyDigest,
           workResult: revisedResult,
+        },
+        {
+          unsetEnv: [
+            "COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID",
+          ],
         },
       );
       assert.equal(revisedResultResponse.result.isError, false);
