@@ -466,10 +466,8 @@ function envId(name) {
   return value;
 }
 
-function config() {
+function config(toolName) {
   const token = process.env.COPILOT_MCP_WORKGRAPH_TOKEN ?? "";
-  const leaseValidationToken = process.env.COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN ?? "";
-  const leaseValidationUrl = process.env.COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL ?? "";
   const taskTypeId =
     process.env.COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID ?? "";
   if (!token) throw new WorkGraphError("COPILOT_MCP_WORKGRAPH_TOKEN is required");
@@ -485,19 +483,25 @@ function config() {
     }
     api = url.toString().replace(/\/$/, "");
   }
-  return {
+  const shared = {
     token,
     taskTypeId,
     launcherId: envId("COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID"),
     assignmentId: envId("COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID"),
+    api,
+  };
+  if (toolName === "submit_task_assignment") return shared;
+  return {
+    ...shared,
     resultId: envId("COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID"),
     acceptanceId: envId("COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID"),
     orchestratorId: envId("COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID"),
     infoId: envId("COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID"),
     feedbackId: envId("COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID"),
-    leaseValidationToken,
-    leaseValidationUrl,
-    api,
+    leaseValidationToken:
+      process.env.COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN ?? "",
+    leaseValidationUrl:
+      process.env.COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL ?? "",
   };
 }
 
@@ -2158,7 +2162,7 @@ const tools = [
 ];
 
 async function callTool(name, args) {
-  const cfg = config();
+  const cfg = config(name);
   const github = new GitHub(cfg);
   if (name === "get_result_snapshot") return getResultSnapshot(args, github, cfg);
   if (name === "submit_task_assignment") return submitAssignment(args, github, cfg);
