@@ -1,0 +1,34 @@
+name: WorkGraph GitHub protocol integration
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: workgraph-github-protocol
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  protocol:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      WORKGRAPH_GITHUB_INTEGRATION: "1"
+      WORKGRAPH_GITHUB_REPOSITORY: drasi-project/drasi-workgraph-demo
+      COPILOT_MCP_WORKGRAPH_TOKEN: ${{ secrets.COPILOT_MCP_WORKGRAPH_TOKEN }}
+      COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID }}
+      COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID }}
+      COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID }}
+      COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID }}
+      COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID }}
+      COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run opt-in GitHub protocol integration
+        run: node --test --test-concurrency=1 tests/integration/workgraph-github-protocol.mjs

@@ -1,0 +1,8 @@
+version: 1
+agents:
+  - agentId: issue-validator
+    slots: 1
+    leaseDuration: PT30M
+  - agentId: issue-info-requester
+    slots: 1
+    leaseDuration: PT30M
