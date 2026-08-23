@@ -157,6 +157,90 @@ test("cleanup closes child before parent and verifies zero marker matches", asyn
   );
 });
 
+test("cleanup polls delayed GitHub convergence every five seconds without reclosing", async () => {
+  const parent = issue("parent");
+  const child = issue("child");
+  const state = new Map([
+    [parent.number, structuredClone(parent)],
+    [child.number, structuredClone(child)],
+  ]);
+  const closes = [];
+  const sleeps = [];
+  let openIssueCalls = 0;
+  const client = {
+    async issue(number) {
+      return structuredClone(state.get(number));
+    },
+    async openIssues() {
+      openIssueCalls += 1;
+      if (openIssueCalls <= 3) {
+        return [structuredClone(child), structuredClone(parent)];
+      }
+      return [];
+    },
+    async parent() {
+      return structuredClone(parent);
+    },
+    async closeIssue(number) {
+      closes.push(number);
+      state.get(number).state = "closed";
+    },
+  };
+
+  await cleanupRun(client, {
+    marker: MARKER,
+    actorId: ACTOR_ID,
+    sleep: async (milliseconds) => sleeps.push(milliseconds),
+  });
+
+  assert.deepEqual(closes, [child.number, parent.number]);
+  assert.deepEqual(sleeps, [5_000, 5_000]);
+  assert.equal(openIssueCalls, 4);
+});
+
+test("cleanup times out after sixty seconds without repeating close mutations", async () => {
+  const parent = issue("parent");
+  const child = issue("child");
+  const closes = [];
+  const sleeps = [];
+  let openIssueCalls = 0;
+  const client = {
+    async issue(number) {
+      return structuredClone(number === child.number ? child : parent);
+    },
+    async openIssues() {
+      openIssueCalls += 1;
+      return [structuredClone(child), structuredClone(parent)];
+    },
+    async parent() {
+      return structuredClone(parent);
+    },
+    async closeIssue(number) {
+      closes.push(number);
+    },
+  };
+
+  await assert.rejects(
+    cleanupRun(client, {
+      marker: MARKER,
+      actorId: ACTOR_ID,
+      sleep: async (milliseconds) => sleeps.push(milliseconds),
+    }),
+    (error) => {
+      assert.equal(error.message, "WorkGraph integration cleanup failed");
+      assert.match(
+        error.errors[0].message,
+        /marker-scoped open issues remain after cleanup/,
+      );
+      return true;
+    },
+  );
+
+  assert.deepEqual(closes, [child.number, parent.number]);
+  assert.deepEqual(sleeps, Array(12).fill(5_000));
+  assert.equal(openIssueCalls, 14);
+});
+
 test("cleanup refuses a marker child attached to an unrelated parent", async () => {
   const child = issue("child");
   const unrelatedParent = issue("parent", {
@@ -223,6 +307,7 @@ test("cleanup attempts the parent after a child close failure and reports both s
     cleanupRun(client, {
       marker: MARKER,
       actorId: ACTOR_ID,
+      sleep: async () => {},
       tracked: [
         { kind: "parent", number: parent.number },
         { kind: "child", number: child.number },

@@ -24,6 +24,8 @@ const REPORTER = path.join(ROOT, ".github/mcp/workgraph-reporter.mjs");
 const API = "https://api.github.com";
 const GRAPHQL_API = `${API}/graphql`;
 const RUN_MARKER = /^wg-protocol-it\/\d{8}T\d{6}Z\/[0-9a-f-]{36}$/;
+const CLEANUP_POLL_INTERVAL_MS = 5_000;
+const CLEANUP_POLL_TIMEOUT_MS = 60_000;
 const ROLE_ENV = [
   "COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID",
   "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
@@ -316,7 +318,13 @@ export class GitHubClient {
 
 export async function cleanupRun(
   client,
-  { marker, actorId, tracked = [] },
+  {
+    marker,
+    actorId,
+    tracked = [],
+    sleep = (milliseconds) =>
+      new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  },
 ) {
   validateRunMarker(marker);
   const byNumber = new Map();
@@ -372,23 +380,25 @@ export async function cleanupRun(
       failures.push(new Error(`failed to close issue #${issue.number}: ${error.message}`));
     }
   }
-  for (const issue of selected.map((entry) => entry.issue)) {
-    try {
-      const current = await client.issue(issue.number);
-      if (current.state !== "closed") {
-        failures.push(new Error(`issue #${issue.number} remains open`));
-      }
-    } catch (error) {
-      failures.push(error);
+
+  for (
+    let elapsed = 0;
+    elapsed <= CLEANUP_POLL_TIMEOUT_MS;
+    elapsed += CLEANUP_POLL_INTERVAL_MS
+  ) {
+    const remaining = selectCleanupIssues(
+      await client.openIssues(),
+      marker,
+      actorId,
+    );
+    if (remaining.length === 0) break;
+    if (elapsed === CLEANUP_POLL_TIMEOUT_MS) {
+      failures.push(
+        new Error("marker-scoped open issues remain after cleanup"),
+      );
+      break;
     }
-  }
-  const remaining = selectCleanupIssues(
-    await client.openIssues(),
-    marker,
-    actorId,
-  );
-  if (remaining.length > 0) {
-    failures.push(new Error("marker-scoped open issues remain after cleanup"));
+    await sleep(CLEANUP_POLL_INTERVAL_MS);
   }
   if (failures.length > 0) {
     throw new AggregateError(failures, "WorkGraph integration cleanup failed");
@@ -496,6 +506,8 @@ export async function startLeaseValidator() {
         ? { ...lease, unexpected: true }
         : mode === "mismatch"
           ? { ...lease, slotId: `${lease.agentId}/99` }
+          : mode === "expired"
+            ? { ...lease, expiresAt: "2000-01-01T00:00:00Z" }
           : lease;
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify(body));

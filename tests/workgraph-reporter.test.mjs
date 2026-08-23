@@ -52,8 +52,8 @@ const ACTIVE_LEASE = {
   assignmentCommentNodeId: "IC_assignment",
   agentId: "issue-validator",
   slotId: "issue-validator/1",
-  acquiredAt: "2026-08-18T23:30:00Z",
-  expiresAt: "2026-08-19T00:30:00Z",
+  acquiredAt: "2026-08-18T23:30:00.479Z",
+  expiresAt: "2026-08-19T00:30:00.479Z",
 };
 const INFO_LEASE = {
   leaseId: "lease-info-001",
@@ -97,7 +97,12 @@ function leasedResult(result, leaseId = ACTIVE_LEASE.leaseId) {
 }
 
 function activeLeaseInput(lease = ACTIVE_LEASE) {
-  return { ...lease };
+  return {
+    leaseId: lease.leaseId,
+    assignmentCommentNodeId: lease.assignmentCommentNodeId,
+    agentId: lease.agentId,
+    slotId: lease.slotId,
+  };
 }
 
 function taskPayload(taskType = "validate-issue", resultNode = "IC_validation") {
@@ -791,9 +796,7 @@ test("exposes only seven narrow tools and ignores MCP notifications", async () =
     assert.deepEqual(
       [...resultTool.inputSchema.required].sort(),
       [
-        "acquiredAt",
         "assignmentCommentNodeId",
-        "expiresAt",
         "leaseId",
         "parentIssueNodeId",
         "parentIssueNumber",
@@ -812,6 +815,8 @@ test("exposes only seven narrow tools and ignores MCP notifications", async () =
     ]) {
       assert.equal(resultTool.inputSchema.required.includes(optional), false);
     }
+    assert.equal("acquiredAt" in resultTool.inputSchema.properties, false);
+    assert.equal("expiresAt" in resultTool.inputSchema.properties, false);
   });
 });
 
@@ -1145,8 +1150,6 @@ test("Result Lease and feedback bindings are exact and fail before GitHub reads"
       "leaseId",
       "agentId",
       "slotId",
-      "acquiredAt",
-      "expiresAt",
     ]) {
       await withFake({}, async (fake) => {
         const input = { ...complete };
@@ -1378,7 +1381,7 @@ test("Result submits a valid passing validation without closing the task", async
   );
 });
 
-test("Result rejects locally expired and Source-rejected Leases without writing", async () => {
+test("Result rejects expired and Source-rejected Leases without writing", async () => {
   const expiredLease = {
     ...ACTIVE_LEASE,
     acquiredAt: "2026-08-18T23:00:00Z",
@@ -1387,10 +1390,16 @@ test("Result rejects locally expired and Source-rejected Leases without writing"
   const cases = [
     {
       name: "expired",
-      input: activeLeaseInput(expiredLease),
-      options: {},
+      input: activeLeaseInput(),
+      options: {
+        leaseValidationResponse: {
+          ...expiredLease,
+          taskNodeId: TASK_NODE,
+          taskType: "validate-issue",
+        },
+      },
       expected: /expired/,
-      validates: false,
+      validates: true,
     },
     {
       name: "Source mismatch",
@@ -1430,8 +1439,7 @@ test("Result rejects locally expired and Source-rejected Leases without writing"
         leaseValidationResponse: {
           ...ACTIVE_LEASE,
           taskNodeId: TASK_NODE,
-          taskType: "validate-issue",
-          expiresAt: "2026-08-19T00:29:59Z",
+          taskType: "request-info",
         },
       },
       expected: /does not match the dispatch/,
