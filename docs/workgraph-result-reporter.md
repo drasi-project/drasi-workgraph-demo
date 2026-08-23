@@ -118,10 +118,11 @@ active dispatch envelope contains exactly:
 }
 ```
 
-Agents pass every field unchanged. Reporter tool arguments call `taskNodeId`
-`taskIssueNodeId`; all other names match the envelope. The reporter validates
-the canonical timestamps, requires `acquiredAt < expiresAt`, and rejects a
-locally expired Lease before contacting Source.
+Agents pass the unchanged `leaseId`, `assignmentCommentNodeId`, `agentId`, and
+`slotId`; reporter tool arguments call `taskNodeId` `taskIssueNodeId`. Agents do
+not relay `acquiredAt` or `expiresAt`, because model serialization can alter
+timestamp precision. The reporter obtains the authoritative timestamps from
+Source, requires `acquiredAt < expiresAt`, and rejects an expired Lease.
 
 Immediately before each irreversible GitHub Result POST/PATCH or parent-info
 POST, the reporter sends:
@@ -143,16 +144,18 @@ Content-Type: application/json
 ```
 
 The request has exactly those five fields. A `200` response must be the exact
-eight-field active Lease snapshot shown above, byte-for-value equal to the
-dispatch envelope and validated task type. `401` is authentication failure,
-`409` is stale/mismatched/expired allocation, and `503` is Source state
-failure. Any non-200, malformed JSON, extra field, or mismatch fails closed.
+eight-field active Lease snapshot shown above. Its identity and validated task
+type must equal the dispatch, and its authoritative timestamps must form a
+currently active interval. `401` is authentication failure, `409` is
+stale/mismatched/expired allocation, and `503` is Source state failure. Any
+non-200, malformed JSON, extra field, or mismatch fails closed.
 The reporter does not retry. The bearer token is separate from the GitHub token
 and webhook HMAC and is never logged.
 
-Point-in-time validation plus the local deadline check is the accepted
-prototype boundary. Atomic coordination across the subsequent GitHub write is
-out of scope; Source remains authoritative when it ingests the Result.
+Point-in-time Source validation plus the reporter's check of the returned
+deadline is the accepted prototype boundary. Atomic coordination across the
+subsequent GitHub write is out of scope; Source remains authoritative when it
+ingests the Result.
 
 ### `WorkGraphTaskResult/v1`
 

@@ -103,8 +103,6 @@ function leaseArguments(lease) {
     leaseId: lease.leaseId,
     agentId: lease.agentId,
     slotId: lease.slotId,
-    acquiredAt: lease.acquiredAt,
-    expiresAt: lease.expiresAt,
   };
 }
 
@@ -315,7 +313,7 @@ test(
 
     before = commentsSnapshot(await client.comments(child.number));
     const missingLeaseField = { ...resultInput };
-    delete missingLeaseField.expiresAt;
+    delete missingLeaseField.slotId;
     for (const input of [
       missingLeaseField,
       { ...resultInput, unexpectedLeaseField: "nope" },
@@ -332,6 +330,18 @@ test(
         before,
       );
     }
+    leaseValidator.queueMode("expired");
+    response = await invokeReporter(
+      config,
+      leaseValidator,
+      "submit_task_result",
+      resultInput,
+    );
+    assertToolError(response, /expired/);
+    assert.deepEqual(
+      commentsSnapshot(await client.comments(child.number)),
+      before,
+    );
     for (const [input, expected] of [
       [
         { ...resultInput, assignmentCommentNodeId: "IC_wrong" },
@@ -351,14 +361,6 @@ test(
           workResult: { ...passingResult, leaseId: "wrong-lease" },
         },
         /must match the active dispatch Lease/,
-      ],
-      [
-        {
-          ...resultInput,
-          expiresAt: iso(Date.now() - 1_000),
-          acquiredAt: iso(Date.now() - 60_000),
-        },
-        /expired/,
       ],
     ]) {
       response = await invokeReporter(

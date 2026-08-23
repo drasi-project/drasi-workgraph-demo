@@ -506,6 +506,8 @@ export async function startLeaseValidator() {
         ? { ...lease, unexpected: true }
         : mode === "mismatch"
           ? { ...lease, slotId: `${lease.agentId}/99` }
+          : mode === "expired"
+            ? { ...lease, expiresAt: "2000-01-01T00:00:00Z" }
           : lease;
     response.writeHead(200, { "Content-Type": "application/json" });
     response.end(JSON.stringify(body));

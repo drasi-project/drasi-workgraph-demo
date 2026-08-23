@@ -53,11 +53,13 @@ and non-empty plain-text `evidence`. A completed check has `outcome:
 "succeeded"` even if criteria fail. Construct a Result with exactly `taskType`, unchanged `leaseId`, `outcome`,
 `summary`, and typed `result`. There is no `assignmentId` or `bodyDigest`.
 
-Call `workgraph/submit_task_result` once with every unchanged Source Lease
-reference and `workResult`. The narrow reporter independently re-fetches and
-verifies exact node IDs, configured type ID/name, creators/authors, authoritative
-parent, Assignment/v1, destination, prior Result, and races, then validates the
-exact active Lease with Source immediately before writing `WorkGraphTaskResult/v1`.
+Call `workgraph/submit_task_result` once with the unchanged `leaseId`,
+`assignmentCommentNodeId`, `agentId`, and `slotId`, the task/parent references,
+and `workResult`. Do not pass `acquiredAt` or `expiresAt`; the narrow reporter
+obtains those timestamps from Source. It independently re-fetches and verifies
+exact node IDs, configured type ID/name, creators/authors, authoritative parent,
+Assignment/v1, destination, prior Result, and races, then validates the exact
+active Lease with Source immediately before writing `WorkGraphTaskResult/v1`.
 
 Feedback dispatch is valid only with a newly granted active Lease and may include `feedbackCommentNodeId`,
 `feedbackUpdatedAt`, `resultCommentNodeId`, and `resultBodyDigest`. When present,

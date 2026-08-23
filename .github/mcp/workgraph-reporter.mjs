@@ -283,10 +283,10 @@ export function formatTaskResult(result) {
 function timestamp(value, label) {
   if (
     typeof value !== "string" ||
-    !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(value) ||
+    !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/.test(value) ||
     !Number.isFinite(Date.parse(value))
   ) {
-    throw new WorkGraphError(`${label} must be canonical UTC YYYY-MM-DDTHH:MM:SSZ`);
+    throw new WorkGraphError(`${label} must be a canonical UTC timestamp`);
   }
 }
 
@@ -974,8 +974,6 @@ const LEASE_ARGUMENTS = [
   "leaseId",
   "agentId",
   "slotId",
-  "acquiredAt",
-  "expiresAt",
 ];
 const FEEDBACK_ARGUMENTS = [
   "feedbackCommentNodeId",
@@ -1011,19 +1009,9 @@ async function validateSourceLease(input, taskPayload, cfg) {
     agentId: input.agentId,
     slotId: input.slotId,
     taskType: taskPayload.taskType,
-    acquiredAt: input.acquiredAt,
-    expiresAt: input.expiresAt,
   };
   for (const key of ["leaseId", "taskNodeId", "assignmentCommentNodeId", "agentId", "slotId"]) {
     opaque(expected[key], `Source Lease.${key}`);
-  }
-  timestamp(expected.acquiredAt, "Source Lease.acquiredAt");
-  timestamp(expected.expiresAt, "Source Lease.expiresAt");
-  if (
-    Date.parse(expected.acquiredAt) >= Date.parse(expected.expiresAt) ||
-    nowMilliseconds() >= Date.parse(expected.expiresAt)
-  ) {
-    throw new WorkGraphError("Source Lease is expired or has an invalid interval");
   }
   const response = await fetch(validationUrl, {
       method: "POST",
@@ -1046,10 +1034,25 @@ async function validateSourceLease(input, taskPayload, cfg) {
   const snapshot = await response.json().catch(() => {
     throw new WorkGraphError("Source Lease validation response was not JSON");
   });
-  exact(snapshot, Object.keys(expected), "Source Lease validation response");
-  if (!isDeepStrictEqual(snapshot, expected)) {
+  exact(
+    snapshot,
+    [...Object.keys(expected), "acquiredAt", "expiresAt"],
+    "Source Lease validation response",
+  );
+  if (
+    Object.entries(expected).some(([key, value]) => snapshot[key] !== value)
+  ) {
     throw new WorkGraphError("Source Lease validation response does not match the dispatch");
   }
+  timestamp(snapshot.acquiredAt, "Source Lease.acquiredAt");
+  timestamp(snapshot.expiresAt, "Source Lease.expiresAt");
+  if (
+    Date.parse(snapshot.acquiredAt) >= Date.parse(snapshot.expiresAt) ||
+    nowMilliseconds() >= Date.parse(snapshot.expiresAt)
+  ) {
+    throw new WorkGraphError("Source Lease is expired or has an invalid interval");
+  }
+  return snapshot;
 }
 
 function validateFeedbackRevision(input, comments, current, cfg) {
@@ -1074,9 +1077,6 @@ function validateFeedbackRevision(input, comments, current, cfg) {
     resultDigest(current.comment.body) !== input.resultBodyDigest
   ) {
     throw new WorkGraphError("feedback dispatch does not bind the exact current Result revision");
-  }
-  if (Date.parse(input.acquiredAt) < Date.parse(input.feedbackUpdatedAt)) {
-    throw new WorkGraphError("feedback agent Lease predates the feedback request");
   }
   const oldSemantic = { ...current.payload };
   delete oldSemantic.leaseId;
@@ -1120,8 +1120,6 @@ async function submitResult(input, github, cfg) {
   ]) {
     opaque(input[key], `arguments.${key}`);
   }
-  timestamp(input.acquiredAt, "arguments.acquiredAt");
-  timestamp(input.expiresAt, "arguments.expiresAt");
   const ctx = await context(github, input, cfg, {
     actorId: cfg.resultId,
     actorLabel: "Result reporter",
@@ -1216,7 +1214,10 @@ async function submitResult(input, github, cfg) {
     throw new WorkGraphError("an accepted Result cannot be revised");
   }
   verifyResultSnapshot(await github.comment(current.id), current, cfg);
-  await validateSourceLease(input, ctx.taskPayload, cfg);
+  const lease = await validateSourceLease(input, ctx.taskPayload, cfg);
+  if (Date.parse(lease.acquiredAt) < Date.parse(input.feedbackUpdatedAt)) {
+    throw new WorkGraphError("feedback agent Lease predates the feedback request");
+  }
   const revised = verifiedCommentWrite(
     await github.patchComment(current.id, body),
     body,
@@ -2094,8 +2095,6 @@ const tools = [
         leaseId: { type: "string" },
         agentId: { type: "string" },
         slotId: { type: "string" },
-        acquiredAt: { type: "string" },
-        expiresAt: { type: "string" },
         feedbackCommentNodeId: { type: "string" },
         feedbackUpdatedAt: { type: "string" },
         resultCommentNodeId: { type: "string" },
@@ -2155,8 +2154,6 @@ const tools = [
       leaseId: { type: "string" },
       agentId: { type: "string" },
       slotId: { type: "string" },
-      acquiredAt: { type: "string" },
-      expiresAt: { type: "string" },
     }),
   },
   {
