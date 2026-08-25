@@ -43,9 +43,13 @@ Network-free default validation:
 
 ```bash
 node --check .github/mcp/workgraph-reporter.mjs
-node --test tests/workgraph-reporter.test.mjs tests/workgraph-live-support.test.mjs
+node --check .github/mcp/workgraph-v2-protocol.mjs
+node --test tests/*.test.mjs
 python3 -m unittest discover -s tests -v
 ```
+
+The v2 protocol tests are network-free. The explicit live suite below still
+exercises only the operational v1 reporter.
 
 Explicit live run after injecting the required environment:
 

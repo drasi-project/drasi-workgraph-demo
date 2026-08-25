@@ -5,6 +5,18 @@ All GitHub WorkGraph comment protocols are v1-only. There are no aliases,
 migration parsers, arbitrary repository selectors, raw comment bodies, generic
 mutation tools, or GitHub Lease comments.
 
+## Staged workflow v2 protocol
+
+`.github/mcp/workgraph-v2-protocol.mjs` is a pure, network-free staging module
+for the repository workflow. It canonically formats and parses
+`WorkGraphTask/v2` manifests, checks complete current-generation parallel task
+families against their composite parent, and formats workflow Results and
+Assignments. Workflow comments deliberately retain
+`WorkGraphTaskResult/v1` and `WorkGraphTaskAssignment/v1`.
+
+The production MCP does not import this module or expose a v2 mutation path.
+Everything below remains the active v1 reporter contract.
+
 The GitHub WorkGraph Source owns agent capacity and active Leases. It projects
 capacity from `.github/workgraph/agents.yaml`, creates synthetic active
 Lease graph nodes, validates exact active allocations, and remains the final

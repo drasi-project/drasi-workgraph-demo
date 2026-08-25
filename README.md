@@ -16,7 +16,10 @@ YAML body. `.github/workgraph/agents.yaml` defines capacity and Lease duration
 for each custom-agent ID. The GitHub WorkGraph Source owns capacity and
 synthetic active Leases. Agent selection uses `WorkGraphTaskAssignment/v1`;
 agents write lease-bound `WorkGraphTaskResult/v1`. All GitHub WorkGraph comment
-protocols are v1-only, and Lease is never a GitHub comment. Validation uses only the two criteria in
+protocols are v1-only, and Lease is never a GitHub comment. A separate,
+network-free `workgraph-v2-protocol.mjs` module now proves canonical
+`WorkGraphTask/v2` workflow manifests and nested parallel-family validation, but
+no operational MCP tool or live workflow uses it yet. Validation uses only the two criteria in
 `.github/workgraph/profiles/issue-validation/new-issue-default.md`.
 
 The dependency-free Node MCP exposes seven narrow tools for verified Result
