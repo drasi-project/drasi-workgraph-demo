@@ -4,6 +4,14 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual, TextDecoder, TextEncoder } from "node:util";
 import process from "node:process";
 import readline from "node:readline";
+import {
+  formatWorkflowAssignment,
+  formatWorkflowResult,
+  parseWorkflowAssignment,
+  parseWorkflowResult,
+  parseWorkflowTask,
+  validateWorkflowChildTask,
+} from "./workgraph-v2-protocol.mjs";
 
 const API = "https://api.github.com";
 const OWNER = "drasi-project";
@@ -476,7 +484,10 @@ function config(toolName, args) {
   };
   let identities;
   let lease = false;
-  if (toolName === "submit_task_assignment") {
+  if (
+    toolName === "submit_task_assignment" ||
+    toolName === "submit_workflow_task_assignment"
+  ) {
     identities = ["launcherId", "assignmentId"];
   } else if (
     toolName === "get_result_snapshot" ||
@@ -485,16 +496,23 @@ function config(toolName, args) {
     identities = ["launcherId", "assignmentId", "resultId", "acceptanceId"];
   } else if (toolName === "submit_task_feedback") {
     identities = ["launcherId", "assignmentId", "resultId", "feedbackId"];
-  } else if (toolName === "submit_task_result") {
+  } else if (
+    toolName === "submit_task_result" ||
+    toolName === "submit_workflow_task_result"
+  ) {
     identities = ["launcherId", "assignmentId", "resultId"];
     if (
+      toolName === "submit_task_result" &&
       FEEDBACK_ARGUMENTS.some((key) =>
         Object.prototype.hasOwnProperty.call(args, key),
       )
     ) {
       identities.push("feedbackId");
     }
-    if (args?.workResult?.taskType === "request-info") {
+    if (
+      toolName === "submit_task_result" &&
+      args?.workResult?.taskType === "request-info"
+    ) {
       identities.push("infoId");
     }
     lease = true;
@@ -722,12 +740,18 @@ function validateParent(parent, input) {
   }
 }
 
-function validateTaskIssue(task, input, cfg, { open = false } = {}) {
+function validateTaskIssueIdentity(
+  task,
+  taskIssueNumber,
+  taskIssueNodeId,
+  cfg,
+  { open = false } = {},
+) {
   if (
     !object(task) ||
     task.pull_request ||
-    task.number !== input.taskIssueNumber ||
-    task.node_id !== input.taskIssueNodeId ||
+    task.number !== taskIssueNumber ||
+    task.node_id !== taskIssueNodeId ||
     task.repository_url !== REPOSITORY_URL
   ) {
     throw new WorkGraphError("task is not the requested fixed-repository Issue");
@@ -744,7 +768,28 @@ function validateTaskIssue(task, input, cfg, { open = false } = {}) {
   if (open && task.state !== "open") {
     throw new WorkGraphError("task must be open");
   }
+}
+
+function validateTaskIssue(task, input, cfg, options = {}) {
+  validateTaskIssueIdentity(
+    task,
+    input.taskIssueNumber,
+    input.taskIssueNodeId,
+    cfg,
+    options,
+  );
   return parseTask(task.body);
+}
+
+function validateWorkflowTaskIssue(task, input, cfg, options = {}) {
+  validateTaskIssueIdentity(
+    task,
+    input.taskIssueNumber,
+    input.taskIssueNodeId,
+    cfg,
+    options,
+  );
+  return parseWorkflowTask(task.body);
 }
 
 async function context(github, input, cfg, options) {
@@ -757,6 +802,51 @@ async function context(github, input, cfg, options) {
   const taskPayload = validateTaskIssue(task, input, cfg, { open: options.open });
   validateParent(parent, input);
   return { identity, task, parent, taskPayload };
+}
+
+function validateWorkflowParent(parent, input, cfg, taskPayload) {
+  validateParent(parent, input);
+  if (taskPayload.inputs.branchId === undefined) {
+    if (
+      parent.type?.name === TASK_TYPE_NAME ||
+      parent.type?.node_id === cfg.taskTypeId
+    ) {
+      throw new WorkGraphError(
+        "top-level workflow task parent must be a principal Issue",
+      );
+    }
+    return null;
+  }
+  const parentPayload = validateWorkflowTaskIssue(
+    parent,
+    {
+      taskIssueNumber: input.parentIssueNumber,
+      taskIssueNodeId: input.parentIssueNodeId,
+    },
+    cfg,
+    { open: true },
+  );
+  validateWorkflowChildTask(parentPayload, taskPayload);
+  return parentPayload;
+}
+
+async function workflowContext(github, input, cfg, options) {
+  const [identity, task, parent] = await Promise.all([
+    github.identity(),
+    github.issue(input.taskIssueNumber),
+    github.parent(input.taskIssueNumber),
+  ]);
+  verifyIdentity(identity, options.actorId, options.actorLabel);
+  const taskPayload = validateWorkflowTaskIssue(task, input, cfg, {
+    open: options.open,
+  });
+  const parentTaskPayload = validateWorkflowParent(
+    parent,
+    input,
+    cfg,
+    taskPayload,
+  );
+  return { identity, task, parent, taskPayload, parentTaskPayload };
 }
 
 function candidates(comments, marker, parser) {
@@ -803,6 +893,47 @@ function oneAssignment(
   return entry;
 }
 
+function oneWorkflowAssignment(
+  comments,
+  taskPayload,
+  cfg,
+  { agentId = null, assignmentCommentNodeId = null } = {},
+) {
+  const found = candidates(
+    comments,
+    ASSIGNMENT_MARKER,
+    parseWorkflowAssignment,
+  );
+  if (
+    found.marked.length !== 1 ||
+    !found.parsed[0]?.payload ||
+    found.parsed[0].comment.user?.id !== cfg.assignmentId
+  ) {
+    throw new WorkGraphError(
+      "workflow task must have one canonical Assignment by the configured Assignment reporter",
+    );
+  }
+  const entry = {
+    comment: found.parsed[0].comment,
+    payload: found.parsed[0].payload,
+  };
+  if (entry.payload.agentId !== taskPayload.inputs.agent) {
+    throw new WorkGraphError(
+      "Assignment agentId does not match the workflow task manifest",
+    );
+  }
+  if (
+    agentId !== null &&
+    (entry.payload.agentId !== agentId ||
+      entry.comment.node_id !== assignmentCommentNodeId)
+  ) {
+    throw new WorkGraphError(
+      "active workflow work requires the exact Assignment/v1 agent and comment ID",
+    );
+  }
+  return entry;
+}
+
 function oneResult(comments, taskPayload, cfg) {
   const found = candidates(comments, RESULT_MARKER, parseResult);
   if (
@@ -820,6 +951,23 @@ function oneResult(comments, taskPayload, cfg) {
     throw new WorkGraphError("Result taskType does not match the task");
   }
   return entry;
+}
+
+function oneWorkflowResult(comments, cfg) {
+  const found = candidates(comments, RESULT_MARKER, parseWorkflowResult);
+  if (
+    found.marked.length !== 1 ||
+    !found.parsed[0]?.payload ||
+    found.parsed[0].comment.user?.id !== cfg.resultId
+  ) {
+    throw new WorkGraphError(
+      "workflow task must have one canonical Result by the configured Result reporter",
+    );
+  }
+  return {
+    comment: found.parsed[0].comment,
+    payload: found.parsed[0].payload,
+  };
 }
 
 function acceptanceFor(comments, resultEntry, cfg) {
@@ -940,6 +1088,97 @@ async function submitAssignment(input, github, cfg) {
   if (afterAssignment.comment.body !== body) {
     throw new WorkGraphError(
       "Assignment race left the task inconsistent; manual remediation is required",
+    );
+  }
+  return { commentNodeId: comment.node_id, reconciled: false };
+}
+
+async function submitWorkflowAssignment(input, github, cfg) {
+  refs(input, ["agentId"]);
+  const body = formatWorkflowAssignment(input.agentId);
+  const ctx = await workflowContext(github, input, cfg, {
+    actorId: cfg.assignmentId,
+    actorLabel: "Assignment reporter",
+    open: true,
+  });
+  if (input.agentId !== ctx.taskPayload.inputs.agent) {
+    throw new WorkGraphError(
+      "agentId does not match the workflow task manifest",
+    );
+  }
+  const agents = await authoritativeAgents(github);
+  if (!agents.some((agent) => agent.agentId === input.agentId)) {
+    throw new WorkGraphError("agentId is absent from authoritative config");
+  }
+  const comments = await github.comments(input.taskIssueNumber);
+  const found = candidates(
+    comments,
+    ASSIGNMENT_MARKER,
+    parseWorkflowAssignment,
+  );
+  if (found.marked.length > 0) {
+    if (
+      found.marked.length === 1 &&
+      found.parsed[0].payload?.agentId === input.agentId &&
+      found.parsed[0].comment.user?.id === cfg.assignmentId &&
+      found.parsed[0].comment.body === body
+    ) {
+      return {
+        commentNodeId: found.parsed[0].comment.node_id,
+        reconciled: true,
+      };
+    }
+    throw new WorkGraphError(
+      "workflow task already has a malformed, foreign, or conflicting Assignment",
+    );
+  }
+  const beforeCtx = await workflowContext(github, input, cfg, {
+    actorId: cfg.assignmentId,
+    actorLabel: "Assignment reporter",
+    open: true,
+  });
+  if (!isDeepStrictEqual(beforeCtx.taskPayload, ctx.taskPayload)) {
+    throw new WorkGraphError(
+      "workflow task changed immediately before Assignment",
+    );
+  }
+  const beforeAgents = await authoritativeAgents(github);
+  if (!beforeAgents.some((agent) => agent.agentId === input.agentId)) {
+    throw new WorkGraphError(
+      "agent config changed immediately before Assignment",
+    );
+  }
+  const beforeComments = await github.comments(input.taskIssueNumber);
+  if (
+    candidates(
+      beforeComments,
+      ASSIGNMENT_MARKER,
+      parseWorkflowAssignment,
+    ).marked.length > 0
+  ) {
+    throw new WorkGraphError(
+      "Assignment appeared immediately before creation",
+    );
+  }
+  const comment = verifiedCommentWrite(
+    await github.postComment(input.taskIssueNumber, body),
+    body,
+    cfg.assignmentId,
+    "workflow Assignment",
+  );
+  const afterComments = await github.comments(input.taskIssueNumber);
+  const afterAssignment = oneWorkflowAssignment(
+    afterComments,
+    ctx.taskPayload,
+    cfg,
+    {
+      agentId: input.agentId,
+      assignmentCommentNodeId: comment.node_id,
+    },
+  );
+  if (afterAssignment.comment.body !== body) {
+    throw new WorkGraphError(
+      "Assignment race left the workflow task inconsistent; manual remediation is required",
     );
   }
   return { commentNodeId: comment.node_id, reconciled: false };
@@ -1243,6 +1482,95 @@ async function submitResult(input, github, cfg) {
     commentNodeId: revised.node_id,
     resultBodyDigest: resultDigest(body),
     revised: true,
+    reconciled: false,
+  };
+}
+
+async function submitWorkflowResult(input, github, cfg) {
+  refs(input, ["workResult", ...LEASE_ARGUMENTS]);
+  for (const key of LEASE_ARGUMENTS) {
+    opaque(input[key], `arguments.${key}`);
+  }
+  const body = formatWorkflowResult(input.workResult);
+  if (input.workResult.leaseId !== input.leaseId) {
+    throw new WorkGraphError(
+      "Result.leaseId must match the active dispatch Lease",
+    );
+  }
+  const ctx = await workflowContext(github, input, cfg, {
+    actorId: cfg.resultId,
+    actorLabel: "Result reporter",
+    open: true,
+  });
+  if (input.agentId !== ctx.taskPayload.inputs.agent) {
+    throw new WorkGraphError(
+      "active Lease agentId does not match the workflow task manifest",
+    );
+  }
+  const comments = await github.comments(input.taskIssueNumber);
+  oneWorkflowAssignment(comments, ctx.taskPayload, cfg, {
+    agentId: input.agentId,
+    assignmentCommentNodeId: input.assignmentCommentNodeId,
+  });
+  const found = candidates(comments, RESULT_MARKER, parseWorkflowResult);
+  if (found.marked.length > 0) {
+    if (
+      found.marked.length === 1 &&
+      found.parsed[0].payload &&
+      found.parsed[0].comment.user?.id === cfg.resultId &&
+      found.parsed[0].comment.body === body
+    ) {
+      return {
+        commentNodeId: found.parsed[0].comment.node_id,
+        resultBodyDigest: resultDigest(body),
+        reconciled: true,
+      };
+    }
+    throw new WorkGraphError(
+      "workflow task already has a malformed, foreign, or conflicting Result",
+    );
+  }
+  const beforeCtx = await workflowContext(github, input, cfg, {
+    actorId: cfg.resultId,
+    actorLabel: "Result reporter",
+    open: true,
+  });
+  if (!isDeepStrictEqual(beforeCtx.taskPayload, ctx.taskPayload)) {
+    throw new WorkGraphError("workflow task changed immediately before Result");
+  }
+  const beforeComments = await github.comments(input.taskIssueNumber);
+  oneWorkflowAssignment(beforeComments, beforeCtx.taskPayload, cfg, {
+    agentId: input.agentId,
+    assignmentCommentNodeId: input.assignmentCommentNodeId,
+  });
+  if (
+    candidates(beforeComments, RESULT_MARKER, parseWorkflowResult).marked
+      .length > 0
+  ) {
+    throw new WorkGraphError("Result appeared immediately before creation");
+  }
+  await validateSourceLease(input, beforeCtx.taskPayload, cfg);
+  const comment = verifiedCommentWrite(
+    await github.postComment(input.taskIssueNumber, body),
+    body,
+    cfg.resultId,
+    "workflow Result",
+  );
+  const afterResult = oneWorkflowResult(
+    await github.comments(input.taskIssueNumber),
+    cfg,
+  );
+  if (
+    afterResult.comment.node_id !== comment.node_id ||
+    afterResult.comment.body !== body
+  ) {
+    throw new WorkGraphError(
+      "Result creation did not reconcile for the workflow task",
+    );
+  }
+  return {
+    commentNodeId: comment.node_id,
+    resultBodyDigest: resultDigest(body),
     reconciled: false,
   };
 }
@@ -2108,6 +2436,33 @@ const tools = [
     ),
   },
   {
+    name: "submit_workflow_task_assignment",
+    description:
+      "Submit or reconcile one Assignment matching a WorkGraphTask/v2 manifest.",
+    inputSchema: schema({
+      ...referenceProperties,
+      agentId: {
+        type: "string",
+        minLength: 1,
+        maxLength: 64,
+        pattern: "^[A-Za-z0-9._-]+$",
+      },
+    }),
+  },
+  {
+    name: "submit_workflow_task_result",
+    description:
+      "Create one lease-bound workflow Result; never revise or close a task.",
+    inputSchema: schema({
+      ...referenceProperties,
+      workResult: { type: "object" },
+      assignmentCommentNodeId: { type: "string" },
+      leaseId: { type: "string" },
+      agentId: { type: "string" },
+      slotId: { type: "string" },
+    }),
+  },
+  {
     name: "submit_result_acceptance",
     description: "Accept the exact current Result comment ID and SHA-256 digest.",
     inputSchema: schema({
@@ -2174,6 +2529,12 @@ async function callTool(name, args) {
   if (name === "get_result_snapshot") return getResultSnapshot(args, github, cfg);
   if (name === "submit_task_assignment") return submitAssignment(args, github, cfg);
   if (name === "submit_task_result") return submitResult(args, github, cfg);
+  if (name === "submit_workflow_task_assignment") {
+    return submitWorkflowAssignment(args, github, cfg);
+  }
+  if (name === "submit_workflow_task_result") {
+    return submitWorkflowResult(args, github, cfg);
+  }
   if (name === "submit_result_acceptance") return submitAcceptance(args, github, cfg);
   if (name === "transition_issue") return transitionIssue(args, github, cfg);
   if (name === "post_parent_info_request") return postInfo(args, github, cfg);

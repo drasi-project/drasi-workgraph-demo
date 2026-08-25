@@ -5,9 +5,11 @@ import {
   formatWorkflowAssignment,
   formatWorkflowResult,
   formatWorkflowTask,
+  parseWorkflowAssignment,
   parseWorkflowResult,
   parseWorkflowTask,
   validateParallelTaskFamily,
+  validateWorkflowChildTask,
 } from "../.github/mcp/workgraph-v2-protocol.mjs";
 
 const DIGEST = `sha256:${"0".repeat(64)}`;
@@ -91,6 +93,7 @@ test("WorkGraphTask/v2 round-trips a complete canonical parent manifest", () => 
 
 test("parallel family validation requires exact current-generation branches", () => {
   assert.equal(validateParallelTaskFamily(PARENT, CHILDREN), true);
+  assert.deepEqual(validateWorkflowChildTask(PARENT, CHILDREN[0]), CHILDREN[0]);
 
   assert.throws(
     () => validateParallelTaskFamily(PARENT, CHILDREN.slice(0, 1)),
@@ -160,6 +163,17 @@ test("v2 task validation rejects incomplete or contradictory joins", () => {
   assert.throws(
     () =>
       formatWorkflowTask({
+        ...PARENT,
+        inputs: {
+          ...PARENT.inputs,
+          branchId: "nested-composite",
+        },
+      }),
+    /branchId must be absent/,
+  );
+  assert.throws(
+    () =>
+      formatWorkflowTask({
         taskType: "workflow-task",
         inputs: {
           ...CHILDREN[0].inputs,
@@ -186,6 +200,19 @@ test("workflow Result and Assignment retain the existing comment versions", () =
     formatWorkflowAssignment("issue-title-validator"),
     'WorkGraphTaskAssignment/v1\n\n```json\n{\n  "agentId": "issue-title-validator"\n}\n```\n',
   );
+  assert.deepEqual(
+    parseWorkflowAssignment(formatWorkflowAssignment("issue-title-validator")),
+    { agentId: "issue-title-validator" },
+  );
+  assert.equal(
+    parseWorkflowAssignment(
+      formatWorkflowAssignment("issue-title-validator").replace(
+        '  "agentId":',
+        '"agentId":',
+      ),
+    ),
+    null,
+  );
 });
 
 test("noncanonical v2 bodies and generic empty Results are rejected", () => {
@@ -209,5 +236,51 @@ test("noncanonical v2 bodies and generic empty Results are rejected", () => {
       'WorkGraphTaskResult/v1\n\n```json\n{"taskType":"workflow-task"}\n```\n',
     ),
     null,
+  );
+  assert.throws(
+    () =>
+      formatWorkflowResult({
+        taskType: "workflow-task",
+        leaseId: "lease-001",
+        outcome: "succeeded",
+        summary: "x".repeat(4097),
+        result: { passed: true },
+      }),
+    /4096 bytes/,
+  );
+  assert.throws(
+    () =>
+      formatWorkflowResult({
+        taskType: "workflow-task",
+        leaseId: "lease-001",
+        outcome: "succeeded",
+        summary: "Done.",
+        result: { evidence: "x".repeat(64 * 1024) },
+      }),
+    /65536 bytes/,
+  );
+  let nested = { passed: true };
+  for (let index = 0; index < 34; index += 1) nested = { nested };
+  assert.throws(
+    () =>
+      formatWorkflowResult({
+        taskType: "workflow-task",
+        leaseId: "lease-001",
+        outcome: "succeeded",
+        summary: "Done.",
+        result: nested,
+      }),
+    /nested levels/,
+  );
+  assert.throws(
+    () =>
+      formatWorkflowResult({
+        taskType: "workflow-task",
+        leaseId: "lease-001",
+        outcome: "succeeded",
+        summary: "Done.",
+        result: { evidence: "WorkGraphTaskAssignment/v1" },
+      }),
+    /ordinary LF text/,
   );
 });

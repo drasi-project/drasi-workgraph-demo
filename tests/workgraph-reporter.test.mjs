@@ -16,6 +16,11 @@ import {
   parseTask,
   resultDigest,
 } from "../.github/mcp/workgraph-reporter.mjs";
+import {
+  formatWorkflowAssignment,
+  formatWorkflowResult,
+  formatWorkflowTask,
+} from "../.github/mcp/workgraph-v2-protocol.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const REPORTER = path.join(ROOT, ".github/mcp/workgraph-reporter.mjs");
@@ -46,6 +51,15 @@ const AGENTS_YAML =
   "    leaseDuration: PT30M\n" +
   "  - agentId: issue-info-requester\n" +
   "    slots: 1\n" +
+  "    leaseDuration: PT30M\n" +
+  "  - agentId: issue-title-validator\n" +
+  "    slots: 1\n" +
+  "    leaseDuration: PT30M\n" +
+  "  - agentId: issue-body-validator\n" +
+  "    slots: 1\n" +
+  "    leaseDuration: PT30M\n" +
+  "  - agentId: issue-validation-evaluator\n" +
+  "    slots: 1\n" +
   "    leaseDuration: PT30M\n";
 const ACTIVE_LEASE = {
   leaseId: "lease-001",
@@ -62,6 +76,58 @@ const INFO_LEASE = {
   slotId: "issue-info-requester/1",
   acquiredAt: "2026-08-18T23:30:00Z",
   expiresAt: "2026-08-19T00:30:00Z",
+};
+const WORKFLOW_LEASE = {
+  leaseId: "lease-workflow-001",
+  assignmentCommentNodeId: "IC_workflow_assignment",
+  agentId: "issue-title-validator",
+  slotId: "issue-title-validator/1",
+  acquiredAt: "2026-08-18T23:30:00Z",
+  expiresAt: "2026-08-19T00:30:00Z",
+};
+const WORKFLOW_COMMON = {
+  workflowId: "issue-lifecycle",
+  workflowRunId: "run-001",
+  stepId: "parallel-validation",
+  definitionCommit: "a".repeat(40),
+  definitionDigest: `sha256:${"0".repeat(64)}`,
+  generation: 1,
+};
+const WORKFLOW_CHILDREN = [
+  {
+    branchId: "title",
+    operation: "validate-title",
+    agent: "issue-title-validator",
+    inputs: { field: "title", rule: "non-empty" },
+  },
+  {
+    branchId: "body",
+    operation: "validate-body",
+    agent: "issue-body-validator",
+    inputs: { field: "body", rule: "non-empty" },
+  },
+];
+const WORKFLOW_PARENT_PAYLOAD = {
+  taskType: "workflow-task",
+  inputs: {
+    ...WORKFLOW_COMMON,
+    operation: "evaluate-validation",
+    agent: "issue-validation-evaluator",
+    inputs: { issueNodeId: "I_business" },
+    join: "all",
+    expectedChildCount: 2,
+    children: WORKFLOW_CHILDREN,
+  },
+};
+const WORKFLOW_TITLE_PAYLOAD = {
+  taskType: "workflow-task",
+  inputs: {
+    ...WORKFLOW_COMMON,
+    operation: "validate-title",
+    agent: "issue-title-validator",
+    inputs: { field: "title", rule: "non-empty" },
+    branchId: "title",
+  },
 };
 const PASS_RESULT = {
   taskType: "validate-issue",
@@ -141,6 +207,30 @@ function makeTask({
   };
 }
 
+function makeWorkflowTask(
+  payload,
+  {
+    number = TASK_NUMBER,
+    nodeId = TASK_NODE,
+    id = 117,
+    state = "open",
+    authorId = IDS.launcher,
+  } = {},
+) {
+  return {
+    id,
+    number,
+    node_id: nodeId,
+    state,
+    title: `WorkGraph: ${payload.inputs.operation}`,
+    body: formatWorkflowTask(payload),
+    user: { id: authorId, login: "launcher", type: "Bot" },
+    type: { name: "WorkGraphTask", node_id: TYPE_ID },
+    repository_url:
+      "https://api.github.com/repos/drasi-project/drasi-workgraph-demo",
+  };
+}
+
 function makeComment(
   body,
   authorId,
@@ -173,6 +263,19 @@ function assignmentComment(
     author,
     nodeId,
     201,
+  );
+}
+
+function workflowAssignmentComment(
+  agentId = "issue-title-validator",
+  nodeId = "IC_workflow_assignment",
+  author = IDS.assignment,
+) {
+  return makeComment(
+    formatWorkflowAssignment(agentId),
+    author,
+    nodeId,
+    211,
   );
 }
 
@@ -222,6 +325,7 @@ async function fakeGitHub({
   },
   leaseValidationStatus = 200,
   leaseValidationResponse = null,
+  parentIssue = null,
 } = {}) {
   const state = {
     identityId: IDS.result,
@@ -242,17 +346,20 @@ async function fakeGitHub({
     subIssueRepositoryUrl:
       "https://api.github.com/repos/drasi-project/drasi-workgraph-demo",
     parentIssueReads: 0,
-    parent: {
-      id: 107,
-      number: PARENT_NUMBER,
-      node_id: PARENT_NODE,
-      state: "open",
-      title: "Parent title",
-      body: "Parent body",
-      labels: [{ name: parentStatus }, { name: "kind:demo" }],
-      user: { id: IDS.submitter, login: "submitter", type: "User" },
-      repository_url: "https://api.github.com/repos/drasi-project/drasi-workgraph-demo",
-    },
+    parent: structuredClone(
+      parentIssue ?? {
+        id: 107,
+        number: PARENT_NUMBER,
+        node_id: PARENT_NODE,
+        state: "open",
+        title: "Parent title",
+        body: "Parent body",
+        labels: [{ name: parentStatus }, { name: "kind:demo" }],
+        user: { id: IDS.submitter, login: "submitter", type: "User" },
+        repository_url:
+          "https://api.github.com/repos/drasi-project/drasi-workgraph-demo",
+      },
+    ),
   };
   state.comments.set(PARENT_NUMBER, structuredClone(parentComments));
   for (const task of state.tasks.values()) {
@@ -614,6 +721,21 @@ test("exact Assignment, validation pass/failure, request-info, and Acceptance by
         slots: 1,
         leaseDuration: "PT30M",
       },
+      {
+        agentId: "issue-title-validator",
+        slots: 1,
+        leaseDuration: "PT30M",
+      },
+      {
+        agentId: "issue-body-validator",
+        slots: 1,
+        leaseDuration: "PT30M",
+      },
+      {
+        agentId: "issue-validation-evaluator",
+        slots: 1,
+        leaseDuration: "PT30M",
+      },
     ]);
     assert.throws(
       () => parseAgentsYaml(AGENTS_YAML.replace("slots: 1", "slots: 0")),
@@ -760,7 +882,7 @@ test("exact Assignment, validation pass/failure, request-info, and Acceptance by
   );
 });
 
-test("exposes only seven narrow tools and ignores MCP notifications", async () => {
+test("exposes only nine narrow tools and ignores MCP notifications", async () => {
   await withFake({}, async (fake) => {
     const { tools } = await runTool(fake, IDS.assignment, "submit_task_assignment", {
       ...baseInput(),
@@ -772,6 +894,8 @@ test("exposes only seven narrow tools and ignores MCP notifications", async () =
         "get_result_snapshot",
         "submit_task_assignment",
         "submit_task_result",
+        "submit_workflow_task_assignment",
+        "submit_workflow_task_result",
         "submit_result_acceptance",
         "transition_issue",
         "post_parent_info_request",
@@ -784,6 +908,9 @@ test("exposes only seven narrow tools and ignores MCP notifications", async () =
     const resultTool = tools.find((tool) => tool.name === "submit_task_result");
     const assignmentTool = tools.find(
       (tool) => tool.name === "submit_task_assignment",
+    );
+    const workflowResultTool = tools.find(
+      (tool) => tool.name === "submit_workflow_task_result",
     );
     assert.deepEqual(
       Object.keys(assignmentTool.inputSchema.properties).sort(),
@@ -817,6 +944,18 @@ test("exposes only seven narrow tools and ignores MCP notifications", async () =
     }
     assert.equal("acquiredAt" in resultTool.inputSchema.properties, false);
     assert.equal("expiresAt" in resultTool.inputSchema.properties, false);
+    assert.deepEqual(
+      [...workflowResultTool.inputSchema.required].sort(),
+      [
+        ...Object.keys(baseInput()),
+        "workResult",
+        ...Object.keys(activeLeaseInput()),
+      ].sort(),
+    );
+    assert.equal(
+      "feedbackCommentNodeId" in workflowResultTool.inputSchema.properties,
+      false,
+    );
   });
 });
 
@@ -922,6 +1061,111 @@ test("assignment submission is task-only, exact, and idempotent", async () => {
   });
 });
 
+test("workflow Assignment validates the nested manifest and is idempotent", async () => {
+  const child = makeWorkflowTask(WORKFLOW_TITLE_PAYLOAD);
+  const parent = makeWorkflowTask(WORKFLOW_PARENT_PAYLOAD, {
+    number: PARENT_NUMBER,
+    nodeId: PARENT_NODE,
+    id: 107,
+  });
+  await withFake(
+    { tasks: [child], parentIssue: parent },
+    async (fake) => {
+      const input = {
+        ...baseInput(child),
+        agentId: "issue-title-validator",
+      };
+      const first = await runTool(
+        fake,
+        IDS.assignment,
+        "submit_workflow_task_assignment",
+        input,
+      );
+      assert.equal(first.result.isError, false);
+      const second = await runTool(
+        fake,
+        IDS.assignment,
+        "submit_workflow_task_assignment",
+        input,
+      );
+      assert.equal(second.result.structuredContent.reconciled, true);
+      assert.equal(
+        fake.state.comments.get(TASK_NUMBER)[0].body,
+        formatWorkflowAssignment("issue-title-validator"),
+      );
+      assert.equal(fake.state.comments.get(PARENT_NUMBER).length, 0);
+    },
+  );
+});
+
+test("workflow Assignment accepts a composite evaluator under a principal Issue", async () => {
+  const composite = makeWorkflowTask(WORKFLOW_PARENT_PAYLOAD);
+  await withFake({ tasks: [composite] }, async (fake) => {
+    const response = await runTool(
+      fake,
+      IDS.assignment,
+      "submit_workflow_task_assignment",
+      {
+        ...baseInput(composite),
+        agentId: "issue-validation-evaluator",
+      },
+    );
+    assert.equal(response.result.isError, false);
+    assert.equal(
+      fake.state.comments.get(TASK_NUMBER)[0].body,
+      formatWorkflowAssignment("issue-validation-evaluator"),
+    );
+  });
+});
+
+test("workflow Assignment rejects stale children and manifest agent changes", async () => {
+  const parent = makeWorkflowTask(WORKFLOW_PARENT_PAYLOAD, {
+    number: PARENT_NUMBER,
+    nodeId: PARENT_NODE,
+    id: 107,
+  });
+  const staleChild = makeWorkflowTask({
+    ...WORKFLOW_TITLE_PAYLOAD,
+    inputs: { ...WORKFLOW_TITLE_PAYLOAD.inputs, generation: 2 },
+  });
+  await withFake(
+    { tasks: [staleChild], parentIssue: parent },
+    async (fake) => {
+      const stale = await runTool(
+        fake,
+        IDS.assignment,
+        "submit_workflow_task_assignment",
+        {
+          ...baseInput(staleChild),
+          agentId: "issue-title-validator",
+        },
+      );
+      assert.equal(stale.result.isError, true);
+      assert.match(stale.result.content[0].text, /generation must match/);
+      assert.equal(fake.state.comments.get(TASK_NUMBER).length, 0);
+    },
+  );
+
+  const child = makeWorkflowTask(WORKFLOW_TITLE_PAYLOAD);
+  await withFake(
+    { tasks: [child], parentIssue: parent },
+    async (fake) => {
+      const wrongAgent = await runTool(
+        fake,
+        IDS.assignment,
+        "submit_workflow_task_assignment",
+        {
+          ...baseInput(child),
+          agentId: "issue-body-validator",
+        },
+      );
+      assert.equal(wrongAgent.result.isError, true);
+      assert.match(wrongAgent.result.content[0].text, /does not match/);
+      assert.equal(fake.state.comments.get(TASK_NUMBER).length, 0);
+    },
+  );
+});
+
 test("assignment config requires only its shared actors", async () => {
   const input = {
     ...baseInput(),
@@ -1010,6 +1254,16 @@ test("each reporter path fails closed when any required config value is missing"
         required: [...common, assignment],
       },
       {
+        name: "workflow Assignment",
+        actor: IDS.assignment,
+        tool: "submit_workflow_task_assignment",
+        input: {
+          ...baseInput(),
+          agentId: "issue-title-validator",
+        },
+        required: [...common, assignment],
+      },
+      {
         name: "Result snapshot",
         actor: IDS.acceptance,
         tool: "get_result_snapshot",
@@ -1045,6 +1299,23 @@ test("each reporter path fails closed when any required config value is missing"
         actor: IDS.result,
         tool: "submit_task_result",
         input: resultInput,
+        required: [...common, assignment, result, ...lease],
+      },
+      {
+        name: "workflow Result",
+        actor: IDS.result,
+        tool: "submit_workflow_task_result",
+        input: {
+          ...baseInput(),
+          ...activeLeaseInput(WORKFLOW_LEASE),
+          workResult: {
+            taskType: "workflow-task",
+            leaseId: WORKFLOW_LEASE.leaseId,
+            outcome: "succeeded",
+            summary: "Title validation completed.",
+            result: { passed: true },
+          },
+        },
         required: [...common, assignment, result, ...lease],
       },
       {
@@ -1287,6 +1558,101 @@ test("assignment rejects absent agents and malformed authoritative config", asyn
     assert.equal(response.result.isError, true);
     assert.match(response.result.content[0].text, /agent config/);
   });
+});
+
+test("workflow Result validates nested context and the active Source Lease", async () => {
+  const child = makeWorkflowTask(WORKFLOW_TITLE_PAYLOAD);
+  const parent = makeWorkflowTask(WORKFLOW_PARENT_PAYLOAD, {
+    number: PARENT_NUMBER,
+    nodeId: PARENT_NODE,
+    id: 107,
+  });
+  const workResult = {
+    taskType: "workflow-task",
+    leaseId: WORKFLOW_LEASE.leaseId,
+    outcome: "succeeded",
+    summary: "Title validation completed.",
+    result: {
+      field: "title",
+      passed: true,
+      evidence: "The title is non-empty.",
+    },
+  };
+  await withFake(
+    {
+      tasks: [child],
+      parentIssue: parent,
+      comments: {
+        [TASK_NUMBER]: [workflowAssignmentComment()],
+      },
+      activeLease: {
+        ...WORKFLOW_LEASE,
+        taskNodeId: TASK_NODE,
+        taskType: "workflow-task",
+      },
+    },
+    async (fake) => {
+      const input = {
+        ...baseInput(child),
+        ...activeLeaseInput(WORKFLOW_LEASE),
+        workResult,
+      };
+      const first = await runTool(
+        fake,
+        IDS.result,
+        "submit_workflow_task_result",
+        input,
+        {
+          unsetEnv: [
+            "COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID",
+            "COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID",
+          ],
+        },
+      );
+      assert.equal(first.result.isError, false);
+      assert.equal(
+        fake.state.comments.get(TASK_NUMBER).at(-1).body,
+        formatWorkflowResult(workResult),
+      );
+      const write = fake.state.operations.findIndex(
+        (operation) =>
+          operation ===
+          "POST /repos/drasi-project/drasi-workgraph-demo/issues/17/comments",
+      );
+      assert.equal(fake.state.operations[write - 1], "POST /lease/validate");
+
+      const duplicate = await runTool(
+        fake,
+        IDS.result,
+        "submit_workflow_task_result",
+        input,
+      );
+      assert.equal(duplicate.result.structuredContent.reconciled, true);
+      assert.equal(
+        fake.state.operations.filter(
+          (operation) => operation === "POST /lease/validate",
+        ).length,
+        1,
+      );
+
+      const conflicting = await runTool(
+        fake,
+        IDS.result,
+        "submit_workflow_task_result",
+        {
+          ...input,
+          workResult: {
+            ...workResult,
+            summary: "A conflicting result.",
+          },
+        },
+      );
+      assert.equal(conflicting.result.isError, true);
+      assert.match(conflicting.result.content[0].text, /conflicting Result/);
+    },
+  );
 });
 
 test("Result/v1 validates the Source Lease immediately before write and reconciles retries", async () => {

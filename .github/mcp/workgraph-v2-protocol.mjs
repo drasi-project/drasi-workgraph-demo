@@ -3,9 +3,20 @@ import { isDeepStrictEqual, TextEncoder } from "node:util";
 const TASK_MARKER = "WorkGraphTask/v2";
 const ASSIGNMENT_MARKER = "WorkGraphTaskAssignment/v1";
 const RESULT_MARKER = "WorkGraphTaskResult/v1";
+const RESERVED_MARKERS = [
+  "WorkGraphTask/v1",
+  TASK_MARKER,
+  ASSIGNMENT_MARKER,
+  RESULT_MARKER,
+  "WorkGraphTaskFeedback/v1",
+  "WorkGraphTaskResultAcceptance/v1",
+  "WorkGraphInfoRequest/v1",
+];
 const MAX_ID = 256;
 const MAX_AGENT_ID = 64;
 const MAX_BODY_BYTES = 64 * 1024;
+const MAX_TEXT_BYTES = 4096;
+const MAX_DATA_DEPTH = 32;
 const OUTCOMES = new Set(["succeeded", "failed", "blocked"]);
 const REQUIRED_INPUT_KEYS = [
   "workflowId",
@@ -98,12 +109,29 @@ function digest(value, label) {
   }
 }
 
-function canonicalData(value, label = "value") {
-  if (
-    value === null ||
-    typeof value === "string" ||
-    typeof value === "boolean"
-  ) {
+function ordinaryDataString(value) {
+  return (
+    !value.includes("\r") &&
+    !value.includes("```") &&
+    !RESERVED_MARKERS.some((marker) => value.includes(marker))
+  );
+}
+
+function canonicalData(value, label = "value", depth = 0) {
+  if (depth > MAX_DATA_DEPTH) {
+    throw new WorkGraphV2ProtocolError(
+      `${label} must not exceed ${MAX_DATA_DEPTH} nested levels`,
+    );
+  }
+  if (value === null || typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "string") {
+    if (!ordinaryDataString(value)) {
+      throw new WorkGraphV2ProtocolError(
+        `${label} strings must be ordinary LF text`,
+      );
+    }
     return value;
   }
   if (typeof value === "number") {
@@ -114,16 +142,25 @@ function canonicalData(value, label = "value") {
   }
   if (Array.isArray(value)) {
     return value.map((entry, index) =>
-      canonicalData(entry, `${label}[${index}]`),
+      canonicalData(entry, `${label}[${index}]`, depth + 1),
     );
   }
   if (!object(value)) {
     throw new WorkGraphV2ProtocolError(`${label} must contain only JSON values`);
   }
+  const keys = Object.keys(value);
+  if (keys.some((key) => key === "" || !ordinaryDataString(key))) {
+    throw new WorkGraphV2ProtocolError(
+      `${label} property names must be non-empty ordinary LF text`,
+    );
+  }
   return Object.fromEntries(
-    Object.keys(value)
+    keys
       .sort()
-      .map((key) => [key, canonicalData(value[key], `${label}.${key}`)]),
+      .map((key) => [
+        key,
+        canonicalData(value[key], `${label}.${key}`, depth + 1),
+      ]),
   );
 }
 
@@ -212,6 +249,11 @@ function normalizeInputs(inputs) {
   };
   if (inputs.branchId !== undefined) normalized.branchId = inputs.branchId;
   if (hasJoin) {
+    if (inputs.branchId !== undefined) {
+      throw new WorkGraphV2ProtocolError(
+        "composite task branchId must be absent",
+      );
+    }
     const children = inputs.children.map(normalizeChild);
     const branchIds = new Set(children.map((child) => child.branchId));
     const agents = new Set(children.map((child) => child.agent));
@@ -317,33 +359,54 @@ export function validateParallelTaskFamily(parentTask, childTasks) {
       );
     }
     observed.add(branchId);
-    for (const field of [
-      "workflowId",
-      "workflowRunId",
-      "stepId",
-      "definitionCommit",
-      "definitionDigest",
-      "generation",
-    ]) {
-      if (child.inputs[field] !== parent.inputs[field]) {
-        throw new WorkGraphV2ProtocolError(
-          `child ${branchId} ${field} must match its parent`,
-        );
-      }
-    }
-    const manifest = expected.get(branchId);
-    if (
-      child.inputs.join !== undefined ||
-      child.inputs.operation !== manifest.operation ||
-      child.inputs.agent !== manifest.agent ||
-      !isDeepStrictEqual(child.inputs.inputs, manifest.inputs)
-    ) {
+    validateWorkflowChildTask(parent, child);
+  }
+  return true;
+}
+
+export function validateWorkflowChildTask(parentTask, childTask) {
+  const parent = parseWorkflowTask(formatWorkflowTask(parentTask));
+  const child = parseWorkflowTask(formatWorkflowTask(childTask));
+  if (
+    parent.inputs.join !== "all" ||
+    !Array.isArray(parent.inputs.children)
+  ) {
+    throw new WorkGraphV2ProtocolError("parent task must define an all-of join");
+  }
+  const branchId = child.inputs.branchId;
+  const manifest = parent.inputs.children.find(
+    (candidate) => candidate.branchId === branchId,
+  );
+  if (!branchId || !manifest) {
+    throw new WorkGraphV2ProtocolError(
+      "child branchId must appear in its parent manifest",
+    );
+  }
+  for (const field of [
+    "workflowId",
+    "workflowRunId",
+    "stepId",
+    "definitionCommit",
+    "definitionDigest",
+    "generation",
+  ]) {
+    if (child.inputs[field] !== parent.inputs[field]) {
       throw new WorkGraphV2ProtocolError(
-        `child ${branchId} must match its parent manifest`,
+        `child ${branchId} ${field} must match its parent`,
       );
     }
   }
-  return true;
+  if (
+    child.inputs.join !== undefined ||
+    child.inputs.operation !== manifest.operation ||
+    child.inputs.agent !== manifest.agent ||
+    !isDeepStrictEqual(child.inputs.inputs, manifest.inputs)
+  ) {
+    throw new WorkGraphV2ProtocolError(
+      `child ${branchId} must match its parent manifest`,
+    );
+  }
+  return child;
 }
 
 function normalizeResult(value) {
@@ -364,12 +427,15 @@ function normalizeResult(value) {
   if (
     typeof value.summary !== "string" ||
     value.summary.trim() === "" ||
-    value.summary.includes("\r") ||
-    value.summary.includes("```") ||
-    value.summary.includes(RESULT_MARKER)
+    !ordinaryDataString(value.summary)
   ) {
     throw new WorkGraphV2ProtocolError(
       "Result.summary must be non-empty ordinary LF text",
+    );
+  }
+  if (new TextEncoder().encode(value.summary).length > MAX_TEXT_BYTES) {
+    throw new WorkGraphV2ProtocolError(
+      `Result.summary must not exceed ${MAX_TEXT_BYTES} bytes`,
     );
   }
   if (!object(value.result) || Object.keys(value.result).length === 0) {
@@ -385,15 +451,27 @@ function normalizeResult(value) {
 }
 
 export function formatWorkflowResult(value) {
-  return fenced(
+  const body = fenced(
     RESULT_MARKER,
     "json",
     JSON.stringify(normalizeResult(value), null, 2),
   );
+  if (new TextEncoder().encode(body).length > MAX_BODY_BYTES) {
+    throw new WorkGraphV2ProtocolError(
+      `workflow Result body must not exceed ${MAX_BODY_BYTES} bytes`,
+    );
+  }
+  return body;
 }
 
 export function parseWorkflowResult(body) {
-  if (typeof body !== "string" || body.includes("\r")) return null;
+  if (
+    typeof body !== "string" ||
+    body.includes("\r") ||
+    new TextEncoder().encode(body).length > MAX_BODY_BYTES
+  ) {
+    return null;
+  }
   const match = body.match(
     /^WorkGraphTaskResult\/v1\n\n```json\n(\{[\s\S]+\})\n```\n$/,
   );
@@ -413,4 +491,19 @@ export function formatWorkflowAssignment(agentId) {
     "json",
     JSON.stringify({ agentId }, null, 2),
   );
+}
+
+export function parseWorkflowAssignment(body) {
+  if (typeof body !== "string" || body.includes("\r")) return null;
+  const match = body.match(
+    /^WorkGraphTaskAssignment\/v1\n\n```json\n(\{[\s\S]+\})\n```\n$/,
+  );
+  if (!match) return null;
+  try {
+    const value = JSON.parse(match[1]);
+    exact(value, ["agentId"], "Assignment");
+    return body === formatWorkflowAssignment(value.agentId) ? value : null;
+  } catch {
+    return null;
+  }
 }

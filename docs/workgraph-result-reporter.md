@@ -7,15 +7,28 @@ mutation tools, or GitHub Lease comments.
 
 ## Staged workflow v2 protocol
 
-`.github/mcp/workgraph-v2-protocol.mjs` is a pure, network-free staging module
-for the repository workflow. It canonically formats and parses
+`.github/mcp/workgraph-v2-protocol.mjs` is the pure protocol module for the
+repository workflow. It canonically formats and parses
 `WorkGraphTask/v2` manifests, checks complete current-generation parallel task
 families against their composite parent, and formats workflow Results and
 Assignments. Workflow comments deliberately retain
 `WorkGraphTaskResult/v1` and `WorkGraphTaskAssignment/v1`.
 
-The production MCP does not import this module or expose a v2 mutation path.
-Everything below remains the active v1 reporter contract.
+The production MCP imports the module for two narrow staged paths:
+
+- `submit_workflow_task_assignment` requires the requested agent to equal the
+  task manifest agent and to exist in the authoritative agent configuration.
+- `submit_workflow_task_result` creates or exactly reconciles one non-empty,
+  lease-bound workflow Result. It does not revise Results.
+
+Both paths verify the typed task, launcher and reporter identities, exact native
+parent, and canonical Assignment. A branch task's direct parent must be the
+open composite `WorkGraphTask/v2` whose current-generation child manifest
+exactly defines that branch. A top-level workflow task must instead have a
+principal Issue parent. Result creation validates the exact active Source
+Lease immediately before writing. Neither path changes Issue state or closes a
+task. No live workflow invokes these paths yet; the remaining sections describe
+the active v1 workflow.
 
 The GitHub WorkGraph Source owns agent capacity and active Leases. It projects
 capacity from `.github/workgraph/agents.yaml`, creates synthetic active
@@ -71,6 +84,15 @@ agents:
     slots: 1
     leaseDuration: PT30M
   - agentId: issue-info-requester
+    slots: 1
+    leaseDuration: PT30M
+  - agentId: issue-title-validator
+    slots: 1
+    leaseDuration: PT30M
+  - agentId: issue-body-validator
+    slots: 1
+    leaseDuration: PT30M
+  - agentId: issue-validation-evaluator
     slots: 1
     leaseDuration: PT30M
 ```
@@ -285,6 +307,9 @@ narrow tools:
 | `issue-info-requester` | Assignment, Result, Acceptance, Info, Feedback | Yes |
 | `workgraph-result-acceptor` | Assignment, Result, Acceptance, Feedback | No |
 | `issue-orchestrator` | Assignment, Result, Acceptance, Orchestrator, Info, Feedback | No |
+| `issue-title-validator` | Assignment, Result | Yes |
+| `issue-body-validator` | Assignment, Result | Yes |
+| `issue-validation-evaluator` | Assignment, Result | Yes |
 
 Tokens use `${{ secrets.* }}` references. Type and identity values use
 `${{ vars.* }}` references. The reporter loads configuration per tool and, for
@@ -301,7 +326,8 @@ Source token, read-only exact active-Lease validation.
 
 ```bash
 node --check .github/mcp/workgraph-reporter.mjs
-node --test tests/workgraph-reporter.test.mjs tests/workgraph-live-support.test.mjs
+node --check .github/mcp/workgraph-v2-protocol.mjs
+node --test tests/*.test.mjs
 python3 -m unittest discover -s tests -v
 ```
 
