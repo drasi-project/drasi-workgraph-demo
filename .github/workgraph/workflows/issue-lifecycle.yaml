@@ -1,0 +1,49 @@
+apiVersion: workgraph.drasi.io/v1alpha1
+kind: IssueWorkflow
+metadata:
+  id: issue-lifecycle
+
+spec:
+  trigger:
+    issueStatus: New
+  initial: parallel-validation
+  steps:
+    parallel-validation:
+      type: parallel
+      join: all
+      branches:
+        - id: title
+          operation: validate-title
+          agent: issue-title-validator
+          inputs:
+            field: title
+            rule: non-empty
+        - id: body
+          operation: validate-body
+          agent: issue-body-validator
+          inputs:
+            field: body
+            rule: non-empty
+      evaluate:
+        operation: evaluate-validation
+        agent: issue-validation-evaluator
+        outcomes:
+          triage: triage
+          request-info: request-info
+
+    request-info:
+      type: task
+      operation: request-info
+      agent: issue-info-requester
+      inputs:
+        fromStep: parallel-validation
+      next: await-info
+
+    await-info:
+      type: wait
+      event: issue-commented
+      next: parallel-validation
+
+    triage:
+      type: terminal
+      issueStatus: Triage

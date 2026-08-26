@@ -6,3 +6,12 @@ agents:
   - agentId: issue-info-requester
     slots: 1
     leaseDuration: PT30M
+  - agentId: issue-title-validator
+    slots: 1
+    leaseDuration: PT30M
+  - agentId: issue-body-validator
+    slots: 1
+    leaseDuration: PT30M
+  - agentId: issue-validation-evaluator
+    slots: 1
+    leaseDuration: PT30M
