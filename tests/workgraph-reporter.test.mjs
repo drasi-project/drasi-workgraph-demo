@@ -129,6 +129,39 @@ const WORKFLOW_TITLE_PAYLOAD = {
     branchId: "title",
   },
 };
+const WORKFLOW_EVALUATOR_PAYLOAD = {
+  taskType: "workflow-task",
+  inputs: {
+    ...WORKFLOW_COMMON,
+    operation: "evaluate-validation",
+    agent: "issue-validation-evaluator",
+    inputs: {},
+    join: "all",
+    expectedChildCount: 2,
+    children: WORKFLOW_CHILDREN,
+  },
+};
+const WORKFLOW_REQUEST_PAYLOAD = {
+  taskType: "workflow-task",
+  inputs: {
+    ...WORKFLOW_COMMON,
+    stepId: "request-info",
+    operation: "request-info",
+    agent: "issue-info-requester",
+    inputs: { fromStep: "parallel-validation" },
+  },
+};
+const WORKFLOW_EVALUATOR_RESULT = {
+  taskType: "workflow-task",
+  leaseId: "lease-evaluator-001",
+  outcome: "succeeded",
+  summary: "Joined validation Results evaluated.",
+  result: {
+    decision: "request-info",
+    titlePassed: false,
+    bodyPassed: true,
+  },
+};
 const PASS_RESULT = {
   taskType: "validate-issue",
   leaseId: ACTIVE_LEASE.leaseId,
@@ -214,6 +247,7 @@ function makeWorkflowTask(
     nodeId = TASK_NODE,
     id = 117,
     state = "open",
+    stateReason = state === "closed" ? "completed" : null,
     authorId = IDS.launcher,
   } = {},
 ) {
@@ -222,6 +256,7 @@ function makeWorkflowTask(
     number,
     node_id: nodeId,
     state,
+    state_reason: stateReason,
     title: `WorkGraph: ${payload.inputs.operation}`,
     body: formatWorkflowTask(payload),
     user: { id: authorId, login: "launcher", type: "Bot" },
@@ -282,6 +317,14 @@ function workflowAssignmentComment(
 function resultComment(result = PASS_RESULT, author = IDS.result, nodeId = "IC_result") {
   const current = result.leaseId ? result : leasedResult(result);
   return makeComment(formatTaskResult(current), author, nodeId, 202);
+}
+
+function workflowResultComment(
+  result,
+  author = IDS.result,
+  nodeId = "IC_workflow_result",
+) {
+  return makeComment(formatWorkflowResult(result), author, nodeId, 212);
 }
 
 function acceptanceComment(result = PASS_RESULT, author = IDS.acceptance) {
@@ -882,7 +925,7 @@ test("exact Assignment, validation pass/failure, request-info, and Acceptance by
   );
 });
 
-test("exposes only nine narrow tools and ignores MCP notifications", async () => {
+test("exposes only ten narrow tools and ignores MCP notifications", async () => {
   await withFake({}, async (fake) => {
     const { tools } = await runTool(fake, IDS.assignment, "submit_task_assignment", {
       ...baseInput(),
@@ -899,6 +942,7 @@ test("exposes only nine narrow tools and ignores MCP notifications", async () =>
         "submit_result_acceptance",
         "transition_issue",
         "post_parent_info_request",
+        "post_workflow_parent_info_request",
         "submit_task_feedback",
       ],
     );
@@ -1319,6 +1363,23 @@ test("each reporter path fails closed when any required config value is missing"
         required: [...common, assignment, result, ...lease],
       },
       {
+        name: "workflow request-info Result",
+        actor: IDS.result,
+        tool: "submit_workflow_task_result",
+        input: {
+          ...baseInput(),
+          ...activeLeaseInput(INFO_LEASE),
+          workResult: {
+            taskType: "workflow-task",
+            leaseId: INFO_LEASE.leaseId,
+            outcome: "succeeded",
+            summary: "Requested the missing issue information.",
+            result: { requestCommentNodeId: "IC_info" },
+          },
+        },
+        required: [...common, assignment, result, info, ...lease],
+      },
+      {
         name: "feedback Result revision",
         actor: IDS.result,
         tool: "submit_task_result",
@@ -1366,6 +1427,20 @@ test("each reporter path fails closed when any required config value is missing"
           info,
           ...lease,
         ],
+      },
+      {
+        name: "workflow parent info request",
+        actor: IDS.info,
+        tool: "post_workflow_parent_info_request",
+        input: {
+          ...baseInput(),
+          priorTaskIssueNumber: 18,
+          priorTaskIssueNodeId: "I_evaluator",
+          priorResultCommentNodeId: "IC_evaluator_result",
+          priorResultBodyDigest: `sha256:${"0".repeat(64)}`,
+          ...activeLeaseInput(INFO_LEASE),
+        },
+        required: [...common, assignment, result, info, ...lease],
       },
       {
         name: "transition",
@@ -1651,6 +1726,126 @@ test("workflow Result validates nested context and the active Source Lease", asy
       );
       assert.equal(conflicting.result.isError, true);
       assert.match(conflicting.result.content[0].text, /conflicting Result/);
+    },
+  );
+});
+
+test("workflow request-info binds the prior evaluator Result and parent comment", async () => {
+  const requestTask = makeWorkflowTask(WORKFLOW_REQUEST_PAYLOAD);
+  const priorTask = makeWorkflowTask(WORKFLOW_EVALUATOR_PAYLOAD, {
+    number: 16,
+    nodeId: "I_evaluator",
+    id: 116,
+    state: "closed",
+  });
+  const priorResult = workflowResultComment(
+    WORKFLOW_EVALUATOR_RESULT,
+    IDS.result,
+    "IC_evaluator_result",
+  );
+  const priorResultBodyDigest = resultDigest(priorResult.body);
+  await withFake(
+    {
+      tasks: [requestTask, priorTask],
+      children: [requestTask.number, priorTask.number],
+      comments: {
+        [requestTask.number]: [
+          workflowAssignmentComment(
+            "issue-info-requester",
+            INFO_LEASE.assignmentCommentNodeId,
+          ),
+        ],
+        [priorTask.number]: [priorResult],
+      },
+      activeLease: {
+        ...INFO_LEASE,
+        taskNodeId: requestTask.node_id,
+        taskType: "workflow-task",
+      },
+    },
+    async (fake) => {
+      const postInput = {
+        ...baseInput(requestTask),
+        ...activeLeaseInput(INFO_LEASE),
+        priorTaskIssueNumber: priorTask.number,
+        priorTaskIssueNodeId: priorTask.node_id,
+        priorResultCommentNodeId: priorResult.node_id,
+        priorResultBodyDigest,
+      };
+      const stale = await runTool(
+        fake,
+        IDS.info,
+        "post_workflow_parent_info_request",
+        {
+          ...postInput,
+          priorResultBodyDigest: `sha256:${"f".repeat(64)}`,
+        },
+      );
+      assert.equal(stale.result.isError, true);
+      assert.match(stale.result.content[0].text, /revision is not current/);
+
+      const first = await runTool(
+        fake,
+        IDS.info,
+        "post_workflow_parent_info_request",
+        postInput,
+      );
+      assert.equal(first.result.isError, false);
+      assert.equal(first.result.structuredContent.reconciled, false);
+      const requestCommentNodeId =
+        first.result.structuredContent.requestCommentNodeId;
+      const parentComment = fake.state.comments
+        .get(PARENT_NUMBER)
+        .find((comment) => comment.node_id === requestCommentNodeId);
+      assert.match(parentComment.body, /The Issue has a non-empty title/);
+      assert.doesNotMatch(parentComment.body, /The Issue body is present/);
+      assert.match(
+        parentComment.body,
+        new RegExp(
+          `WorkGraphInfoRequest/v2 .*priorResultCommentNodeId=${priorResult.node_id} ` +
+            `priorResultBodyDigest=${priorResultBodyDigest}`,
+        ),
+      );
+
+      const duplicate = await runTool(
+        fake,
+        IDS.info,
+        "post_workflow_parent_info_request",
+        postInput,
+      );
+      assert.equal(duplicate.result.isError, false);
+      assert.equal(duplicate.result.structuredContent.reconciled, true);
+      assert.equal(
+        fake.state.operations.filter(
+          (operation) =>
+            operation ===
+            `POST /repos/drasi-project/drasi-workgraph-demo/issues/${PARENT_NUMBER}/comments`,
+        ).length,
+        1,
+      );
+
+      const workResult = {
+        taskType: "workflow-task",
+        leaseId: INFO_LEASE.leaseId,
+        outcome: "succeeded",
+        summary: "Requested the missing issue information.",
+        result: { requestCommentNodeId },
+      };
+      const submitted = await runTool(
+        fake,
+        IDS.result,
+        "submit_workflow_task_result",
+        {
+          ...baseInput(requestTask),
+          ...activeLeaseInput(INFO_LEASE),
+          workResult,
+        },
+      );
+      assert.equal(submitted.result.isError, false);
+      assert.equal(
+        fake.state.comments.get(requestTask.number).at(-1).body,
+        formatWorkflowResult(workResult),
+      );
     },
   );
 });

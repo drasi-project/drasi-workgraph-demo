@@ -11,6 +11,7 @@ const RESERVED_MARKERS = [
   "WorkGraphTaskFeedback/v1",
   "WorkGraphTaskResultAcceptance/v1",
   "WorkGraphInfoRequest/v1",
+  "WorkGraphInfoRequest/v2",
 ];
 const MAX_ID = 256;
 const MAX_AGENT_ID = 64;

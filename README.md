@@ -19,19 +19,22 @@ YAML body. `.github/workgraph/agents.yaml` defines capacity and Lease duration
 for each custom-agent ID. The GitHub WorkGraph Source owns capacity and
 synthetic active Leases. Agent selection uses `WorkGraphTaskAssignment/v1`;
 agents write lease-bound `WorkGraphTaskResult/v1`. All GitHub WorkGraph comment
-protocols are v1-only, and Lease is never a GitHub comment. A separate
-`workgraph-v2-protocol.mjs` module and two narrow MCP tools now support
+protocols except the generation-correlated `WorkGraphInfoRequest/v2` marker
+remain v1, and Lease is never a GitHub comment. A separate
+`workgraph-v2-protocol.mjs` module and three narrow MCP tools now support
 canonical `WorkGraphTask/v2` Assignment and Result reporting, including nested
-parallel-family validation. No live workflow invokes those staged paths yet.
+parallel-family validation and exact prior-Result info requests. No enabled
+workflow invokes those staged paths yet.
 Validation uses only the two criteria in
 `.github/workgraph/profiles/issue-validation/new-issue-default.md`.
 
-The dependency-free Node MCP exposes nine narrow tools: the existing seven for
+The dependency-free Node MCP exposes ten narrow tools: the existing seven for
 verified Result inspection, expected-state transition, Assignment, lease-bound
 revisable Result, Acceptance, parent info request, and feedback, plus
-create-only workflow Assignment and Result paths. Before every Result write and
-parent info request, it locally checks the Source-issued Lease deadline and
-calls the authenticated read-only exact-active-Lease validation endpoint.
+create-only workflow Assignment and Result paths and a prior-Result-bound
+workflow info request. Before every Result write and parent info request, it
+locally checks the Source-issued Lease deadline and calls the authenticated
+read-only exact-active-Lease validation endpoint.
 It does not allocate, persist, release, poll, or retry Leases.
 A Result never closes a task; Acceptance is separate and binds the exact
 current Result comment ID and SHA-256 body digest. Source-computed `bodyDigest`

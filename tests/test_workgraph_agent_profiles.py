@@ -30,8 +30,8 @@ EXPECTED_TOOLS = {
     ],
     "issue-info-requester": [
         "github/issue_read",
-        "workgraph/post_parent_info_request",
-        "workgraph/submit_task_result",
+        "workgraph/post_workflow_parent_info_request",
+        "workgraph/submit_workflow_task_result",
     ],
     "workgraph-result-acceptor": [
         "github/issue_read",
@@ -84,9 +84,7 @@ EXPECTED_ENV_KEYS = {
     | {
         "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
         "COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID",
-        "COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID",
         "COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID",
-        "COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID",
     }
     | LEASE_ENV_KEYS,
     "workgraph-result-acceptor": COMMON_ENV_KEYS
@@ -271,7 +269,8 @@ class WorkGraphProfilesTest(unittest.TestCase):
             r'(?m)^    name: "(get_result_snapshot|submit_task_assignment|submit_task_result|'
             r'submit_workflow_task_assignment|submit_workflow_task_result|'
             r'submit_result_acceptance|transition_issue|'
-            r'post_parent_info_request|submit_task_feedback)"',
+            r'post_parent_info_request|post_workflow_parent_info_request|'
+            r'submit_task_feedback)"',
             self.reporter,
         )
         self.assertEqual(set(names), {
@@ -283,6 +282,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
             "submit_result_acceptance",
             "transition_issue",
             "post_parent_info_request",
+            "post_workflow_parent_info_request",
             "submit_task_feedback",
         })
         self.assertNotIn("report_progress", self.reporter)
@@ -290,7 +290,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
         self.assertIn('patchComment(id, body)', self.reporter)
         self.assertIn("ensureTransitionTask", self.reporter)
         self.assertIn("findUnattachedTransitionTask", self.reporter)
-        self.assertNotIn("state_reason", self.reporter)
+        self.assertIn('priorTask.state_reason !== "completed"', self.reporter)
 
     def test_orchestrator_state_machine_and_reconciliation_are_explicit(self):
         orchestrator = self.agents["issue-orchestrator"]
@@ -372,9 +372,16 @@ class WorkGraphProfilesTest(unittest.TestCase):
         self.assertIn("Choose `triage` only when both", normalized)
         self.assertIn("Otherwise choose `request-info`", normalized)
         self.assertIn("Never invent another decision", normalized)
+        requester = self.agents["issue-info-requester"]
+        requester_normalized = " ".join(requester.split())
+        self.assertIn("`priorResults`", requester)
+        self.assertIn("exactly one prior Result", requester_normalized)
+        self.assertIn("same-run, same-generation", requester_normalized)
+        self.assertIn("post_workflow_parent_info_request", requester)
+        self.assertIn("submit_workflow_task_result", requester)
 
     def test_agents_handle_optional_feedback_dispatch(self):
-        for name in ("issue-validator", "issue-info-requester"):
+        for name in ("issue-validator",):
             profile = self.agents[name]
             normalized = " ".join(profile.split())
             with self.subTest(agent=name):
@@ -390,8 +397,9 @@ class WorkGraphProfilesTest(unittest.TestCase):
                 self.assertIn("do not merely reconcile an unchanged", normalized.lower())
                 self.assertIn("narrow reporter remains authoritative", normalized)
         requester = self.agents["issue-info-requester"]
-        self.assertIn("exact `passed: false` validation criteria", requester)
-        self.assertIn("cannot require\ninventing, removing, or rephrasing", requester)
+        self.assertNotIn("feedbackCommentNodeId", requester)
+        self.assertIn("titlePassed", requester)
+        self.assertIn("bodyPassed", requester)
         self.assertIn("semantic\nResult must materially change", self.doc)
 
     def test_dispatch_ids_and_readable_evidence_are_separated(self):
