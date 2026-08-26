@@ -2970,6 +2970,11 @@ async function rpc(message) {
         isError: false,
       };
     } catch (error) {
+      if (process.env.NODE_ENV !== "test") {
+        process.stderr.write(
+          `[drasi-workgraph-reporter] ${error instanceof Error ? error.message : "unknown tool failure"}\n`,
+        );
+      }
       return {
         content: [{ type: "text", text: error.message }],
         isError: true,
