@@ -30,14 +30,26 @@ EXPECTED_TOOLS = {
     ],
     "issue-info-requester": [
         "github/issue_read",
-        "workgraph/post_parent_info_request",
-        "workgraph/submit_task_result",
+        "workgraph/post_workflow_parent_info_request",
+        "workgraph/submit_workflow_task_result",
     ],
     "workgraph-result-acceptor": [
         "github/issue_read",
         "workgraph/get_result_snapshot",
         "workgraph/submit_result_acceptance",
         "workgraph/submit_task_feedback",
+    ],
+    "issue-title-validator": [
+        "github/issue_read",
+        "workgraph/submit_workflow_task_result",
+    ],
+    "issue-body-validator": [
+        "github/issue_read",
+        "workgraph/submit_workflow_task_result",
+    ],
+    "issue-validation-evaluator": [
+        "github/issue_read",
+        "workgraph/submit_workflow_task_result",
     ],
 }
 
@@ -50,6 +62,14 @@ LEASE_ENV_KEYS = {
     "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL",
     "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN",
 }
+WORKFLOW_AGENT_ENV_KEYS = (
+    COMMON_ENV_KEYS
+    | {
+        "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
+        "COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID",
+    }
+    | LEASE_ENV_KEYS
+)
 EXPECTED_ENV_KEYS = {
     "issue-assigner": COMMON_ENV_KEYS
     | {"COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID"},
@@ -64,9 +84,7 @@ EXPECTED_ENV_KEYS = {
     | {
         "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
         "COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID",
-        "COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID",
         "COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID",
-        "COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID",
     }
     | LEASE_ENV_KEYS,
     "workgraph-result-acceptor": COMMON_ENV_KEYS
@@ -85,6 +103,9 @@ EXPECTED_ENV_KEYS = {
         "COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID",
         "COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID",
     },
+    "issue-title-validator": WORKFLOW_AGENT_ENV_KEYS,
+    "issue-body-validator": WORKFLOW_AGENT_ENV_KEYS,
+    "issue-validation-evaluator": WORKFLOW_AGENT_ENV_KEYS,
 }
 SECRET_ENV_KEYS = {
     "COPILOT_MCP_WORKGRAPH_TOKEN",
@@ -105,7 +126,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
         cls.readme = README.read_text(encoding="utf-8")
         cls.agent_config = AGENTS_CONFIG.read_text(encoding="utf-8")
 
-    def test_exactly_five_rest_launchable_profiles(self):
+    def test_exactly_eight_rest_launchable_profiles(self):
         self.assertEqual(set(self.agents), set(EXPECTED_TOOLS))
         self.assertNotIn("risk-profiler", "\n".join(self.agents.values()))
         for name, content in self.agents.items():
@@ -219,7 +240,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
         )
 
     def test_agent_config_schema_and_stable_metadata(self):
-        self.assertEqual(self.agent_config.count("\n  - agentId: "), 2)
+        self.assertEqual(self.agent_config.count("\n  - agentId: "), 5)
         self.assertIn("version: 1\nagents:\n", self.agent_config)
         entries = re.findall(
             r"  - agentId: ([A-Za-z0-9._-]+)\n"
@@ -229,7 +250,13 @@ class WorkGraphProfilesTest(unittest.TestCase):
         )
         self.assertEqual(
             {agent_id for agent_id, _, _ in entries},
-            {"issue-validator", "issue-info-requester"},
+            {
+                "issue-validator",
+                "issue-info-requester",
+                "issue-title-validator",
+                "issue-body-validator",
+                "issue-validation-evaluator",
+            },
         )
         for agent_id, slots, duration in entries:
             self.assertEqual(slots, "1")
@@ -240,17 +267,22 @@ class WorkGraphProfilesTest(unittest.TestCase):
     def test_reporter_exposes_only_narrow_tools(self):
         names = re.findall(
             r'(?m)^    name: "(get_result_snapshot|submit_task_assignment|submit_task_result|'
+            r'submit_workflow_task_assignment|submit_workflow_task_result|'
             r'submit_result_acceptance|transition_issue|'
-            r'post_parent_info_request|submit_task_feedback)"',
+            r'post_parent_info_request|post_workflow_parent_info_request|'
+            r'submit_task_feedback)"',
             self.reporter,
         )
         self.assertEqual(set(names), {
             "get_result_snapshot",
             "submit_task_assignment",
             "submit_task_result",
+            "submit_workflow_task_assignment",
+            "submit_workflow_task_result",
             "submit_result_acceptance",
             "transition_issue",
             "post_parent_info_request",
+            "post_workflow_parent_info_request",
             "submit_task_feedback",
         })
         self.assertNotIn("report_progress", self.reporter)
@@ -258,7 +290,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
         self.assertIn('patchComment(id, body)', self.reporter)
         self.assertIn("ensureTransitionTask", self.reporter)
         self.assertIn("findUnattachedTransitionTask", self.reporter)
-        self.assertNotIn("state_reason", self.reporter)
+        self.assertIn('priorTask.state_reason !== "completed"', self.reporter)
 
     def test_orchestrator_state_machine_and_reconciliation_are_explicit(self):
         orchestrator = self.agents["issue-orchestrator"]
@@ -319,8 +351,37 @@ class WorkGraphProfilesTest(unittest.TestCase):
             self.assertIn(value, normalized)
         self.assertIn("exact current", self.doc)
 
+    def test_workflow_agents_are_simple_and_manifest_bound(self):
+        title = self.agents["issue-title-validator"]
+        body = self.agents["issue-body-validator"]
+        evaluator = self.agents["issue-validation-evaluator"]
+        for profile, branch, operation, field in (
+            (title, "title", "validate-title", "title"),
+            (body, "body", "validate-body", "body"),
+        ):
+            with self.subTest(branch=branch):
+                self.assertIn(f"branch `{branch}`", profile)
+                self.assertIn(f"operation `{operation}`", profile)
+                self.assertIn(f'"field": "{field}"', profile)
+                self.assertIn('"passed": true', profile)
+                self.assertIn("whitespace-only", profile.lower())
+                self.assertIn("submit_workflow_task_result", profile)
+        normalized = " ".join(evaluator.split())
+        self.assertIn("join: all", evaluator)
+        self.assertIn("expectedChildCount: 2", evaluator)
+        self.assertIn("Choose `triage` only when both", normalized)
+        self.assertIn("Otherwise choose `request-info`", normalized)
+        self.assertIn("Never invent another decision", normalized)
+        requester = self.agents["issue-info-requester"]
+        requester_normalized = " ".join(requester.split())
+        self.assertIn("`priorResults`", requester)
+        self.assertIn("exactly one prior Result", requester_normalized)
+        self.assertIn("same-run, same-generation", requester_normalized)
+        self.assertIn("post_workflow_parent_info_request", requester)
+        self.assertIn("submit_workflow_task_result", requester)
+
     def test_agents_handle_optional_feedback_dispatch(self):
-        for name in ("issue-validator", "issue-info-requester"):
+        for name in ("issue-validator",):
             profile = self.agents[name]
             normalized = " ".join(profile.split())
             with self.subTest(agent=name):
@@ -336,8 +397,9 @@ class WorkGraphProfilesTest(unittest.TestCase):
                 self.assertIn("do not merely reconcile an unchanged", normalized.lower())
                 self.assertIn("narrow reporter remains authoritative", normalized)
         requester = self.agents["issue-info-requester"]
-        self.assertIn("exact `passed: false` validation criteria", requester)
-        self.assertIn("cannot require\ninventing, removing, or rephrasing", requester)
+        self.assertNotIn("feedbackCommentNodeId", requester)
+        self.assertIn("titlePassed", requester)
+        self.assertIn("bodyPassed", requester)
         self.assertIn("semantic\nResult must materially change", self.doc)
 
     def test_dispatch_ids_and_readable_evidence_are_separated(self):
@@ -387,7 +449,13 @@ class WorkGraphProfilesTest(unittest.TestCase):
             self.assertIn(value, self.doc)
 
     def test_agents_require_source_lease_and_no_agent_writes_one(self):
-        for name in ("issue-validator", "issue-info-requester"):
+        for name in (
+            "issue-validator",
+            "issue-info-requester",
+            "issue-title-validator",
+            "issue-body-validator",
+            "issue-validation-evaluator",
+        ):
             profile = self.agents[name]
             normalized = " ".join(profile.split())
             self.assertIn("active Source-issued Lease", normalized)

@@ -1,9 +1,40 @@
 # WorkGraph agent and reporter contract
 
 This is a closed, breaking contract for `drasi-project/drasi-workgraph-demo`.
-All GitHub WorkGraph comment protocols are v1-only. There are no aliases,
-migration parsers, arbitrary repository selectors, raw comment bodies, generic
-mutation tools, or GitHub Lease comments.
+Task Assignment and Result comments retain their v1 protocol. The repository
+workflow uses a dedicated `WorkGraphInfoRequest/v2` correlation marker. There
+are no aliases, migration parsers, arbitrary repository selectors, raw comment
+bodies, generic mutation tools, or GitHub Lease comments.
+
+## Staged workflow v2 protocol
+
+`.github/mcp/workgraph-v2-protocol.mjs` is the pure protocol module for the
+repository workflow. It canonically formats and parses
+`WorkGraphTask/v2` manifests, checks complete current-generation parallel task
+families against their composite parent, and formats workflow Results and
+Assignments. Workflow comments deliberately retain
+`WorkGraphTaskResult/v1` and `WorkGraphTaskAssignment/v1`.
+
+The production MCP imports the module for two narrow staged paths:
+
+- `submit_workflow_task_assignment` requires the requested agent to equal the
+  task manifest agent and to exist in the authoritative agent configuration.
+- `submit_workflow_task_result` creates or exactly reconciles one non-empty,
+  lease-bound workflow Result. It does not revise Results.
+- `post_workflow_parent_info_request` requires the exact successful prior
+  evaluator Result selected by the dispatch, revalidates its digest and workflow
+  generation, and posts or reconciles the canonical parent request.
+
+Both paths verify the typed task, launcher and reporter identities, exact native
+parent, and canonical Assignment. A branch task's direct parent must be the
+open composite `WorkGraphTask/v2` whose current-generation child manifest
+exactly defines that branch. A top-level workflow task must instead have a
+principal Issue parent. A request-info Result must reference the exact
+reporter-owned `WorkGraphInfoRequest/v2` comment. Result and info-request
+creation validate the exact active Source Lease immediately before writing.
+None of these paths changes Issue state or closes a task. They remain staged
+behind the disabled v2 runtime; the remaining sections describe the active v1
+workflow.
 
 The GitHub WorkGraph Source owns agent capacity and active Leases. It projects
 capacity from `.github/workgraph/agents.yaml`, creates synthetic active
@@ -59,6 +90,15 @@ agents:
     slots: 1
     leaseDuration: PT30M
   - agentId: issue-info-requester
+    slots: 1
+    leaseDuration: PT30M
+  - agentId: issue-title-validator
+    slots: 1
+    leaseDuration: PT30M
+  - agentId: issue-body-validator
+    slots: 1
+    leaseDuration: PT30M
+  - agentId: issue-validation-evaluator
     slots: 1
     leaseDuration: PT30M
 ```
@@ -229,9 +269,12 @@ The MCP exposes only:
 get_result_snapshot
 submit_task_assignment
 submit_task_result
+submit_workflow_task_assignment
+submit_workflow_task_result
 submit_result_acceptance
 transition_issue
 post_parent_info_request
+post_workflow_parent_info_request
 submit_task_feedback
 ```
 
@@ -241,6 +284,15 @@ preserves task/parent/type/author/Assignment/Result/Feedback/Acceptance
 reconciliation, validates Source immediately before the parent POST, and
 reconciles an identical existing request without validation. Its later
 `submit_task_result` call independently validates Source again.
+
+`post_workflow_parent_info_request` independently validates the open
+`request-info` manifest and Assignment, the same-run and same-generation closed
+parallel evaluator, its exact successful Result comment and SHA-256 digest, and
+the `request-info` decision. It derives missing title/body criteria only from
+the evaluator booleans, writes one generation-correlated
+`WorkGraphInfoRequest/v2` parent comment, and validates Source immediately
+before the POST. `submit_workflow_task_result` then requires that exact
+reporter-owned parent comment and validates Source again.
 
 `transition_issue` preserves the strict parent state machine:
 
@@ -270,9 +322,12 @@ narrow tools:
 | --- | --- | --- |
 | `issue-assigner` | Assignment | No |
 | `issue-validator` | Assignment, Result, Feedback | Yes |
-| `issue-info-requester` | Assignment, Result, Acceptance, Info, Feedback | Yes |
+| `issue-info-requester` | Assignment, Result, Info | Yes |
 | `workgraph-result-acceptor` | Assignment, Result, Acceptance, Feedback | No |
 | `issue-orchestrator` | Assignment, Result, Acceptance, Orchestrator, Info, Feedback | No |
+| `issue-title-validator` | Assignment, Result | Yes |
+| `issue-body-validator` | Assignment, Result | Yes |
+| `issue-validation-evaluator` | Assignment, Result | Yes |
 
 Tokens use `${{ secrets.* }}` references. Type and identity values use
 `${{ vars.* }}` references. The reporter loads configuration per tool and, for
@@ -289,7 +344,8 @@ Source token, read-only exact active-Lease validation.
 
 ```bash
 node --check .github/mcp/workgraph-reporter.mjs
-node --test tests/workgraph-reporter.test.mjs tests/workgraph-live-support.test.mjs
+node --check .github/mcp/workgraph-v2-protocol.mjs
+node --test tests/*.test.mjs
 python3 -m unittest discover -s tests -v
 ```
 
