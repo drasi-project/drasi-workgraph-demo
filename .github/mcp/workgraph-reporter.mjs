@@ -25,6 +25,8 @@ const ACCEPTANCE_MARKER = "WorkGraphTaskResultAcceptance/v1";
 const INFO_MARKER = "WorkGraphInfoRequest/v1";
 const WORKFLOW_INFO_MARKER = "WorkGraphInfoRequest/v2";
 const FEEDBACK_MARKER = "WorkGraphTaskFeedback/v1";
+const V1_LEASE_VALIDATION_PATH = "/github/workgraph/lease/validate";
+const V2_LEASE_VALIDATION_PATH = "/github/workgraph-v2/lease/validate";
 const STATUS_LABELS = [
   "status:new",
   "status:awaiting-validation",
@@ -463,6 +465,55 @@ function requiredEnv(name) {
   return value;
 }
 
+export function leaseValidationPathForTool(toolName) {
+  if (
+    toolName === "submit_workflow_task_result" ||
+    toolName === "post_workflow_parent_info_request"
+  ) {
+    return V2_LEASE_VALIDATION_PATH;
+  }
+  if (
+    toolName === "submit_task_result" ||
+    toolName === "post_parent_info_request"
+  ) {
+    return V1_LEASE_VALIDATION_PATH;
+  }
+  throw new WorkGraphError(`unknown lease-bound tool ${toolName}`);
+}
+
+export function validateLeaseValidationUrl(
+  value,
+  toolName,
+  allowTestLoopback = process.env.NODE_ENV === "test",
+) {
+  let url;
+  try {
+    url = new URL(value);
+    const loopback =
+      allowTestLoopback &&
+      url.protocol === "http:" &&
+      ["127.0.0.1", "::1", "localhost"].includes(url.hostname);
+    const validPath = loopback
+      ? url.pathname.endsWith("/lease/validate")
+      : url.pathname === leaseValidationPathForTool(toolName);
+    if (
+      (!loopback && url.protocol !== "https:") ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      !validPath
+    ) {
+      throw Error();
+    }
+  } catch {
+    throw new WorkGraphError(
+      "Source Lease validation configuration is invalid for this tool",
+    );
+  }
+  return value;
+}
+
 function config(toolName, args) {
   const token = requiredEnv("COPILOT_MCP_WORKGRAPH_TOKEN");
   const taskTypeId =
@@ -556,8 +607,10 @@ function config(toolName, args) {
       ? {
           leaseValidationToken:
             requiredEnv("COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN"),
-          leaseValidationUrl:
+          leaseValidationUrl: validateLeaseValidationUrl(
             requiredEnv("COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL"),
+            toolName,
+          ),
         }
       : {}),
   };

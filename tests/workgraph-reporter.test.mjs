@@ -13,8 +13,10 @@ import {
   parseAgentsYaml,
   formatTask,
   formatTaskResult,
+  leaseValidationPathForTool,
   parseTask,
   resultDigest,
+  validateLeaseValidationUrl,
 } from "../.github/mcp/workgraph-reporter.mjs";
 import {
   formatWorkflowAssignment,
@@ -61,6 +63,40 @@ const AGENTS_YAML =
   "  - agentId: issue-validation-evaluator\n" +
   "    slots: 1\n" +
   "    leaseDuration: PT30M\n";
+
+test("lease validation URLs are scoped to their protocol generation", () => {
+  assert.equal(
+    leaseValidationPathForTool("submit_task_result"),
+    "/github/workgraph/lease/validate",
+  );
+  assert.equal(
+    leaseValidationPathForTool("post_workflow_parent_info_request"),
+    "/github/workgraph-v2/lease/validate",
+  );
+  const v2Url =
+    "https://workgraph.example/github/workgraph-v2/lease/validate";
+  assert.equal(
+    validateLeaseValidationUrl(v2Url, "submit_workflow_task_result", false),
+    v2Url,
+  );
+  assert.throws(
+    () =>
+      validateLeaseValidationUrl(
+        "https://workgraph.example/github/workgraph/lease/validate",
+        "submit_workflow_task_result",
+        false,
+      ),
+    /invalid for this tool/,
+  );
+  assert.equal(
+    validateLeaseValidationUrl(
+      "http://127.0.0.1:9000/lease/validate",
+      "submit_workflow_task_result",
+      true,
+    ),
+    "http://127.0.0.1:9000/lease/validate",
+  );
+});
 const ACTIVE_LEASE = {
   leaseId: "lease-001",
   assignmentCommentNodeId: "IC_assignment",
