@@ -489,13 +489,16 @@ export function validateLeaseValidationUrl(
   let url;
   try {
     url = new URL(value);
+    const expectedPath = leaseValidationPathForTool(toolName);
     const loopback =
       allowTestLoopback &&
       url.protocol === "http:" &&
       ["127.0.0.1", "::1", "localhost"].includes(url.hostname);
     const validPath = loopback
       ? url.pathname.endsWith("/lease/validate")
-      : url.pathname === leaseValidationPathForTool(toolName);
+      : [V1_LEASE_VALIDATION_PATH, V2_LEASE_VALIDATION_PATH].includes(
+          url.pathname,
+        );
     if (
       (!loopback && url.protocol !== "https:") ||
       url.username ||
@@ -506,12 +509,13 @@ export function validateLeaseValidationUrl(
     ) {
       throw Error();
     }
+    if (!loopback) url.pathname = expectedPath;
   } catch {
     throw new WorkGraphError(
       "Source Lease validation configuration is invalid for this tool",
     );
   }
-  return value;
+  return url.toString();
 }
 
 function config(toolName, args) {

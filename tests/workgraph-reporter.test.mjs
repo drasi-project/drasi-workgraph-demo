@@ -64,7 +64,7 @@ const AGENTS_YAML =
   "    slots: 1\n" +
   "    leaseDuration: PT30M\n";
 
-test("lease validation URLs are scoped to their protocol generation", () => {
+test("lease validation URLs derive their protocol generation per tool", () => {
   assert.equal(
     leaseValidationPathForTool("submit_task_result"),
     "/github/workgraph/lease/validate",
@@ -79,10 +79,22 @@ test("lease validation URLs are scoped to their protocol generation", () => {
     validateLeaseValidationUrl(v2Url, "submit_workflow_task_result", false),
     v2Url,
   );
+  assert.equal(
+    validateLeaseValidationUrl(
+      "https://workgraph.example/github/workgraph/lease/validate",
+      "submit_workflow_task_result",
+      false,
+    ),
+    v2Url,
+  );
+  assert.equal(
+    validateLeaseValidationUrl(v2Url, "submit_task_result", false),
+    "https://workgraph.example/github/workgraph/lease/validate",
+  );
   assert.throws(
     () =>
       validateLeaseValidationUrl(
-        "https://workgraph.example/github/workgraph/lease/validate",
+        "https://workgraph.example/untrusted/lease/validate",
         "submit_workflow_task_result",
         false,
       ),
