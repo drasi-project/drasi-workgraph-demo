@@ -1,0 +1,38 @@
+WorkGraphWorkflowDefinition/v1
+
+```json
+{
+  "workflowDefinitionId": "demo-issue-lifecycle",
+  "version": "v1",
+  "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "root": {
+    "taskDefinitionId": "demo-root-v1",
+    "taskKey": "root",
+    "operation": "coordinate-issue",
+    "routing": {
+      "permittedExecutors": [
+        "demo-orchestrator"
+      ]
+    },
+    "staticInputs": {
+      "proofMode": "isolated"
+    },
+    "children": [
+      {
+        "taskDefinitionId": "demo-validate-v1",
+        "taskKey": "validate",
+        "operation": "validate-issue",
+        "routing": {
+          "permittedExecutors": [
+            "issue-validator"
+          ]
+        },
+        "staticInputs": {
+          "validationProfile": "new-issue-default"
+        },
+        "children": []
+      }
+    ]
+  }
+}
+```

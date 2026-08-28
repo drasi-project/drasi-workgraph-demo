@@ -1,0 +1,166 @@
+{
+  "resultIndexStateVersion": 5,
+  "sourceReplay": [
+    {
+      "revision": 1,
+      "kind": "TaskDocument",
+      "document": {
+        "sourceKey": "github:issue:9001",
+        "bodyPath": "workgraph-vnext-live-proof-root-task.body",
+        "isOpen": true,
+        "stateReason": "open",
+        "parentSourceKey": null
+      }
+    },
+    {
+      "revision": 2,
+      "kind": "DefinitionDocument",
+      "document": {
+        "sourceKey": "github:definition:demo-issue-lifecycle:v1",
+        "bodyPath": "../../workflows/issue-lifecycle-vnext.body"
+      }
+    }
+  ],
+  "expectedFirstState": {
+    "taskId": "demo-run-0001-root",
+    "state": "FORK",
+    "declaredChildCount": 1,
+    "precreatedChildCount": 0
+  },
+  "nestedLifecycle": {
+    "workflowDefinitionId": "nested-workflow",
+    "workflowRunId": "nested-run",
+    "taskDefinitions": [
+      {
+        "taskDefinitionId": "nested-root-definition",
+        "taskKey": "nested-root"
+      },
+      {
+        "taskDefinitionId": "nested-middle-definition",
+        "taskKey": "nested-middle"
+      },
+      {
+        "taskDefinitionId": "nested-leaf-definition",
+        "taskKey": "nested-leaf"
+      }
+    ],
+    "expectedProgression": [
+      "FORK",
+      "JOIN_ALL",
+      "ASSIGN",
+      "LEASE",
+      "DISPATCH",
+      "RESULT",
+      "EVALUATE",
+      "CLOSE",
+      "CLOSED"
+    ]
+  },
+  "executorCapacity": {
+    "executorId": "issue-validator",
+    "slotIds": [
+      "issue-validator-slot-1",
+      "issue-validator-slot-2"
+    ],
+    "leases": [
+      {
+        "leaseId": "lease-1",
+        "assignmentId": "assignment-1",
+        "slotId": "issue-validator-slot-1"
+      },
+      {
+        "leaseId": "lease-2",
+        "assignmentId": "assignment-1",
+        "slotId": "issue-validator-slot-2"
+      }
+    ],
+    "requireDistinctDispatchIds": true
+  },
+  "resultEvaluation": {
+    "success": {
+      "resultId": "result-1",
+      "taskId": "task-1",
+      "dispatchId": "dispatch-1",
+      "leaseId": "lease-1",
+      "outcome": "succeeded",
+      "output": {
+        "value": 1
+      },
+      "expectedRoute": "complete",
+      "expectedStateReason": "completed"
+    },
+    "failure": {
+      "resultId": "result-1",
+      "taskId": "task-1",
+      "dispatchId": "dispatch-1",
+      "leaseId": "lease-1",
+      "outcome": "failed",
+      "output": null,
+      "expectedRoute": "fail",
+      "expectedStateReason": "not_planned"
+    },
+    "rejectedResult": {
+      "resultId": "result-wrong",
+      "taskId": "different-task",
+      "dispatchId": "dispatch-1",
+      "leaseId": "lease-1",
+      "outcome": "succeeded",
+      "output": null
+    }
+  },
+  "requestInfoResume": {
+    "prompt": "Please provide the missing context",
+    "policy": {
+      "allowedAuthorIds": [
+        "human-1"
+      ],
+      "maxReplyBytes": 1024
+    },
+    "reply": {
+      "replyId": "reply-1",
+      "authorId": "human-1",
+      "body": "The requested context\r\n```text\nwith details\n```"
+    },
+    "expectedRootStaticInputs": {
+      "configured": "preserved"
+    },
+    "expectedReservedResolvedInputs": [
+      "humanReply",
+      "resumedFromTaskId"
+    ],
+    "replyEncoding": "utf-8-hex",
+    "requiresFreshRun": true
+  },
+  "restartBoundaries": [
+    {
+      "phase": "reducer",
+      "durableBefore": "checkpoint",
+      "replayExpectation": "same-plans"
+    },
+    {
+      "phase": "fork-assign",
+      "durableBefore": "writer",
+      "replayExpectation": "one-reconciled-receipt"
+    },
+    {
+      "phase": "dispatch",
+      "durableBefore": "launch",
+      "replayExpectation": "same-dispatch"
+    },
+    {
+      "phase": "evaluate-close",
+      "durableBefore": "writer",
+      "replayExpectation": "same-artifact"
+    },
+    {
+      "phase": "wait-resume",
+      "durableBefore": "writer",
+      "replayExpectation": "same-resume"
+    }
+  ],
+  "activation": {
+    "effects": "disabled-or-mocked-only",
+    "githubWritesAllowed": false,
+    "clearStateVersionsBefore": 5
+  }
+}

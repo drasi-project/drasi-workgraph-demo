@@ -24,7 +24,10 @@ remain v1, and Lease is never a GitHub comment. A separate
 `workgraph-v2-protocol.mjs` module and three narrow MCP tools now support
 canonical `WorkGraphTask/v2` Assignment and Result reporting, including nested
 parallel-family validation and exact prior-Result info requests. No enabled
-workflow invokes those staged paths yet.
+workflow invokes those staged paths yet. The isolated
+[`WorkGraphWorkflowDefinition/v1` VNext fixture](docs/workgraph-vnext-definition-demo.md)
+vendors the frozen Dogfood definition/root contract without replacing or
+activating the V2 proof.
 Validation uses only the two criteria in
 `.github/workgraph/profiles/issue-validation/new-issue-default.md`.
 
