@@ -51,6 +51,15 @@ The two canonical bodies are copied without modification from:
 - Core feature branch:
   `drasi-project/drasi-core@c6615b450b0be85694f2e77460cf892617eb946e`
 
+The final write-disabled runtime checkpoint pins:
+
+- Dogfood:
+  `drasi-project/drasi-dogfooding@8f27db172906c022fbf3471a745cab8b891fd9ef`
+- Core:
+  `drasi-project/drasi-core@957961c0e4a6137d3d89cbdc0fb38055024e17ea`
+- Demo definition checkpoint:
+  `drasi-project/drasi-workgraph-demo@44e308c547d5471b83e5604eda28440ea855dc52`
+
 Canonical Dogfood paths and Git blob IDs:
 
 | Artifact | Dogfood path | Blob |
@@ -75,7 +84,17 @@ Run the focused VNext checks:
 ```bash
 node --check .github/mcp/workgraph-vnext-definition.mjs
 node --test tests/workgraph-vnext-definition.test.mjs
+node scripts/prepare-workgraph-vnext-proof.mjs
 ```
+
+The last command performs no network or filesystem writes. It resolves the two
+tracked body paths and prints the exact task-first `TaskDocument` revision 1 and
+`DefinitionDocument` revision 2 Source input array. It validates both canonical
+bodies, their exact definition pin, `RESULT_INDEX_STATE_VERSION=5`, the expected
+initial `FORK`, and the write-disabled effect gate before producing output.
+It also requires exact Source document schemas/metadata and the frozen local
+paths, sizes, and SHA-256 body hashes, so a different canonical document cannot
+silently replace this proof input.
 
 Run all existing network-free Demo checks:
 
@@ -90,16 +109,41 @@ python3 -m unittest discover -s tests -v
 The explicit GitHub integration suite remains V1-only and is not part of this
 fixture proof.
 
-## Activation boundary
+From the pinned Dogfood `git-workgraph/` directory, the cross-repository
+write-disabled proof is:
 
-VNext has no production server configuration, dynamic plugin descriptor, or
-GitHub adapter in the frozen contract. An isolated live activation requires a
-separately reviewed Dogfood adapter/wiring checkpoint, exact repository-local
-definition and root bytes, `RESULT_INDEX_STATE_VERSION=5` state (with all
-pre-v5 query state removed), explicit `Disabled` or `Mocked` effects, and
-credentials supplied only when a later write gate is approved. This repository
-must not use sibling worktrees, absolute local dependencies, runtime fixture
-downloads, or real GitHub writes for the prepared proof.
+```bash
+WORKGRAPH_DEMO_DIR=/absolute/path/to/demo-at-44e308c547d5471b83e5604eda28440ea855dc52 \
+  scripts/dry-run-vnext.sh
+```
+
+Its exact terminal result is:
+
+```json
+{"mode":"dry-run","sourceKey":"github:issue:9001","taskId":"demo-run-0001-root","nextAction":"FORK","writes":[]}
+```
+
+The pinned runtime inventory is exactly 16 queries: 10 lifecycle and 6 detail.
+The Demo does not define, copy, or alter those Dogfood queries.
+
+## Disabled runtime boundary
+
+The fresh runtime uses only the dedicated
+`git-workgraph/data/workgraph-vnext-v5.redb` state namespace. Remove that whole
+file before a fresh proof; clearing only an allocator key is invalid. From the
+pinned Dogfood `git-workgraph/` directory, the disabled invocation is:
+
+```bash
+rm -f data/workgraph-vnext-v5.redb
+RESULT_INDEX_STATE_VERSION=5 \
+  /absolute/path/to/drasi-server --config server-config-vnext.yaml
+```
+
+The checked-in Source, all 16 queries, and Reaction have `autoStart: false`.
+Reaction uses `mode: disabled` and `dryRun: true`. This session does not run the
+server invocation because activation is out of scope, even in disabled mode.
+The repository resources use no sibling-worktree dependencies or runtime
+fixture downloads.
 
 ## Integration decisions
 

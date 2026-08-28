@@ -11,6 +11,7 @@ import {
   parseWorkflowDefinition,
   validateRootRuntimeTask,
 } from "../.github/mcp/workgraph-vnext-definition.mjs";
+import { buildVNextProofDocuments } from "../scripts/prepare-workgraph-vnext-proof.mjs";
 
 const CANONICAL_DEFINITION_PATH =
   ".github/workgraph/workflows/issue-lifecycle-vnext.body";
@@ -334,6 +335,21 @@ test("planned live proof inputs remain deterministic and write-disabled", async 
   const inputs = JSON.parse(await read(LIVE_PROOF_INPUTS_PATH));
 
   assert.equal(inputs.resultIndexStateVersion, 5);
+  assert.deepEqual(inputs.runtimeContract, {
+    dogfoodCommit: "8f27db172906c022fbf3471a745cab8b891fd9ef",
+    coreCommit: "957961c0e4a6137d3d89cbdc0fb38055024e17ea",
+    demoCommit: "44e308c547d5471b83e5604eda28440ea855dc52",
+    queryInventory: { lifecycle: 10, detail: 6, total: 16 },
+    stateStorePath: "data/workgraph-vnext-v5.redb",
+    serverConfig: "server-config-vnext.yaml",
+    expectedDryRun: {
+      mode: "dry-run",
+      sourceKey: "github:issue:9001",
+      taskId: "demo-run-0001-root",
+      nextAction: "FORK",
+      writes: [],
+    },
+  });
   assert.deepEqual(
     inputs.sourceReplay.map(({ revision, kind }) => [revision, kind]),
     [
@@ -370,4 +386,32 @@ test("planned live proof inputs remain deterministic and write-disabled", async 
   );
   assert.equal(inputs.activation.githubWritesAllowed, false);
   assert.equal(inputs.activation.clearStateVersionsBefore, 5);
+});
+
+test("offline proof builder emits exact task-first Source documents", async () => {
+  const documents = await buildVNextProofDocuments();
+
+  assert.deepEqual(
+    documents.map(({ revision, kind }) => [revision, kind]),
+    [
+      [1, "TaskDocument"],
+      [2, "DefinitionDocument"],
+    ],
+  );
+  assert.deepEqual(documents[0].document, {
+    sourceKey: "github:issue:9001",
+    body: await read(CANONICAL_ROOT_PATH),
+    isOpen: true,
+    stateReason: "open",
+    parentSourceKey: null,
+  });
+  assert.deepEqual(documents[1].document, {
+    sourceKey: "github:definition:demo-issue-lifecycle:v1",
+    body: await read(CANONICAL_DEFINITION_PATH),
+  });
+  assert.equal(
+    Object.hasOwn(documents[0].document, "bodyPath") ||
+      Object.hasOwn(documents[1].document, "bodyPath"),
+    false,
+  );
 });
