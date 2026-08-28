@@ -33,11 +33,11 @@ const FROZEN_BODIES = {
   },
 };
 const RUNTIME_CONTRACT = {
-  dogfoodCommit: "8f27db172906c022fbf3471a745cab8b891fd9ef",
-  coreCommit: "957961c0e4a6137d3d89cbdc0fb38055024e17ea",
+  dogfoodCommit: "a14a210d785604a78b72c663e0d655ce49e8f75c",
+  coreCommit: "7be2e1bd895196c1e4fbf99a23dbbcbdb4abc8e8",
   demoCommit: "44e308c547d5471b83e5604eda28440ea855dc52",
   queryInventory: { lifecycle: 10, detail: 6, total: 16 },
-  stateStorePath: "data/workgraph-vnext-v5.redb",
+  stateStorePath: "data/workgraph-vnext-v6.redb",
   serverConfig: "server-config-vnext.yaml",
   expectedDryRun: {
     mode: "dry-run",
@@ -119,12 +119,15 @@ export async function buildVNextProofDocuments() {
   }
   if (
     inputs.activation?.githubWritesAllowed !== false ||
-    inputs.activation?.effects !== "disabled-or-mocked-only"
+    inputs.activation?.effects !== "disabled-or-mocked-only" ||
+    inputs.activation?.resetStateStorePath !== RUNTIME_CONTRACT.stateStorePath ||
+    JSON.stringify(inputs.activation?.preserveStateStorePaths) !==
+      JSON.stringify(["data/workgraph-vnext-v5.redb"])
   ) {
     throw new Error("VNext proof inputs must remain write-disabled");
   }
-  if (inputs.resultIndexStateVersion !== 5) {
-    throw new Error("VNext proof requires RESULT_INDEX_STATE_VERSION=5");
+  if (inputs.resultIndexStateVersion !== 6) {
+    throw new Error("VNext proof requires RESULT_INDEX_STATE_VERSION=6");
   }
   if (!Array.isArray(inputs.sourceReplay) || inputs.sourceReplay.length !== 2) {
     throw new Error("VNext proof must contain exactly root and definition documents");

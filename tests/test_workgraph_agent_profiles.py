@@ -19,6 +19,7 @@ README = ROOT / "README.md"
 AGENTS_CONFIG = ROOT / ".github" / "workgraph" / "agents.yaml"
 
 EXPECTED_TOOLS = {
+    "demo-orchestrator": ["workgraph/submit_task_result"],
     "issue-orchestrator": ["github/issue_read", "workgraph/transition_issue"],
     "issue-assigner": [
         "github/issue_read",
@@ -71,15 +72,18 @@ WORKFLOW_AGENT_ENV_KEYS = (
     | LEASE_ENV_KEYS
 )
 EXPECTED_ENV_KEYS = {
+    "demo-orchestrator": COMMON_ENV_KEYS
+    | {
+        "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
+        "COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID",
+    },
     "issue-assigner": COMMON_ENV_KEYS
     | {"COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID"},
     "issue-validator": COMMON_ENV_KEYS
     | {
         "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
         "COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID",
-        "COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID",
-    }
-    | LEASE_ENV_KEYS,
+    },
     "issue-info-requester": COMMON_ENV_KEYS
     | {
         "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
@@ -126,7 +130,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
         cls.readme = README.read_text(encoding="utf-8")
         cls.agent_config = AGENTS_CONFIG.read_text(encoding="utf-8")
 
-    def test_exactly_eight_rest_launchable_profiles(self):
+    def test_exactly_nine_rest_launchable_profiles(self):
         self.assertEqual(set(self.agents), set(EXPECTED_TOOLS))
         self.assertNotIn("risk-profiler", "\n".join(self.agents.values()))
         for name, content in self.agents.items():
@@ -224,10 +228,9 @@ class WorkGraphProfilesTest(unittest.TestCase):
         self.assertNotIn("lease" + "CommentNodeId", sources)
         self.assertIn('"agentId": "issue-validator"', self.doc)
         self.assertIn('"leaseId": "lease-001"', self.doc)
-        self.assertIn("There is no `assignmentId`", self.doc)
-        self.assertNotIn('"assignmentId":', self.reporter)
+        self.assertIn("Callers never supply `resultId`", self.doc)
+        self.assertIn("deriveVNextTaskResultId", self.reporter)
         for field in [
-            "requestCommentNodeId",
             "resultCommentNodeId",
             "resultBodyDigest",
         ]:
@@ -240,7 +243,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
         )
 
     def test_agent_config_schema_and_stable_metadata(self):
-        self.assertEqual(self.agent_config.count("\n  - agentId: "), 5)
+        self.assertEqual(self.agent_config.count("\n  - agentId: "), 6)
         self.assertIn("version: 1\nagents:\n", self.agent_config)
         entries = re.findall(
             r"  - agentId: ([A-Za-z0-9._-]+)\n"
@@ -256,11 +259,15 @@ class WorkGraphProfilesTest(unittest.TestCase):
                 "issue-title-validator",
                 "issue-body-validator",
                 "issue-validation-evaluator",
+                "demo-orchestrator",
             },
         )
         for agent_id, slots, duration in entries:
             self.assertEqual(slots, "1")
-            self.assertEqual(duration, "PT30M")
+            self.assertEqual(
+                duration,
+                "PT15M" if agent_id == "demo-orchestrator" else "PT30M",
+            )
         self.assertIn(".github/workgraph/agents.yaml", self.doc)
         self.assertIn("desired capacity only", self.doc)
 
@@ -315,15 +322,10 @@ class WorkGraphProfilesTest(unittest.TestCase):
 
     def test_agent_and_acceptor_provenance_rules(self):
         validator = self.agents["issue-validator"]
-        self.assertIn(
-            "native parent; that relation is authoritative",
-            " ".join(validator.split()),
-        )
-        self.assertIn('outcome:\n"succeeded"', validator)
-        self.assertIn(
-            "PATCHes the existing canonical Result",
-            " ".join(validator.split()),
-        )
+        normalized = " ".join(validator.split())
+        self.assertIn("navigate from that open `WorkGraphTask` Issue to its native parent", normalized)
+        self.assertIn("outcome `succeeded`", normalized)
+        self.assertIn("reporter derives it deterministically", normalized)
 
         requester = self.agents["issue-info-requester"]
         self.assertIn("mentions the parent's submitter", requester)
@@ -381,31 +383,26 @@ class WorkGraphProfilesTest(unittest.TestCase):
         self.assertIn("submit_workflow_task_result", requester)
 
     def test_agents_handle_optional_feedback_dispatch(self):
-        for name in ("issue-validator",):
-            profile = self.agents[name]
-            normalized = " ".join(profile.split())
-            with self.subTest(agent=name):
-                for field in (
-                    "feedbackCommentNodeId",
-                    "feedbackUpdatedAt",
-                    "resultCommentNodeId",
-                    "resultBodyDigest",
-                ):
-                    self.assertIn(field, profile)
-                self.assertIn("exact prior Result and feedback comment", normalized)
-                self.assertIn("materially revised", normalized)
-                self.assertIn("do not merely reconcile an unchanged", normalized.lower())
-                self.assertIn("narrow reporter remains authoritative", normalized)
+        validator = self.agents["issue-validator"]
+        for field in (
+            "feedbackCommentNodeId",
+            "feedbackUpdatedAt",
+            "resultCommentNodeId",
+            "resultBodyDigest",
+        ):
+            self.assertNotIn(field, validator)
         requester = self.agents["issue-info-requester"]
         self.assertNotIn("feedbackCommentNodeId", requester)
         self.assertIn("titlePassed", requester)
         self.assertIn("bodyPassed", requester)
-        self.assertIn("semantic\nResult must materially change", self.doc)
+        self.assertIn("It never PATCHes a\nVNext Result", self.doc)
 
     def test_dispatch_ids_and_readable_evidence_are_separated(self):
         self.assertIn("opaque graph node IDs", self.doc)
         self.assertIn("independently re-fetch", self.doc)
         for name, profile in self.agents.items():
+            if name in {"issue-validator", "demo-orchestrator"}:
+                continue
             with self.subTest(agent=name):
                 self.assertIn("trusted graph dispatch envelope", profile)
                 self.assertIn(
@@ -414,6 +411,39 @@ class WorkGraphProfilesTest(unittest.TestCase):
                 )
                 self.assertIn("Do not stop", profile)
                 self.assertIn("independently", profile)
+
+    def test_vnext_agents_consume_dispatch_and_report_canonical_results(self):
+        for name, operation in (
+            ("issue-validator", "validate-issue"),
+            ("demo-orchestrator", "coordinate-issue"),
+        ):
+            profile = self.agents[name]
+            normalized = " ".join(profile.split())
+            with self.subTest(agent=name):
+                self.assertIn("`WorkGraphTaskDispatch/v1`", profile)
+                self.assertIn("`WorkGraphTask/v3`", profile)
+                self.assertIn("`WorkGraphTaskResult/v1`", profile)
+                self.assertIn("`taskLocator`", profile)
+                self.assertIn("`directChildResults`", profile)
+                self.assertIn("`directChildEvaluations`", profile)
+                self.assertIn(f"operation `{operation}`", profile)
+                self.assertIn("`taskId`, `dispatchId`, and `leaseId`", normalized)
+                self.assertIn("Do not construct or pass `resultId`", normalized)
+                self.assertIn("reporter derives it deterministically", normalized)
+                self.assertIn("Never accept a legacy Lease/reporter envelope", normalized)
+                self.assertNotIn("assignmentCommentNodeId", profile)
+                self.assertNotIn("workResult", profile)
+        validator = self.agents["issue-validator"]
+        self.assertIn("The Issue has a non-empty title", validator)
+        self.assertIn("The Issue body is present", validator)
+        orchestrator = self.agents["demo-orchestrator"]
+        orchestrator_normalized = " ".join(orchestrator.split())
+        self.assertIn(
+            "exactly one direct child with task key `validate`",
+            orchestrator_normalized,
+        )
+        self.assertIn("unchanged canonical child Result map", orchestrator)
+        self.assertIn("unchanged canonical child Evaluation map", orchestrator)
 
     def test_fail_closed_race_and_feedback_revision_are_documented(self):
         self.assertIn("fail-closed pre/post reconciliation", self.doc)
@@ -429,7 +459,10 @@ class WorkGraphProfilesTest(unittest.TestCase):
             [self.reporter, self.doc, self.readme, *self.agents.values()]
         )
         self.assertIn("A Result never closes a task", self.readme)
-        self.assertIn("A Result never changes Issue state and never\ncloses the task", self.doc)
+        self.assertIn(
+            "never PATCHes a VNext Result, changes Issue state, closes the task",
+            " ".join(self.doc.split()),
+        )
         self.assertNotRegex(self.reporter, r'["`]state["`]\s*:')
         self.assertNotIn("closeIssue", self.reporter)
         self.assertIn("external WorkGraph runtime may close", sources)
@@ -450,7 +483,6 @@ class WorkGraphProfilesTest(unittest.TestCase):
 
     def test_agents_require_source_lease_and_no_agent_writes_one(self):
         for name in (
-            "issue-validator",
             "issue-info-requester",
             "issue-title-validator",
             "issue-body-validator",

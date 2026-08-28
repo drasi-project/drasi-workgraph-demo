@@ -1,9 +1,10 @@
 # drasi-workgraph-demo
 
 A strict, breaking WorkGraph Issue workflow prototype for the fixed
-`drasi-project/drasi-workgraph-demo` repository. It defines eight
+`drasi-project/drasi-workgraph-demo` repository. It defines nine
 REST-launchable profiles:
 
+- `demo-orchestrator`
 - `issue-orchestrator`
 - `issue-assigner`
 - `issue-validator`
@@ -28,16 +29,21 @@ workflow invokes those staged paths yet. The isolated
 [`WorkGraphWorkflowDefinition/v1` VNext fixture](docs/workgraph-vnext-definition-demo.md)
 vendors the frozen Dogfood definition/root contract without replacing or
 activating the V2 proof.
+The VNext `issue-validator` and `demo-orchestrator` profiles consume the
+canonical Dispatch execution context and use the narrow
+`submit_task_result` tool; they do not expose a generic GitHub write tool.
 Validation uses only the two criteria in
 `.github/workgraph/profiles/issue-validation/new-issue-default.md`.
 
-The dependency-free Node MCP exposes ten narrow tools: the existing seven for
-verified Result inspection, expected-state transition, Assignment, lease-bound
-revisable Result, Acceptance, parent info request, and feedback, plus
+The dependency-free Node MCP exposes ten narrow tools: existing paths for
+verified legacy Result inspection, expected-state transition, Assignment,
+Acceptance, parent info request, and feedback; the breaking VNext-only
+`submit_task_result`; plus
 create-only workflow Assignment and Result paths and a prior-Result-bound
-workflow info request. Before every Result write and parent info request, it
-locally checks the Source-issued Lease deadline and calls the authenticated
-read-only exact-active-Lease validation endpoint.
+workflow info request. Before staged workflow Result writes and parent info requests, it locally
+checks the Source-issued Lease deadline and calls the authenticated read-only
+exact-active-Lease validation endpoint. VNext `submit_task_result` instead
+verifies its canonical Dispatch and Lease artifact chain.
 It does not allocate, persist, release, poll, or retry Leases.
 A Result never closes a task; Acceptance is separate and binds the exact
 current Result comment ID and SHA-256 body digest. Source-computed `bodyDigest`

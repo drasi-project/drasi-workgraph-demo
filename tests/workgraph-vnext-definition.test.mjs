@@ -334,13 +334,13 @@ test("runtime instances must pin the exact immutable root definition", async () 
 test("planned live proof inputs remain deterministic and write-disabled", async () => {
   const inputs = JSON.parse(await read(LIVE_PROOF_INPUTS_PATH));
 
-  assert.equal(inputs.resultIndexStateVersion, 5);
+  assert.equal(inputs.resultIndexStateVersion, 6);
   assert.deepEqual(inputs.runtimeContract, {
-    dogfoodCommit: "8f27db172906c022fbf3471a745cab8b891fd9ef",
-    coreCommit: "957961c0e4a6137d3d89cbdc0fb38055024e17ea",
+    dogfoodCommit: "a14a210d785604a78b72c663e0d655ce49e8f75c",
+    coreCommit: "7be2e1bd895196c1e4fbf99a23dbbcbdb4abc8e8",
     demoCommit: "44e308c547d5471b83e5604eda28440ea855dc52",
     queryInventory: { lifecycle: 10, detail: 6, total: 16 },
-    stateStorePath: "data/workgraph-vnext-v5.redb",
+    stateStorePath: "data/workgraph-vnext-v6.redb",
     serverConfig: "server-config-vnext.yaml",
     expectedDryRun: {
       mode: "dry-run",
@@ -385,7 +385,13 @@ test("planned live proof inputs remain deterministic and write-disabled", async 
     ],
   );
   assert.equal(inputs.activation.githubWritesAllowed, false);
-  assert.equal(inputs.activation.clearStateVersionsBefore, 5);
+  assert.equal(
+    inputs.activation.resetStateStorePath,
+    "data/workgraph-vnext-v6.redb",
+  );
+  assert.deepEqual(inputs.activation.preserveStateStorePaths, [
+    "data/workgraph-vnext-v5.redb",
+  ]);
 });
 
 test("offline proof builder emits exact task-first Source documents", async () => {

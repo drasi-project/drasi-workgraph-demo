@@ -1,8 +1,11 @@
 # WorkGraph agent and reporter contract
 
 This is a closed, breaking contract for `drasi-project/drasi-workgraph-demo`.
-Task Assignment and Result comments retain their v1 protocol. The repository
-workflow uses a dedicated `WorkGraphInfoRequest/v2` correlation marker. There
+The VNext `submit_task_result` path uses the definition-driven V3 task and
+Dispatch contract. The staged workflow retains its V2 task manifest and v1
+Result marker, and the legacy inspection/transition tools retain their v1
+parsers. The repository workflow uses a dedicated `WorkGraphInfoRequest/v2`
+correlation marker. There
 are no aliases, migration parsers, arbitrary repository selectors, raw comment
 bodies, generic mutation tools, or GitHub Lease comments.
 
@@ -101,6 +104,9 @@ agents:
   - agentId: issue-validation-evaluator
     slots: 1
     leaseDuration: PT30M
+  - agentId: demo-orchestrator
+    slots: 1
+    leaseDuration: PT15M
 ```
 
 The Assignment reporter fetches this file from the fixed repository's `main`
@@ -140,7 +146,7 @@ The only field is `agentId`. Mapping is fixed:
 repository capacity config. An identical Assignment reconciles; malformed,
 foreign, conflicting, or stale state fails closed.
 
-### Source-issued active Lease
+### Legacy/staged Source-issued active Lease
 
 A Lease is synthetic Source graph state, not a GitHub comment protocol. The
 active dispatch envelope contains exactly:
@@ -158,11 +164,13 @@ active dispatch envelope contains exactly:
 }
 ```
 
-Agents pass the unchanged `leaseId`, `assignmentCommentNodeId`, `agentId`, and
-`slotId`; reporter tool arguments call `taskNodeId` `taskIssueNodeId`. Agents do
-not relay `acquiredAt` or `expiresAt`, because model serialization can alter
-timestamp precision. The reporter obtains the authoritative timestamps from
-Source, requires `acquiredAt < expiresAt`, and rejects an expired Lease.
+Legacy and staged workflow agents pass the unchanged `leaseId`,
+`assignmentCommentNodeId`, `agentId`, and `slotId`; reporter tool arguments call
+`taskNodeId` `taskIssueNodeId`. Those agents do not relay `acquiredAt` or
+`expiresAt`, because model serialization can alter timestamp precision. Their
+reporter paths obtain the authoritative timestamps from Source, require
+`acquiredAt < expiresAt`, and reject an expired Lease. VNext
+`submit_task_result` instead verifies the canonical Dispatch artifact.
 
 Immediately before each irreversible GitHub Result POST/PATCH or parent-info
 POST, the reporter sends:
@@ -197,21 +205,28 @@ deadline is the accepted prototype boundary. Atomic coordination across the
 subsequent GitHub write is out of scope; Source remains authoritative when it
 ingests the Result.
 
-### `WorkGraphTaskResult/v1`
+### VNext `WorkGraphTaskResult/v1`
 
-Result fields are exactly `taskType`, `leaseId`, `outcome`, `summary`, and
-task-specific `result`. There is no `assignmentId` or wire `bodyDigest`.
+`submit_task_result` is a breaking VNext-only path. Its exact arguments are
+`taskLocator`, `taskId`, `dispatchId`, `leaseId`, `outcome`, and `output`.
+Callers never supply `resultId`. The reporter derives:
+
+`workgraph-vnext:result:sha256:` + SHA-256 of the concatenated, length-framed
+UTF-8 bytes for `taskId`, `dispatchId`, and `leaseId`, in that order. Each
+length is an unsigned 64-bit big-endian byte count.
 
 ````text
 WorkGraphTaskResult/v1
 
 ```json
 {
-  "taskType": "validate-issue",
+  "resultId": "workgraph-vnext:result:sha256:<64 lowercase hex>",
+  "taskId": "task-1",
+  "dispatchId": "dispatch-1",
   "leaseId": "lease-001",
   "outcome": "succeeded",
-  "summary": "Validated both required fields.",
-  "result": {
+  "output": {
+    "summary": "Validated both required fields.",
     "criteria": [
       {
         "criterion": "The Issue has a non-empty title",
@@ -229,25 +244,21 @@ WorkGraphTaskResult/v1
 ```
 ````
 
-A request-info Result has `taskType: "request-info"` and exactly
-`result.requestCommentNodeId`, identifying the configured-author parent
-request. Outcome is `succeeded`, `failed`, or `blocked`.
+Outcome is exactly `succeeded` or `failed`; `output` is any bounded JSON value.
+The reporter verifies the exact repository/Issue locator, open canonical
+`WorkGraphTask/v3`, launcher and reporter identities, native parent when
+present, and one configured-author canonical `WorkGraphTaskDispatch/v1` whose
+task, Dispatch, and Lease identities match the call. It POSTs one canonical
+Result, reconciles only identical bytes for the derived `resultId`, and rejects
+malformed, foreign, duplicate, or conflicting artifacts. It never PATCHes a
+VNext Result, changes Issue state, closes the task, or calls the legacy Source
+Lease-validation endpoint.
 
-`submit_task_result` performs all existing read-only GitHub reconciliation
-first: repository, task type, launcher, native parent, exact Assignment,
-configured authors, Result, Feedback, Acceptance, destination, and revision
-safety. An exact existing Result returns idempotently without Source
-validation. For a write, it rechecks GitHub state, validates Source immediately
-before the GitHub POST/PATCH, and performs no intervening work except issuing
-that request.
+A new VNext Result requires the task Issue to be open. After the runtime closes
+the task, an exact retry still reconciles the existing canonical Result; it
+cannot create or revise one.
 
-The reporter POSTs when no Result exists. It PATCHes the canonical Result only
-for exact digest-bound Feedback followed by a new active Lease. The semantic
-Result must materially change. It rejects malformed, foreign, multiple,
-accepted, or conflicting Results. A Result never changes Issue state and never
-closes the task.
-
-### Feedback and Acceptance
+### Legacy feedback and Acceptance
 
 `WorkGraphTaskFeedback/v1` binds actionable feedback to the exact current
 Result comment ID and SHA-256 body digest. `submit_task_feedback` posts or
@@ -282,8 +293,7 @@ submit_task_feedback
 node ID, and reporter-computed SHA-256 digest. `post_parent_info_request`
 preserves task/parent/type/author/Assignment/Result/Feedback/Acceptance
 reconciliation, validates Source immediately before the parent POST, and
-reconciles an identical existing request without validation. Its later
-`submit_task_result` call independently validates Source again.
+reconciles an identical existing request without validation.
 
 `post_workflow_parent_info_request` independently validates the open
 `request-info` manifest and Assignment, the same-run and same-generation closed
@@ -320,8 +330,9 @@ narrow tools:
 
 | Profile | Additional identities | Source Lease settings |
 | --- | --- | --- |
+| `demo-orchestrator` | Assignment, Result | No |
 | `issue-assigner` | Assignment | No |
-| `issue-validator` | Assignment, Result, Feedback | Yes |
+| `issue-validator` | Assignment, Result | No |
 | `issue-info-requester` | Assignment, Result, Info | Yes |
 | `workgraph-result-acceptor` | Assignment, Result, Acceptance, Feedback | No |
 | `issue-orchestrator` | Assignment, Result, Acceptance, Orchestrator, Info, Feedback | No |
@@ -330,9 +341,9 @@ narrow tools:
 | `issue-validation-evaluator` | Assignment, Result | Yes |
 
 Tokens use `${{ secrets.* }}` references. Type and identity values use
-`${{ vars.* }}` references. The reporter loads configuration per tool and, for
-Result, per initial/request-info/feedback-revision path. A missing required
-value fails before GitHub access; unrelated values are not required.
+`${{ vars.* }}` references. The reporter loads configuration per tool. A
+missing required value fails before GitHub access; unrelated values are not
+required.
 
 The URL must be HTTPS, have no embedded credentials, query, or fragment, and end in
 `/lease/validate`. Tests alone may use loopback HTTP. Reporter identity values

@@ -37,7 +37,7 @@ publishing a second competing workflow definition.
 no-write inputs for the frozen replay order, recursive lifecycle, two executor
 slots, exact good/bad Result chains and evaluation routes, human Request
 Info/resume, and restart reconciliation boundaries. It pins
-`RESULT_INDEX_STATE_VERSION=5`; any isolated runtime prepared from older query
+`RESULT_INDEX_STATE_VERSION=6`; any isolated runtime prepared from older query
 state must clear that state before use.
 
 ## Frozen provenance
@@ -54,9 +54,9 @@ The two canonical bodies are copied without modification from:
 The final write-disabled runtime checkpoint pins:
 
 - Dogfood:
-  `drasi-project/drasi-dogfooding@8f27db172906c022fbf3471a745cab8b891fd9ef`
+  `drasi-project/drasi-dogfooding@a14a210d785604a78b72c663e0d655ce49e8f75c`
 - Core:
-  `drasi-project/drasi-core@957961c0e4a6137d3d89cbdc0fb38055024e17ea`
+  `drasi-project/drasi-core@7be2e1bd895196c1e4fbf99a23dbbcbdb4abc8e8`
 - Demo definition checkpoint:
   `drasi-project/drasi-workgraph-demo@44e308c547d5471b83e5604eda28440ea855dc52`
 
@@ -66,9 +66,9 @@ Canonical Dogfood paths and Git blob IDs:
 | --- | --- | --- |
 | Definition | `git-workgraph/plugins/github-workgraph-vnext-source/fixtures/workgraph-vnext-live-proof-definition.body` | `6b357e0609a1b2fb1e75a94bed536c0ab095fa80` |
 | Root task | `git-workgraph/plugins/github-workgraph-vnext-source/fixtures/workgraph-vnext-live-proof-root-task.body` | `291df48d878b889210f44c1915711244f1a9c13a` |
-| Kernel contract | `git-workgraph/plugins/workgraph-kernel/src/lib.rs` | `34c4feb227d47493f24588e524cc846ae34962bc` |
-| VNext Source | `git-workgraph/plugins/github-workgraph-vnext-source/src/lib.rs` | `0d1b6308c586a3d37e4f4085ff901b2f064011cb` |
-| VNext Reaction | `git-workgraph/plugins/workgraph-vnext-reaction/src/lib.rs` | `eb045e3b23feb887a5029e2a808bfdb214e7aee3` |
+| Kernel contract | `git-workgraph/plugins/workgraph-kernel/src/lib.rs` | `d2780ccec20dc7d4505a98a9ecd54a660608cb78` |
+| VNext Source | `git-workgraph/plugins/github-workgraph-vnext-source/src/lib.rs` | `322c03db9cae15442d12dd8ce5647e0470c71e65` |
+| VNext Reaction | `git-workgraph/plugins/workgraph-vnext-reaction/src/lib.rs` | `3e52250699a64bbda3d257d43cc57a21890b4110` |
 
 The canonical definition is 846 bytes with SHA-256
 `1cd5b13c8017395dabbf25eb75465034cd54b6545be7d9fe889def1909aa66c7`.
@@ -76,6 +76,12 @@ The canonical root is 384 bytes with SHA-256
 `1cc6dfb17b655e26d53e4ade591b56f7b3adf693b01320bc8e371b150c6d936c`.
 Tests guard both byte streams. Provenance remains external because changing a
 body would break fixture compatibility.
+
+The prior v5 proof-input metadata is preserved by its SHA-256
+`60f58831f8422665b2a58ceaeb53d50de8ef5d56d04b4d7c4b8f9797d77b23c6`.
+The v6 metadata in this checkpoint has SHA-256
+`0d9f36b0abd364d0ed1cb06e34ad5574c6db72be2545329bbe3818801bd394f0`;
+only runtime pins and reset expectations changed.
 
 ## Local validation
 
@@ -90,7 +96,7 @@ node scripts/prepare-workgraph-vnext-proof.mjs
 The last command performs no network or filesystem writes. It resolves the two
 tracked body paths and prints the exact task-first `TaskDocument` revision 1 and
 `DefinitionDocument` revision 2 Source input array. It validates both canonical
-bodies, their exact definition pin, `RESULT_INDEX_STATE_VERSION=5`, the expected
+bodies, their exact definition pin, `RESULT_INDEX_STATE_VERSION=6`, the expected
 initial `FORK`, and the write-disabled effect gate before producing output.
 It also requires exact Source document schemas/metadata and the frozen local
 paths, sizes, and SHA-256 body hashes, so a different canonical document cannot
@@ -125,17 +131,42 @@ Its exact terminal result is:
 
 The pinned runtime inventory is exactly 16 queries: 10 lifecycle and 6 detail.
 The Demo does not define, copy, or alter those Dogfood queries.
+The reviewed v6 release artifacts built from the pinned sources have SHA-256
+`4e5b44ba5b560aec22f38b244478f22eece6e00af7c3a72e030bb1ec7850a65e`
+for Source and
+`ff09429a1c7183769a7a455ccf236e819d82ccbbed4d65ccf63718f89dca5072`
+for Reaction. They are provenance only and are not installed or activated by
+this repository.
+
+## VNext executors
+
+`.github/workgraph/agents.yaml` registers both permitted executor identities in
+the frozen definition: `issue-validator` for the leaf and `demo-orchestrator`
+for the root. Their custom-agent profiles require the canonical
+`WorkGraphTaskDispatch/v1` body and the exact execution context containing the
+runtime task, static task definition, trusted task locator, direct-child
+Results, and direct-child Evaluations.
+
+Both profiles call only the narrow `submit_task_result` reporter path for
+writes. They pass the trusted task Issue locator and unchanged
+`taskId`/`dispatchId`/`leaseId`, plus `outcome` and `output`; the reporter owns
+the deterministic `resultId`, verifies the current V3 task and Dispatch chain,
+and writes or reconciles the exact canonical VNext Result. Legacy Lease and
+Result envelopes are rejected.
 
 ## Disabled runtime boundary
 
 The fresh runtime uses only the dedicated
-`git-workgraph/data/workgraph-vnext-v5.redb` state namespace. Remove that whole
-file before a fresh proof; clearing only an allocator key is invalid. From the
-pinned Dogfood `git-workgraph/` directory, the disabled invocation is:
+`git-workgraph/data/workgraph-vnext-v6.redb` state namespace. Preserve the v5
+file byte-for-byte as prior proof evidence. Before the first v6 replay, remove
+only the whole v6 file; this resets its allocator and complete Source namespace,
+including Source WAL and `vnext-origin:*` dedupe/pending records. Partial reset
+or migration is invalid. From the pinned Dogfood `git-workgraph/` directory,
+the disabled invocation is:
 
 ```bash
-rm -f data/workgraph-vnext-v5.redb
-RESULT_INDEX_STATE_VERSION=5 \
+rm -f data/workgraph-vnext-v6.redb
+RESULT_INDEX_STATE_VERSION=6 \
   /absolute/path/to/drasi-server --config server-config-vnext.yaml
 ```
 
