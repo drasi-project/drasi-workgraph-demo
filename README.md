@@ -35,10 +35,10 @@ canonical Dispatch execution context and use the narrow
 Validation uses only the two criteria in
 `.github/workgraph/profiles/issue-validation/new-issue-default.md`.
 
-The dependency-free Node MCP exposes ten narrow tools: existing paths for
+The dependency-free Node MCP exposes eleven narrow tools: existing paths for
 verified legacy Result inspection, expected-state transition, Assignment,
-Acceptance, parent info request, and feedback; the breaking VNext-only
-`submit_task_result`; plus
+Acceptance, parent info request, and feedback; the VNext-only
+`get_vnext_principal_issue` and `submit_task_result`; plus
 create-only workflow Assignment and Result paths and a prior-Result-bound
 workflow info request. Before staged workflow Result writes and parent info requests, it locally
 checks the Source-issued Lease deadline and calls the authenticated read-only

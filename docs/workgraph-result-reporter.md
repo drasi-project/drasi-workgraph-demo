@@ -207,6 +207,23 @@ ingests the Result.
 
 ### VNext `WorkGraphTaskResult/v1`
 
+`get_vnext_principal_issue` is the read-only admission bridge used by
+`issue-validator`. Its exact arguments are `taskLocator` and `taskId`. It
+requires the locator's immediate native parent to be the launcher-authored,
+open, canonical `demo-root-v1` task in the same run and immutable definition,
+and requires that root to have no native parent. The root inputs must contain
+exactly `proofMode: isolated` and `principalIssue`; the latter has exactly
+repository owner/name/node ID, Issue number/node ID, and
+`contentDigest: sha256:<64 lowercase hex>`.
+
+The content digest is SHA-256 over the concatenated length-framed UTF-8 bytes of
+`workgraph-vnext-principal-content-v1`, exact title, and exact body, in that
+order. Each frame begins with an unsigned 64-bit big-endian byte count. A null
+GitHub body normalizes once to empty UTF-8; CRLF bytes are preserved. The tool
+fetches the ordinary principal Issue with the same authenticated GitHub client,
+rejects a missing, closed, typed, mislocated, or changed Issue, and returns its
+verified current title and normalized body. It performs no write.
+
 `submit_task_result` is a breaking VNext-only path. Its exact arguments are
 `taskLocator`, `taskId`, `dispatchId`, `leaseId`, `outcome`, and `output`.
 Callers never supply `resultId`. The reporter derives:

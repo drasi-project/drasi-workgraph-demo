@@ -22,6 +22,11 @@ const OWNER = "drasi-project";
 const REPO = "drasi-workgraph-demo";
 const REPOSITORY_URL = `${API}/repos/${OWNER}/${REPO}`;
 const TASK_TYPE_NAME = "WorkGraphTask";
+const VNEXT_ROOT_TASK_DEFINITION_ID = "demo-root-v1";
+const VNEXT_VALIDATOR_TASK_DEFINITION_ID = "demo-validate-v1";
+const VNEXT_WORKFLOW_DEFINITION_ID = "demo-issue-lifecycle";
+const VNEXT_WORKFLOW_DEFINITION_VERSION = "v1";
+const VNEXT_WORKFLOW_DEFINITION_DIGEST = `sha256:${"a".repeat(64)}`;
 const TASK_MARKER = "WorkGraphTask/v1";
 const ASSIGNMENT_MARKER = "WorkGraphTaskAssignment/v1";
 const RESULT_MARKER = "WorkGraphTaskResult/v1";
@@ -440,21 +445,83 @@ function parseVNextDispatch(body) {
   }
 }
 
-export function deriveVNextTaskResultId(taskId, dispatchId, leaseId) {
+function framedSha256(parts) {
   const digest = createHash("sha256");
-  for (const [label, value] of [
-    ["taskId", taskId],
-    ["dispatchId", dispatchId],
-    ["leaseId", leaseId],
-  ]) {
-    opaque(value, label);
+  for (const [label, value] of parts) {
+    if (typeof value !== "string") {
+      throw new WorkGraphError(`${label} must be a string`);
+    }
     const bytes = Buffer.from(value, "utf8");
     const frame = Buffer.alloc(8);
     frame.writeBigUInt64BE(BigInt(bytes.length));
     digest.update(frame);
     digest.update(bytes);
   }
-  return `workgraph-vnext:result:sha256:${digest.digest("hex")}`;
+  return digest.digest("hex");
+}
+
+export function deriveVNextTaskResultId(taskId, dispatchId, leaseId) {
+  for (const [label, value] of [
+    ["taskId", taskId],
+    ["dispatchId", dispatchId],
+    ["leaseId", leaseId],
+  ]) {
+    opaque(value, label);
+  }
+  const digest = framedSha256([
+    ["taskId", taskId],
+    ["dispatchId", dispatchId],
+    ["leaseId", leaseId],
+  ]);
+  return `workgraph-vnext:result:sha256:${digest}`;
+}
+
+export function deriveVNextPrincipalContentDigest(title, body) {
+  if (typeof title !== "string") {
+    throw new WorkGraphError("principal Issue title must be a string");
+  }
+  if (body !== null && typeof body !== "string") {
+    throw new WorkGraphError("principal Issue body must be a string or null");
+  }
+  const digest = framedSha256([
+    ["principal content domain", "workgraph-vnext-principal-content-v1"],
+    ["principal title", title],
+    ["principal body", body ?? ""],
+  ]);
+  return `sha256:${digest}`;
+}
+
+export function deriveVNextWorkflowRunId(
+  repositoryNodeId,
+  principalIssueNodeId,
+  workflowDefinitionId,
+  workflowDefinitionVersion,
+  workflowDefinitionDigest,
+) {
+  const digest = framedSha256([
+    ["repositoryNodeId", repositoryNodeId],
+    ["principalIssueNodeId", principalIssueNodeId],
+    ["workflowDefinitionId", workflowDefinitionId],
+    ["workflowDefinitionVersion", workflowDefinitionVersion],
+    ["workflowDefinitionDigest", workflowDefinitionDigest],
+  ]);
+  return `workgraph-vnext:run:sha256:${digest}`;
+}
+
+export function deriveVNextRootTaskId(workflowRunId, rootTaskDefinitionId) {
+  const digest = framedSha256([
+    ["workflowRunId", workflowRunId],
+    ["rootTaskDefinitionId", rootTaskDefinitionId],
+  ]);
+  return `wgt-${digest.slice(0, 60)}`;
+}
+
+export function deriveVNextAdmissionId(workflowRunId, rootTaskId) {
+  const digest = framedSha256([
+    ["workflowRunId", workflowRunId],
+    ["rootTaskId", rootTaskId],
+  ]);
+  return `workgraph-vnext:admission:sha256:${digest}`;
 }
 
 function normalizeVNextResult(value) {
@@ -823,7 +890,10 @@ function config(toolName, args) {
     identities = ["launcherId", "assignmentId", "resultId", "acceptanceId"];
   } else if (toolName === "submit_task_feedback") {
     identities = ["launcherId", "assignmentId", "resultId", "feedbackId"];
-  } else if (toolName === "submit_task_result") {
+  } else if (
+    toolName === "get_vnext_principal_issue" ||
+    toolName === "submit_task_result"
+  ) {
     identities = ["launcherId", "assignmentId", "resultId"];
   } else if (toolName === "submit_workflow_task_result") {
     identities = ["launcherId", "assignmentId", "resultId"];
@@ -1589,13 +1659,7 @@ async function validateSourceLease(input, taskPayload, cfg) {
   return snapshot;
 }
 
-async function submitResult(input, github, cfg) {
-  exact(
-    input,
-    ["taskLocator", "taskId", "dispatchId", "leaseId", "outcome", "output"],
-    "arguments",
-  );
-  const locator = input.taskLocator;
+function validateVNextTaskLocator(locator, { requireParent = false } = {}) {
   const locatorKeys = [
     "repositoryOwner",
     "repositoryName",
@@ -1614,6 +1678,9 @@ async function submitResult(input, github, cfg) {
     ],
     "arguments.taskLocator",
   );
+  if (requireParent && !hasParent) {
+    throw new WorkGraphError("taskLocator must identify the immediate typed root parent");
+  }
   if (
     locator.repositoryOwner !== OWNER ||
     locator.repositoryName !== REPO
@@ -1633,6 +1700,209 @@ async function submitResult(input, github, cfg) {
       throw new WorkGraphError("taskLocator task and parent must differ");
     }
   }
+  return hasParent;
+}
+
+function parseCurrentVNextTask(issue, expected, cfg, label) {
+  if (
+    !object(issue) ||
+    issue.number !== expected.issueNumber ||
+    issue.node_id !== expected.issueNodeId ||
+    issue.repository_url !== REPOSITORY_URL ||
+    issue.state !== "open" ||
+    issue.type?.name !== TASK_TYPE_NAME ||
+    issue.type?.node_id !== cfg.taskTypeId ||
+    issue.user?.id !== cfg.launcherId
+  ) {
+    throw new WorkGraphError(`${label} is not the current trusted open WorkGraphTask`);
+  }
+  try {
+    return parseRuntimeTask(issue.body);
+  } catch {
+    throw new WorkGraphError(`${label} body is not canonical WorkGraphTask/v3`);
+  }
+}
+
+function validatePrincipalIssueInput(value, repositoryNodeId) {
+  exact(
+    value,
+    [
+      "repositoryOwner",
+      "repositoryName",
+      "repositoryNodeId",
+      "issueNumber",
+      "issueNodeId",
+      "contentDigest",
+    ],
+    "root resolvedInputs.principalIssue",
+  );
+  if (
+    value.repositoryOwner !== OWNER ||
+    value.repositoryName !== REPO ||
+    value.repositoryNodeId !== repositoryNodeId
+  ) {
+    throw new WorkGraphError("principalIssue repository does not match the task repository");
+  }
+  issueNumber(value.issueNumber, "principalIssue.issueNumber");
+  identifier(value.issueNodeId, "principalIssue.issueNodeId");
+  if (
+    typeof value.contentDigest !== "string" ||
+    !/^sha256:[0-9a-f]{64}$/.test(value.contentDigest)
+  ) {
+    throw new WorkGraphError("principalIssue.contentDigest must be sha256:<64 lowercase hex>");
+  }
+  return value;
+}
+
+async function getVNextPrincipalIssue(input, github, cfg) {
+  exact(input, ["taskLocator", "taskId"], "arguments");
+  const locator = input.taskLocator;
+  validateVNextTaskLocator(locator, { requireParent: true });
+  opaque(input.taskId, "arguments.taskId");
+
+  const [identity, repository, taskIssue, linkedRoot, rootIssue, rootParent] =
+    await Promise.all([
+      github.identity(),
+      github.repository(),
+      github.issue(locator.issueNumber),
+      github.parent(locator.issueNumber),
+      github.issue(locator.parentIssueNumber),
+      github.optionalParent(locator.parentIssueNumber),
+    ]);
+  verifyIdentity(identity, cfg.resultId, "Result reporter");
+  if (
+    !object(repository) ||
+    repository.name !== REPO ||
+    repository.owner?.login !== OWNER ||
+    repository.node_id !== locator.repositoryNodeId
+  ) {
+    throw new WorkGraphError("taskLocator repository does not match GitHub");
+  }
+  const task = parseCurrentVNextTask(
+    taskIssue,
+    { issueNumber: locator.issueNumber, issueNodeId: locator.issueNodeId },
+    cfg,
+    "validator task Issue",
+  );
+  if (
+    task.taskId !== input.taskId ||
+    task.workflowDefinitionId !== VNEXT_WORKFLOW_DEFINITION_ID ||
+    task.workflowDefinitionVersion !== VNEXT_WORKFLOW_DEFINITION_VERSION ||
+    task.workflowDefinitionDigest !== VNEXT_WORKFLOW_DEFINITION_DIGEST ||
+    task.taskDefinitionId !== VNEXT_VALIDATOR_TASK_DEFINITION_ID
+  ) {
+    throw new WorkGraphError("validator task identity does not match the VNext admission workflow");
+  }
+  exact(task.resolvedInputs, ["validationProfile"], "validator task resolvedInputs");
+  if (task.resolvedInputs.validationProfile !== "new-issue-default") {
+    throw new WorkGraphError("validator task resolvedInputs are not canonical");
+  }
+  if (
+    !object(linkedRoot) ||
+    linkedRoot.number !== locator.parentIssueNumber ||
+    linkedRoot.node_id !== locator.parentIssueNodeId ||
+    linkedRoot.body !== rootIssue?.body
+  ) {
+    throw new WorkGraphError("validator task immediate parent is not the requested root");
+  }
+  const root = parseCurrentVNextTask(
+    rootIssue,
+    {
+      issueNumber: locator.parentIssueNumber,
+      issueNodeId: locator.parentIssueNodeId,
+    },
+    cfg,
+    "root task Issue",
+  );
+  if (
+    rootParent !== null ||
+    root.taskDefinitionId !== VNEXT_ROOT_TASK_DEFINITION_ID ||
+    root.workflowRunId !== task.workflowRunId ||
+    root.workflowDefinitionId !== task.workflowDefinitionId ||
+    root.workflowDefinitionVersion !== task.workflowDefinitionVersion ||
+    root.workflowDefinitionDigest !== task.workflowDefinitionDigest
+  ) {
+    throw new WorkGraphError("validator task ancestry is not the canonical parentless VNext root");
+  }
+  exact(root.resolvedInputs, ["principalIssue", "proofMode"], "root resolvedInputs");
+  if (root.resolvedInputs.proofMode !== "isolated") {
+    throw new WorkGraphError("root resolvedInputs.proofMode is not isolated");
+  }
+  const principalInput = validatePrincipalIssueInput(
+    root.resolvedInputs.principalIssue,
+    locator.repositoryNodeId,
+  );
+  const expectedWorkflowRunId = deriveVNextWorkflowRunId(
+    principalInput.repositoryNodeId,
+    principalInput.issueNodeId,
+    root.workflowDefinitionId,
+    root.workflowDefinitionVersion,
+    root.workflowDefinitionDigest,
+  );
+  const expectedRootTaskId = deriveVNextRootTaskId(
+    expectedWorkflowRunId,
+    root.taskDefinitionId,
+  );
+  if (
+    root.workflowRunId !== expectedWorkflowRunId ||
+    root.taskId !== expectedRootTaskId
+  ) {
+    throw new WorkGraphError("root task does not match deterministic admission identity");
+  }
+  if (
+    principalInput.issueNumber === locator.issueNumber ||
+    principalInput.issueNumber === locator.parentIssueNumber ||
+    principalInput.issueNodeId === locator.issueNodeId ||
+    principalInput.issueNodeId === locator.parentIssueNodeId
+  ) {
+    throw new WorkGraphError("principalIssue must differ from the validator and root tasks");
+  }
+
+  const principal = await github.issue(principalInput.issueNumber);
+  if (
+    !object(principal) ||
+    principal.number !== principalInput.issueNumber ||
+    principal.node_id !== principalInput.issueNodeId ||
+    principal.repository_url !== REPOSITORY_URL ||
+    principal.state !== "open" ||
+    principal.pull_request ||
+    principal.type?.name === TASK_TYPE_NAME ||
+    principal.type?.node_id === cfg.taskTypeId ||
+    typeof principal.title !== "string" ||
+    (principal.body !== null && typeof principal.body !== "string")
+  ) {
+    throw new WorkGraphError("principalIssue is missing, stale, or not an open ordinary Issue");
+  }
+  const body = principal.body ?? "";
+  const contentDigest = deriveVNextPrincipalContentDigest(principal.title, body);
+  if (contentDigest !== principalInput.contentDigest) {
+    throw new WorkGraphError("principalIssue title or body changed after admission");
+  }
+  return {
+    taskId: task.taskId,
+    rootTaskId: root.taskId,
+    workflowRunId: root.workflowRunId,
+    principalIssue: {
+      repositoryOwner: principalInput.repositoryOwner,
+      repositoryName: principalInput.repositoryName,
+      repositoryNodeId: principalInput.repositoryNodeId,
+      issueNumber: principalInput.issueNumber,
+      issueNodeId: principalInput.issueNodeId,
+      contentDigest,
+      title: principal.title,
+      body,
+    },
+  };
+}
+
+async function submitResult(input, github, cfg) {
+  exact(
+    input,
+    ["taskLocator", "taskId", "dispatchId", "leaseId", "outcome", "output"],
+    "arguments",
+  );
+  const locator = input.taskLocator;
+  const hasParent = validateVNextTaskLocator(locator);
   for (const key of ["taskId", "dispatchId", "leaseId"]) {
     opaque(input[key], `arguments.${key}`);
   }
@@ -3078,6 +3348,9 @@ const vnextTaskLocatorSchema = schema(
     "issueNodeId",
   ],
 );
+const vnextChildTaskLocatorSchema = schema(
+  vnextTaskLocatorSchema.properties,
+);
 
 function schema(properties, required = Object.keys(properties)) {
   return {
@@ -3089,6 +3362,15 @@ function schema(properties, required = Object.keys(properties)) {
 }
 
 const tools = [
+  {
+    name: "get_vnext_principal_issue",
+    description:
+      "Return the exact ordinary principal Issue after verifying the typed validator/root ancestry and admission snapshot digest.",
+    inputSchema: schema({
+      taskLocator: vnextChildTaskLocatorSchema,
+      taskId: { type: "string", minLength: 1, maxLength: MAX_ID },
+    }),
+  },
   {
     name: "get_result_snapshot",
     description:
@@ -3236,6 +3518,9 @@ const tools = [
 async function callTool(name, args) {
   const cfg = config(name, args);
   const github = new GitHub(cfg);
+  if (name === "get_vnext_principal_issue") {
+    return getVNextPrincipalIssue(args, github, cfg);
+  }
   if (name === "get_result_snapshot") return getResultSnapshot(args, github, cfg);
   if (name === "submit_task_assignment") return submitAssignment(args, github, cfg);
   if (name === "submit_task_result") return submitResult(args, github, cfg);

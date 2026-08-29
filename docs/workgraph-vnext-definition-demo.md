@@ -154,6 +154,28 @@ the deterministic `resultId`, verifies the current V3 task and Dispatch chain,
 and writes or reconciles the exact canonical VNext Result. Legacy Lease and
 Result envelopes are rejected.
 
+For live admission, an ordinary open Issue with the exact `status:new` label
+remains the untouched principal Issue. Dogfood creates a separate, parentless,
+launcher-authored `WorkGraphTask/v3` root; typed descendants retain their normal
+task-to-task native ancestry. The root's dynamic
+`resolvedInputs.principalIssue` contains the immutable repository locator and a
+snapshot digest, never a copy of the user's title or body. The digest is SHA-256
+over three ordered, unsigned-64-bit-big-endian-length-framed UTF-8 values:
+`workgraph-vnext-principal-content-v1`, the exact title, and the exact body
+(GitHub `null` normalizes once to the empty string). CRLF bytes are preserved.
+The workflow run ID frames repository node ID, principal Issue node ID,
+definition ID, version, and digest. The root task ID frames that run ID and
+`demo-root-v1`; the admission ID frames the run ID and root task ID. All use
+the same length framing and stable VNext prefixes.
+
+Before evaluating a validation leaf, `get_vnext_principal_issue` verifies its
+immediate typed root, the root's parentless topology and definition/run
+identity, the exact principal locator, and the current principal title/body
+digest. The validator evaluates only the returned ordinary Issue fields and
+fails closed if the principal is missing, closed, retyped as a WorkGraph task,
+reparented through a wrong root, or changed since admission. Result reporting
+continues to use the unchanged VNext arguments.
+
 ## Disabled runtime boundary
 
 The fresh runtime uses only the dedicated

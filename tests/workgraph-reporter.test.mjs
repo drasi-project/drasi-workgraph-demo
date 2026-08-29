@@ -10,7 +10,11 @@ import {
   formatAcceptance,
   formatAssignment,
   formatFeedback,
+  deriveVNextAdmissionId,
+  deriveVNextPrincipalContentDigest,
+  deriveVNextRootTaskId,
   deriveVNextTaskResultId,
+  deriveVNextWorkflowRunId,
   formatVNextTaskResult,
   parseAgentsYaml,
   formatTask,
@@ -46,6 +50,18 @@ const PARENT_NODE = "I_parent";
 const TASK_NUMBER = 17;
 const TASK_NODE = "I_task";
 const REPOSITORY_NODE = "R_demo";
+const PRINCIPAL_NUMBER = 161;
+const PRINCIPAL_NODE = "I_demo_161";
+const PRINCIPAL_TITLE = "Demo issue 🚀";
+const PRINCIPAL_BODY = "Line 1\r\nLine 2\n";
+const PRINCIPAL_CONTENT_DIGEST =
+  "sha256:84cdbe803b7880c398508c1f3ac62d157e2cbb60d9bc7fae63d56dba28e05750";
+const ADMISSION_WORKFLOW_RUN_ID =
+  "workgraph-vnext:run:sha256:73a4fabc01739d001b856f622d2192cd1b4ae500a25ba044829a6505edee8aa1";
+const ADMISSION_ROOT_TASK_ID =
+  "wgt-f0e9789eb47ad9bf308d29a0183a5206baccf6dab07def899d60b6bfab7d";
+const ADMISSION_ID =
+  "workgraph-vnext:admission:sha256:7384ba74027ee09914caf20dc41b015b01b51f4f4da52900a507c253e3435a82";
 const CRITERIA = [
   "The Issue has a non-empty title",
   "The Issue body is present",
@@ -323,6 +339,69 @@ function makeVNextTask(options = {}, runtimeTask = VNEXT_TASK) {
   const task = makeTask(options);
   task.body = formatRuntimeTask(runtimeTask);
   return task;
+}
+
+function makePrincipalIssue(overrides = {}) {
+  return {
+    id: 161,
+    number: PRINCIPAL_NUMBER,
+    node_id: PRINCIPAL_NODE,
+    state: "open",
+    title: PRINCIPAL_TITLE,
+    body: PRINCIPAL_BODY,
+    labels: [{ name: "status:new" }],
+    user: { id: IDS.submitter, login: "submitter", type: "User" },
+    type: null,
+    repository_url:
+      "https://api.github.com/repos/drasi-project/drasi-workgraph-demo",
+    ...overrides,
+  };
+}
+
+function admissionRootTask(principalIssue = {}) {
+  return {
+    taskId: ADMISSION_ROOT_TASK_ID,
+    workflowRunId: ADMISSION_WORKFLOW_RUN_ID,
+    workflowDefinitionId: "demo-issue-lifecycle",
+    workflowDefinitionVersion: "v1",
+    workflowDefinitionDigest: `sha256:${"a".repeat(64)}`,
+    taskDefinitionId: "demo-root-v1",
+    resolvedInputs: {
+      proofMode: "isolated",
+      principalIssue: {
+        repositoryOwner: "drasi-project",
+        repositoryName: "drasi-workgraph-demo",
+        repositoryNodeId: REPOSITORY_NODE,
+        issueNumber: PRINCIPAL_NUMBER,
+        issueNodeId: PRINCIPAL_NODE,
+        contentDigest: PRINCIPAL_CONTENT_DIGEST,
+        ...principalIssue,
+      },
+    },
+  };
+}
+
+function admissionValidatorTask() {
+  return {
+    ...VNEXT_TASK,
+    taskId: "wgt-admission-validator",
+    workflowRunId: ADMISSION_WORKFLOW_RUN_ID,
+  };
+}
+
+function principalReadInput(task = admissionValidatorTask()) {
+  return {
+    taskLocator: {
+      repositoryOwner: "drasi-project",
+      repositoryName: "drasi-workgraph-demo",
+      repositoryNodeId: REPOSITORY_NODE,
+      issueNumber: TASK_NUMBER,
+      issueNodeId: TASK_NODE,
+      parentIssueNumber: PARENT_NUMBER,
+      parentIssueNodeId: PARENT_NODE,
+    },
+    taskId: task.taskId,
+  };
 }
 
 function vnextResultInput(output = { criteria: [], summary: "Validated." }) {
@@ -615,11 +694,13 @@ async function fakeGitHub({
         state.parentIssueReads += 1;
         state.hooks.beforeParentIssueRead?.(state.parentIssueReads, state);
       }
-      send(
-        response,
-        200,
-        number === PARENT_NUMBER ? state.parent : state.tasks.get(number),
-      );
+      const issue =
+        number === PARENT_NUMBER ? state.parent : state.tasks.get(number);
+      if (!issue) {
+        send(response, 404, { message: "Not Found" });
+        return;
+      }
+      send(response, 200, issue);
       return;
     }
     const parentMatch = route.match(/\/issues\/(\d+)\/parent$/);
@@ -1071,7 +1152,7 @@ test("exact Assignment, validation pass/failure, request-info, and Acceptance by
   );
 });
 
-test("exposes only ten narrow tools and ignores MCP notifications", async () => {
+test("exposes only eleven narrow tools and ignores MCP notifications", async () => {
   await withFake({}, async (fake) => {
     const { tools } = await runTool(fake, IDS.assignment, "submit_task_assignment", {
       ...baseInput(),
@@ -1080,6 +1161,7 @@ test("exposes only ten narrow tools and ignores MCP notifications", async () => 
     assert.deepEqual(
       tools.map((tool) => tool.name),
       [
+        "get_vnext_principal_issue",
         "get_result_snapshot",
         "submit_task_assignment",
         "submit_task_result",
@@ -1096,6 +1178,9 @@ test("exposes only ten narrow tools and ignores MCP notifications", async () => 
       assert.equal(tool.inputSchema.additionalProperties, false),
     );
     const resultTool = tools.find((tool) => tool.name === "submit_task_result");
+    const principalTool = tools.find(
+      (tool) => tool.name === "get_vnext_principal_issue",
+    );
     const assignmentTool = tools.find(
       (tool) => tool.name === "submit_task_assignment",
     );
@@ -1109,6 +1194,22 @@ test("exposes only ten narrow tools and ignores MCP notifications", async () => 
     assert.deepEqual(
       [...assignmentTool.inputSchema.required].sort(),
       [...Object.keys(baseInput()), "agentId"].sort(),
+    );
+    assert.deepEqual(
+      principalTool.inputSchema.required,
+      ["taskLocator", "taskId"],
+    );
+    assert.deepEqual(
+      principalTool.inputSchema.properties.taskLocator.required,
+      [
+        "repositoryOwner",
+        "repositoryName",
+        "repositoryNodeId",
+        "issueNumber",
+        "issueNodeId",
+        "parentIssueNumber",
+        "parentIssueNodeId",
+      ],
     );
     assert.deepEqual(
       [...resultTool.inputSchema.required].sort(),
@@ -1979,6 +2080,188 @@ test("VNext Result ID and body match the frozen kernel vector", () => {
 \`\`\`
 `,
   );
+});
+
+test("VNext admission identities match the frozen shared vector", () => {
+    assert.equal(
+      deriveVNextPrincipalContentDigest(PRINCIPAL_TITLE, PRINCIPAL_BODY),
+      PRINCIPAL_CONTENT_DIGEST,
+    );
+    assert.equal(
+      deriveVNextWorkflowRunId(
+        REPOSITORY_NODE,
+        PRINCIPAL_NODE,
+        "demo-issue-lifecycle",
+        "v1",
+        `sha256:${"a".repeat(64)}`,
+      ),
+      ADMISSION_WORKFLOW_RUN_ID,
+    );
+    assert.equal(
+      deriveVNextRootTaskId(ADMISSION_WORKFLOW_RUN_ID, "demo-root-v1"),
+      ADMISSION_ROOT_TASK_ID,
+    );
+    assert.equal(
+      deriveVNextAdmissionId(ADMISSION_WORKFLOW_RUN_ID, ADMISSION_ROOT_TASK_ID),
+      ADMISSION_ID,
+    );
+    assert.equal(
+      deriveVNextPrincipalContentDigest("No body", null),
+      deriveVNextPrincipalContentDigest("No body", ""),
+    );
+});
+
+test("VNext principal reader verifies typed root ancestry and snapshot", async () => {
+    const validatorTask = admissionValidatorTask();
+    const rootIssue = makeVNextTask(
+      {
+        number: PARENT_NUMBER,
+        nodeId: PARENT_NODE,
+        id: 107,
+      },
+      admissionRootTask(),
+    );
+    const principal = makePrincipalIssue();
+    await withFake(
+      {
+        tasks: [makeVNextTask({}, validatorTask), principal],
+        parentIssue: rootIssue,
+        children: [TASK_NUMBER],
+      },
+      async (fake) => {
+        const response = await runTool(
+          fake,
+          IDS.result,
+          "get_vnext_principal_issue",
+          principalReadInput(validatorTask),
+        );
+        assert.equal(response.result.isError, false, response.result.content?.[0]?.text);
+        assert.deepEqual(response.result.structuredContent, {
+          taskId: validatorTask.taskId,
+          rootTaskId: ADMISSION_ROOT_TASK_ID,
+          workflowRunId: ADMISSION_WORKFLOW_RUN_ID,
+          principalIssue: {
+            repositoryOwner: "drasi-project",
+            repositoryName: "drasi-workgraph-demo",
+            repositoryNodeId: REPOSITORY_NODE,
+            issueNumber: PRINCIPAL_NUMBER,
+            issueNodeId: PRINCIPAL_NODE,
+            contentDigest: PRINCIPAL_CONTENT_DIGEST,
+            title: PRINCIPAL_TITLE,
+            body: PRINCIPAL_BODY,
+          },
+        });
+        assert.equal(
+          fake.state.operations.some((operation) => operation.startsWith("POST ")),
+          false,
+        );
+      },
+    );
+});
+
+test("VNext principal reader fails closed on stale content and wrong ancestry", async () => {
+    const validatorTask = admissionValidatorTask();
+    const scenarios = [
+      {
+        name: "stale principal content",
+        rootTask: admissionRootTask(),
+        principal: makePrincipalIssue({ body: `${PRINCIPAL_BODY}changed` }),
+        children: [TASK_NUMBER],
+        expected: /changed after admission/,
+      },
+      {
+        name: "non-root parent",
+        rootTask: {
+          ...admissionRootTask(),
+          taskDefinitionId: "demo-validate-v1",
+        },
+        principal: makePrincipalIssue(),
+        children: [TASK_NUMBER],
+        expected: /canonical parentless VNext root/,
+      },
+      {
+        name: "non-deterministic root identity",
+        rootTask: {
+          ...admissionRootTask(),
+          taskId: "wgt-wrong",
+        },
+        principal: makePrincipalIssue(),
+        children: [TASK_NUMBER],
+        expected: /deterministic admission identity/,
+      },
+      {
+        name: "unpinned definition digest",
+        rootTask: {
+          ...admissionRootTask(),
+          workflowDefinitionDigest: `sha256:${"b".repeat(64)}`,
+        },
+        validatorTask: {
+          ...validatorTask,
+          workflowDefinitionDigest: `sha256:${"b".repeat(64)}`,
+        },
+        principal: makePrincipalIssue(),
+        children: [TASK_NUMBER],
+        expected: /admission workflow/,
+      },
+      {
+        name: "root has a native parent",
+        rootTask: admissionRootTask(),
+        principal: makePrincipalIssue(),
+        children: [TASK_NUMBER, PARENT_NUMBER],
+        expected: /canonical parentless VNext root/,
+      },
+      {
+        name: "typed principal",
+        rootTask: admissionRootTask(),
+        principal: makePrincipalIssue({
+          type: { name: "WorkGraphTask", node_id: TYPE_ID },
+        }),
+        children: [TASK_NUMBER],
+        expected: /open ordinary Issue/,
+      },
+      {
+        name: "missing principal",
+        rootTask: admissionRootTask(),
+        principal: null,
+        children: [TASK_NUMBER],
+        expected: /HTTP 404/,
+      },
+    ];
+    for (const scenario of scenarios) {
+      const rootIssue = makeVNextTask(
+        {
+          number: PARENT_NUMBER,
+          nodeId: PARENT_NODE,
+          id: 107,
+        },
+        scenario.rootTask,
+      );
+      await withFake(
+        {
+          tasks: [
+            makeVNextTask({}, scenario.validatorTask ?? validatorTask),
+            ...(scenario.principal ? [scenario.principal] : []),
+          ],
+          parentIssue: rootIssue,
+          children: scenario.children,
+        },
+        async (fake) => {
+          const response = await runTool(
+            fake,
+            IDS.result,
+            "get_vnext_principal_issue",
+            principalReadInput(scenario.validatorTask ?? validatorTask),
+          );
+          assert.equal(response.result.isError, true, scenario.name);
+          assert.match(response.result.content[0].text, scenario.expected, scenario.name);
+          assert.equal(
+            fake.state.operations.some((operation) => operation.startsWith("POST ")),
+            false,
+            scenario.name,
+          );
+        },
+      );
+    }
 });
 
 test("VNext Result verifies Dispatch, writes once, and reconciles exact retry", async () => {

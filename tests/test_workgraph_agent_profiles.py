@@ -26,7 +26,7 @@ EXPECTED_TOOLS = {
         "workgraph/submit_task_assignment",
     ],
     "issue-validator": [
-        "github/issue_read",
+        "workgraph/get_vnext_principal_issue",
         "workgraph/submit_task_result",
     ],
     "issue-info-requester": [
@@ -323,7 +323,8 @@ class WorkGraphProfilesTest(unittest.TestCase):
     def test_agent_and_acceptor_provenance_rules(self):
         validator = self.agents["issue-validator"]
         normalized = " ".join(validator.split())
-        self.assertIn("navigate from that open `WorkGraphTask` Issue to its native parent", normalized)
+        self.assertIn("immediate native parent", normalized)
+        self.assertIn("ordinary principal Issue", normalized)
         self.assertIn("outcome `succeeded`", normalized)
         self.assertIn("reporter derives it deterministically", normalized)
 
@@ -436,6 +437,16 @@ class WorkGraphProfilesTest(unittest.TestCase):
         validator = self.agents["issue-validator"]
         self.assertIn("The Issue has a non-empty title", validator)
         self.assertIn("The Issue body is present", validator)
+        validator_normalized = " ".join(validator.split())
+        self.assertIn("`workgraph/get_vnext_principal_issue`", validator)
+        self.assertIn("immediate native parent", validator_normalized)
+        self.assertIn("canonical `demo-root-v1`", validator_normalized)
+        self.assertIn("root is parentless", validator_normalized)
+        self.assertIn("`principalIssue` object", validator_normalized)
+        self.assertIn("current title/body digest", validator_normalized)
+        self.assertIn("changed title or body is stale", validator_normalized)
+        self.assertIn("unchanged `taskLocator` and `taskId`", validator_normalized)
+        self.assertNotIn("github/issue_read", validator)
         orchestrator = self.agents["demo-orchestrator"]
         orchestrator_normalized = " ".join(orchestrator.split())
         self.assertIn(
