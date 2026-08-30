@@ -1,25 +1,19 @@
 import { isDeepStrictEqual, TextEncoder } from "node:util";
 
 export const WORKFLOW_DEFINITION_MARKER = "WorkGraphWorkflowDefinition/v1";
-export const RUNTIME_TASK_MARKER = "WorkGraphTask/v3";
+export const RUNTIME_TASK_MARKER = "WorkGraphTask/v1";
 export const MAX_TASK_DEFINITION_CHILDREN = 16;
 export const MAX_TASK_DEFINITION_DEPTH = 4;
-export const MAX_VNEXT_BODY_BYTES = 64 * 1024;
+export const MAX_WORKGRAPH_BODY_BYTES = 64 * 1024;
 export const MAX_TASK_DEFINITION_EXECUTORS = 8;
 
 const MAX_DATA_DEPTH = 32;
 const RESERVED_MARKERS = [
-  "WorkGraphTask/v1",
-  "WorkGraphTask/v2",
-  "WorkGraphTaskAssignment/v1",
-  "WorkGraphTaskResult/v1",
-  "WorkGraphTaskFeedback/v1",
-  "WorkGraphTaskResultAcceptance/v1",
-  "WorkGraphInfoRequest/v1",
   WORKFLOW_DEFINITION_MARKER,
   RUNTIME_TASK_MARKER,
   "WorkGraphTaskAssign/v1",
   "WorkGraphTaskDispatch/v1",
+  "WorkGraphTaskResult/v1",
   "WorkGraphTaskEvaluate/v1",
 ];
 const DEFINITION_KEYS = [
@@ -39,6 +33,7 @@ const TASK_DEFINITION_KEYS = [
 const ROUTING_KEYS = ["permittedExecutors"];
 const RUNTIME_TASK_KEYS = [
   "taskId",
+  "rootIssueId",
   "workflowRunId",
   "workflowDefinitionId",
   "workflowDefinitionVersion",
@@ -47,7 +42,7 @@ const RUNTIME_TASK_KEYS = [
   "resolvedInputs",
 ];
 
-export class WorkGraphVNextDefinitionError extends Error {}
+export class WorkGraphDefinitionError extends Error {}
 
 function object(value) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -59,10 +54,10 @@ function object(value) {
 
 function exactKeys(value, keys, context) {
   if (!object(value)) {
-    throw new WorkGraphVNextDefinitionError(`${context} must be an object`);
+    throw new WorkGraphDefinitionError(`${context} must be an object`);
   }
   if (!isDeepStrictEqual(Object.keys(value).sort(), [...keys].sort())) {
-    throw new WorkGraphVNextDefinitionError(
+    throw new WorkGraphDefinitionError(
       `${context} properties must be exactly ${[...keys].sort().join(", ")}`,
     );
   }
@@ -74,7 +69,7 @@ function identifier(value, context) {
     !/^[a-z][a-z0-9-]{0,63}$/.test(value) ||
     value.endsWith("-")
   ) {
-    throw new WorkGraphVNextDefinitionError(
+    throw new WorkGraphDefinitionError(
       `${context} must be 1-64 lowercase letters, digits, or hyphens and cannot end in a hyphen`,
     );
   }
@@ -90,7 +85,7 @@ function workflowRunIdentifier(value, context) {
     /[\p{White_Space}\p{Cc}]/u.test(value) ||
     !wellFormedUnicode(value)
   ) {
-    throw new WorkGraphVNextDefinitionError(
+    throw new WorkGraphDefinitionError(
       `${context} must contain 1-256 characters without whitespace or controls`,
     );
   }
@@ -116,7 +111,7 @@ function utf8Compare(left, right) {
 
 function digest(value, context) {
   if (typeof value !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value)) {
-    throw new WorkGraphVNextDefinitionError(`${context} must be a sha256 digest`);
+    throw new WorkGraphDefinitionError(`${context} must be a sha256 digest`);
   }
 }
 
@@ -131,14 +126,14 @@ function ordinaryText(value) {
 
 function canonicalData(value, context, depth) {
   if (depth > MAX_DATA_DEPTH) {
-    throw new WorkGraphVNextDefinitionError(
+    throw new WorkGraphDefinitionError(
       `${context} must not exceed ${MAX_DATA_DEPTH} nested levels`,
     );
   }
   if (value === null || typeof value === "boolean") return value;
   if (typeof value === "string") {
     if (!ordinaryText(value)) {
-      throw new WorkGraphVNextDefinitionError(
+      throw new WorkGraphDefinitionError(
         `${context} strings must be ordinary LF text without protocol markers`,
       );
     }
@@ -146,7 +141,7 @@ function canonicalData(value, context, depth) {
   }
   if (typeof value === "number") {
     if (!Number.isSafeInteger(value)) {
-      throw new WorkGraphVNextDefinitionError(
+      throw new WorkGraphDefinitionError(
         `${context} numbers must be JavaScript-safe integers`,
       );
     }
@@ -158,14 +153,14 @@ function canonicalData(value, context, depth) {
     );
   }
   if (!object(value)) {
-    throw new WorkGraphVNextDefinitionError(
+    throw new WorkGraphDefinitionError(
       `${context} must contain only JSON values`,
     );
   }
   const keys = Object.keys(value).sort(utf8Compare);
   for (const key of keys) {
     if (key === "" || !ordinaryText(key)) {
-      throw new WorkGraphVNextDefinitionError(
+      throw new WorkGraphDefinitionError(
         `${context} property names must be non-empty ordinary LF text`,
       );
     }
@@ -180,7 +175,7 @@ function canonicalData(value, context, depth) {
 
 function dataMap(value, context) {
   if (!object(value)) {
-    throw new WorkGraphVNextDefinitionError(`${context} must be an object`);
+    throw new WorkGraphDefinitionError(`${context} must be an object`);
   }
   return canonicalData(value, context, 0);
 }
@@ -217,7 +212,7 @@ function prettyJson(value, depth = 0, dataMode = false) {
 function normalizeTaskDefinition(task, context, depth, identities) {
   exactKeys(task, TASK_DEFINITION_KEYS, context);
   if (depth > MAX_TASK_DEFINITION_DEPTH) {
-    throw new WorkGraphVNextDefinitionError(
+    throw new WorkGraphDefinitionError(
       `task definition nesting exceeds maximum depth ${MAX_TASK_DEFINITION_DEPTH}`,
     );
   }
@@ -225,12 +220,12 @@ function normalizeTaskDefinition(task, context, depth, identities) {
   identifier(task.taskKey, `${context}.taskKey`);
   identifier(task.operation, `${context}.operation`);
   if (identities.definitionIds.has(task.taskDefinitionId)) {
-    throw new WorkGraphVNextDefinitionError(
+    throw new WorkGraphDefinitionError(
       `workflow definition repeats taskDefinitionId '${task.taskDefinitionId}'`,
     );
   }
   if (identities.taskKeys.has(task.taskKey)) {
-    throw new WorkGraphVNextDefinitionError(
+    throw new WorkGraphDefinitionError(
       `workflow definition repeats taskKey '${task.taskKey}'`,
     );
   }
@@ -243,7 +238,7 @@ function normalizeTaskDefinition(task, context, depth, identities) {
     task.routing.permittedExecutors.length < 1 ||
     task.routing.permittedExecutors.length > MAX_TASK_DEFINITION_EXECUTORS
   ) {
-    throw new WorkGraphVNextDefinitionError(
+    throw new WorkGraphDefinitionError(
       `${context}.routing.permittedExecutors must contain 1-${MAX_TASK_DEFINITION_EXECUTORS} entries`,
     );
   }
@@ -251,23 +246,23 @@ function normalizeTaskDefinition(task, context, depth, identities) {
   for (const executor of task.routing.permittedExecutors) {
     identifier(executor, `${context}.routing.permittedExecutors`);
     if (executors.has(executor)) {
-      throw new WorkGraphVNextDefinitionError(
+      throw new WorkGraphDefinitionError(
         `task definition repeats permitted executor '${executor}'`,
       );
     }
     executors.add(executor);
   }
   if (!Array.isArray(task.children)) {
-    throw new WorkGraphVNextDefinitionError(`${context}.children must be an array`);
+    throw new WorkGraphDefinitionError(`${context}.children must be an array`);
   }
   if (task.children.length > MAX_TASK_DEFINITION_CHILDREN) {
-    throw new WorkGraphVNextDefinitionError(
+    throw new WorkGraphDefinitionError(
       `task definition '${task.taskDefinitionId}' exceeds ${MAX_TASK_DEFINITION_CHILDREN} direct children`,
     );
   }
   for (let index = 1; index < task.children.length; index += 1) {
     if (task.children[index - 1].taskKey >= task.children[index].taskKey) {
-      throw new WorkGraphVNextDefinitionError(
+      throw new WorkGraphDefinitionError(
         `task definition '${task.taskDefinitionId}' children must be ordered by unique taskKey`,
       );
     }
@@ -316,9 +311,9 @@ export function normalizeWorkflowDefinition(definition) {
 export function formatWorkflowDefinition(definition) {
   const normalized = normalizeWorkflowDefinition(definition);
   const body = `${WORKFLOW_DEFINITION_MARKER}\n\n\`\`\`json\n${prettyJson(normalized)}\n\`\`\`\n`;
-  if (new TextEncoder().encode(body).length > MAX_VNEXT_BODY_BYTES) {
-    throw new WorkGraphVNextDefinitionError(
-      `${WORKFLOW_DEFINITION_MARKER} body exceeds ${MAX_VNEXT_BODY_BYTES} bytes`,
+  if (new TextEncoder().encode(body).length > MAX_WORKGRAPH_BODY_BYTES) {
+    throw new WorkGraphDefinitionError(
+      `${WORKFLOW_DEFINITION_MARKER} body exceeds ${MAX_WORKGRAPH_BODY_BYTES} bytes`,
     );
   }
   return body;
@@ -328,23 +323,23 @@ function parseCanonicalBody(body, marker, formatter) {
   if (
     typeof body !== "string" ||
     body.includes("\r") ||
-    new TextEncoder().encode(body).length > MAX_VNEXT_BODY_BYTES
+    new TextEncoder().encode(body).length > MAX_WORKGRAPH_BODY_BYTES
   ) {
-    throw new WorkGraphVNextDefinitionError(`${marker} body is not canonical`);
+    throw new WorkGraphDefinitionError(`${marker} body is not canonical`);
   }
   const prefix = `${marker}\n\n\`\`\`json\n`;
   const suffix = "\n```\n";
   if (!body.startsWith(prefix) || !body.endsWith(suffix)) {
-    throw new WorkGraphVNextDefinitionError(`${marker} body is not canonical`);
+    throw new WorkGraphDefinitionError(`${marker} body is not canonical`);
   }
   let value;
   try {
     value = JSON.parse(body.slice(prefix.length, -suffix.length));
   } catch {
-    throw new WorkGraphVNextDefinitionError(`${marker} body is invalid JSON`);
+    throw new WorkGraphDefinitionError(`${marker} body is invalid JSON`);
   }
   if (formatter(value) !== body) {
-    throw new WorkGraphVNextDefinitionError(`${marker} body is not canonical`);
+    throw new WorkGraphDefinitionError(`${marker} body is not canonical`);
   }
   return value;
 }
@@ -360,6 +355,7 @@ export function parseWorkflowDefinition(body) {
 export function normalizeRuntimeTask(task) {
   exactKeys(task, RUNTIME_TASK_KEYS, "runtime task");
   identifier(task.taskId, "runtime task taskId");
+  workflowRunIdentifier(task.rootIssueId, "runtime task rootIssueId");
   workflowRunIdentifier(task.workflowRunId, "runtime task workflowRunId");
   identifier(
     task.workflowDefinitionId,
@@ -376,6 +372,7 @@ export function normalizeRuntimeTask(task) {
   identifier(task.taskDefinitionId, "runtime task taskDefinitionId");
   return {
     taskId: task.taskId,
+    rootIssueId: task.rootIssueId,
     workflowRunId: task.workflowRunId,
     workflowDefinitionId: task.workflowDefinitionId,
     workflowDefinitionVersion: task.workflowDefinitionVersion,
@@ -388,9 +385,9 @@ export function normalizeRuntimeTask(task) {
 export function formatRuntimeTask(task) {
   const normalized = normalizeRuntimeTask(task);
   const body = `${RUNTIME_TASK_MARKER}\n\n\`\`\`json\n${prettyJson(normalized)}\n\`\`\`\n`;
-  if (new TextEncoder().encode(body).length > MAX_VNEXT_BODY_BYTES) {
-    throw new WorkGraphVNextDefinitionError(
-      `${RUNTIME_TASK_MARKER} body exceeds ${MAX_VNEXT_BODY_BYTES} bytes`,
+  if (new TextEncoder().encode(body).length > MAX_WORKGRAPH_BODY_BYTES) {
+    throw new WorkGraphDefinitionError(
+      `${RUNTIME_TASK_MARKER} body exceeds ${MAX_WORKGRAPH_BODY_BYTES} bytes`,
     );
   }
   return body;
@@ -411,7 +408,7 @@ export function validateRootRuntimeTask(definition, task) {
   };
   for (const [field, value] of Object.entries(expected)) {
     if (normalizedTask[field] !== value) {
-      throw new WorkGraphVNextDefinitionError(
+      throw new WorkGraphDefinitionError(
         `runtime task ${field} must match the pinned root definition`,
       );
     }

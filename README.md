@@ -1,60 +1,52 @@
 # drasi-workgraph-demo
 
-A strict, breaking WorkGraph Issue workflow prototype for the fixed
-`drasi-project/drasi-workgraph-demo` repository. It defines nine
-REST-launchable profiles:
+This repository is the Demo surface for the WorkGraph v1 prototype. GitHub
+delivers Issue events through ngrok directly to the `github-workgraph-v1`
+Drasi Source. An exact, case-sensitive `workgraph` label admits an ordinary
+**Root Issue**; the `workgraph-v1` Reaction creates its **Root Task**, then any
+declared child tasks.
+
+The prototype has one protocol:
+
+- `WorkGraphWorkflowDefinition/v1`
+- `WorkGraphTask/v1`
+- `WorkGraphTaskAssign/v1`
+- `WorkGraphTaskDispatch/v1`
+- `WorkGraphTaskResult/v1`
+- `WorkGraphTaskEvaluate/v1`
+
+Every task carries top-level `rootIssueId`. The hierarchy is:
+
+```text
+Root Issue
+└── Root Task
+    └── child task
+```
+
+The frozen workflow
+[`issue-lifecycle-v1.body`](.github/workgraph/workflows/issue-lifecycle-v1.body)
+contains one Root Task definition and one validator child definition. The only
+configured executors are:
 
 - `demo-orchestrator`
-- `issue-orchestrator`
-- `issue-assigner`
 - `issue-validator`
-- `issue-info-requester`
-- `workgraph-result-acceptor`
-- `issue-title-validator`
-- `issue-body-validator`
-- `issue-validation-evaluator`
 
-Tasks are native child Issues with exact type name `WorkGraphTask`, configured
-live type node ID `IT_kwDOCX0YF84CKGIJ`, and one canonical `WorkGraphTask/v1`
-YAML body. `.github/workgraph/agents.yaml` defines capacity and Lease duration
-for each custom-agent ID. The GitHub WorkGraph Source owns capacity and
-synthetic active Leases. Agent selection uses `WorkGraphTaskAssignment/v1`;
-agents write lease-bound `WorkGraphTaskResult/v1`. All GitHub WorkGraph comment
-protocols except the generation-correlated `WorkGraphInfoRequest/v2` marker
-remain v1, and Lease is never a GitHub comment. A separate
-`workgraph-v2-protocol.mjs` module and three narrow MCP tools now support
-canonical `WorkGraphTask/v2` Assignment and Result reporting, including nested
-parallel-family validation and exact prior-Result info requests. No enabled
-workflow invokes those staged paths yet. The isolated
-[`WorkGraphWorkflowDefinition/v1` VNext fixture](docs/workgraph-vnext-definition-demo.md)
-vendors the frozen Dogfood definition/root contract without replacing or
-activating the V2 proof.
-The VNext `issue-validator` and `demo-orchestrator` profiles consume the
-canonical Dispatch execution context and use the narrow
-`submit_task_result` tool; they do not expose a generic GitHub write tool.
-Validation uses only the two criteria in
-`.github/workgraph/profiles/issue-validation/new-issue-default.md`.
+Both profiles use the narrow
+[`workgraph-reporter.mjs`](.github/mcp/workgraph-reporter.mjs) MCP server. It
+exposes only `get_root_issue` and `submit_task_result`. Result creation verifies
+the canonical Dispatch and the exact active Source Lease before writing one
+`WorkGraphTaskResult/v1` comment.
 
-The dependency-free Node MCP exposes eleven narrow tools: existing paths for
-verified legacy Result inspection, expected-state transition, Assignment,
-Acceptance, parent info request, and feedback; the VNext-only
-`get_vnext_principal_issue` and `submit_task_result`; plus
-create-only workflow Assignment and Result paths and a prior-Result-bound
-workflow info request. Before staged workflow Result writes and parent info requests, it locally
-checks the Source-issued Lease deadline and calls the authenticated read-only
-exact-active-Lease validation endpoint. VNext `submit_task_result` instead
-verifies its canonical Dispatch and Lease artifact chain.
-It does not allocate, persist, release, poll, or retry Leases.
-A Result never closes a task; Acceptance is separate and binds the exact
-current Result comment ID and SHA-256 body digest. Source-computed `bodyDigest`
-is never present in Result JSON.
-Canonical transition titles let exact retries reconcile partial create,
-attachment, and status writes. Result/Acceptance writes use fail-closed
-pre/post reconciliation; detected races require manual remediation and are
-never hidden by deletion.
+The offline proof fixture pins all 17 `wg-*` Drasi queries and derives the Root
+Task from a Root Issue admission:
 
-See [the reporter contract](docs/workgraph-result-reporter.md) for exact schemas,
-identity configuration, lifecycle rules, current team/Core authority, and
-network-free validation commands. The
-[GitHub protocol integration tests](docs/workgraph-github-protocol-tests.md)
-are a separate explicit live layer with marker-scoped cleanup.
+```bash
+node scripts/prepare-workgraph-v1-proof.mjs
+node --test tests/*.test.mjs
+python -m unittest tests/test_workgraph_agent_profiles.py
+```
+
+Those commands do not start Drasi components or write to GitHub. See
+[`docs/workgraph-v1-definition-demo.md`](docs/workgraph-v1-definition-demo.md)
+and
+[`docs/workgraph-result-reporter.md`](docs/workgraph-result-reporter.md).

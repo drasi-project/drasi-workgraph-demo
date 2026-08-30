@@ -1,379 +1,29 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
-import { isDeepStrictEqual, TextDecoder, TextEncoder } from "node:util";
+import { createHash, randomUUID } from "node:crypto";
 import process from "node:process";
 import readline from "node:readline";
-import {
-  formatWorkflowAssignment,
-  formatWorkflowResult,
-  parseWorkflowAssignment,
-  parseWorkflowResult,
-  parseWorkflowTask,
-  validateWorkflowChildTask,
-} from "./workgraph-v2-protocol.mjs";
-import {
-  MAX_VNEXT_BODY_BYTES,
-  parseRuntimeTask,
-} from "./workgraph-vnext-definition.mjs";
+import { isDeepStrictEqual, TextEncoder } from "node:util";
+import { fileURLToPath } from "node:url";
+
+import { parseRuntimeTask } from "./workgraph-v1-definition.mjs";
 
 const API = "https://api.github.com";
 const OWNER = "drasi-project";
 const REPO = "drasi-workgraph-demo";
 const REPOSITORY_URL = `${API}/repos/${OWNER}/${REPO}`;
 const TASK_TYPE_NAME = "WorkGraphTask";
-const VNEXT_ROOT_TASK_DEFINITION_ID = "demo-root-v1";
-const VNEXT_VALIDATOR_TASK_DEFINITION_ID = "demo-validate-v1";
-const VNEXT_WORKFLOW_DEFINITION_ID = "demo-issue-lifecycle";
-const VNEXT_WORKFLOW_DEFINITION_VERSION = "v1";
-const VNEXT_WORKFLOW_DEFINITION_DIGEST = `sha256:${"a".repeat(64)}`;
-const TASK_MARKER = "WorkGraphTask/v1";
-const ASSIGNMENT_MARKER = "WorkGraphTaskAssignment/v1";
-const RESULT_MARKER = "WorkGraphTaskResult/v1";
-const ACCEPTANCE_MARKER = "WorkGraphTaskResultAcceptance/v1";
-const INFO_MARKER = "WorkGraphInfoRequest/v1";
-const WORKFLOW_INFO_MARKER = "WorkGraphInfoRequest/v2";
-const FEEDBACK_MARKER = "WorkGraphTaskFeedback/v1";
-const DISPATCH_MARKER = "WorkGraphTaskDispatch/v1";
-const V1_LEASE_VALIDATION_PATH = "/github/workgraph/lease/validate";
-const V2_LEASE_VALIDATION_PATH = "/github/workgraph-v2/lease/validate";
-const STATUS_LABELS = [
-  "status:new",
-  "status:awaiting-validation",
-  "status:awaiting-need-info",
-  "status:awaiting-triage",
-];
-const TASK_TYPES = ["validate-issue", "request-info"];
-const OUTCOMES = ["succeeded", "failed", "blocked"];
-const CRITERIA = [
-  "The Issue has a non-empty title",
-  "The Issue body is present",
-];
-const AGENT_ID_BY_TASK = {
-  "validate-issue": "issue-validator",
-  "request-info": "issue-info-requester",
-};
-const MAX_TEXT_BYTES = 4096;
-const MAX_ID = 256;
-const MAX_TITLE = 256;
-const AGENT_CONFIG_PATH = ".github/workgraph/agents.yaml";
-const AGENT_CONFIG_REF = "main";
-const REFS = [
-  "taskIssueNumber",
-  "taskIssueNodeId",
-  "parentIssueNumber",
-  "parentIssueNodeId",
-];
-
-class WorkGraphError extends Error {}
-
-function object(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function exact(value, keys, label) {
-  if (!object(value)) throw new WorkGraphError(`${label} must be an object`);
-  const actual = Object.keys(value).sort();
-  const wanted = [...keys].sort();
-  if (!isDeepStrictEqual(actual, wanted)) {
-    throw new WorkGraphError(
-      `${label} properties must be exactly ${wanted.join(", ")}`,
-    );
-  }
-}
-
-function nonempty(value, label) {
-  if (typeof value !== "string" || value.trim() === "") {
-    throw new WorkGraphError(`${label} must be a non-empty string`);
-  }
-}
-
-function identifier(value, label) {
-  nonempty(value, label);
-  if (value.length > MAX_ID || !/^[A-Za-z0-9_-]+$/.test(value)) {
-    throw new WorkGraphError(`${label} must be a bounded GitHub node ID`);
-  }
-}
-
-function issueNumber(value, label) {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new WorkGraphError(`${label} must be a positive integer`);
-  }
-}
-
-function plain(value, label) {
-  nonempty(value, label);
-  if (new TextEncoder().encode(value).length > MAX_TEXT_BYTES) {
-    throw new WorkGraphError(`${label} must not exceed ${MAX_TEXT_BYTES} bytes`);
-  }
-  if (
-    value.includes("\r") ||
-    value.includes("```") ||
-    [
-      TASK_MARKER,
-      ASSIGNMENT_MARKER,
-      RESULT_MARKER,
-      ACCEPTANCE_MARKER,
-      INFO_MARKER,
-      WORKFLOW_INFO_MARKER,
-      FEEDBACK_MARKER,
-    ].some((marker) => value.includes(marker))
-  ) {
-    throw new WorkGraphError(`${label} must be ordinary LF plain text`);
-  }
-}
-
-function refs(input, extra = []) {
-  exact(input, [...REFS, ...extra], "arguments");
-  issueNumber(input.taskIssueNumber, "arguments.taskIssueNumber");
-  issueNumber(input.parentIssueNumber, "arguments.parentIssueNumber");
-  identifier(input.taskIssueNodeId, "arguments.taskIssueNodeId");
-  identifier(input.parentIssueNodeId, "arguments.parentIssueNodeId");
-  if (
-    input.taskIssueNumber === input.parentIssueNumber ||
-    input.taskIssueNodeId === input.parentIssueNodeId
-  ) {
-    throw new WorkGraphError("task and parent identifiers must differ");
-  }
-}
-
-function fenced(marker, language, payload) {
-  return `${marker}\n\n\`\`\`${language}\n${payload}\n\`\`\`\n`;
-}
-
-function canonicalJson(marker, payload) {
-  let canonical = payload;
-  if (marker === RESULT_MARKER) {
-    canonical = {
-      taskType: payload.taskType,
-      leaseId: payload.leaseId,
-      outcome: payload.outcome,
-      summary: payload.summary,
-      result:
-        payload.taskType === "validate-issue"
-          ? {
-              criteria: payload.result.criteria.map((entry) => ({
-                criterion: entry.criterion,
-                passed: entry.passed,
-                evidence: entry.evidence,
-              })),
-            }
-          : {
-              requestCommentNodeId: payload.result.requestCommentNodeId,
-            },
-    };
-  } else if (marker === ACCEPTANCE_MARKER) {
-    canonical = {
-      resultCommentNodeId: payload.resultCommentNodeId,
-      resultBodyDigest: payload.resultBodyDigest,
-      summary: payload.summary,
-    };
-  } else if (marker === FEEDBACK_MARKER) {
-    canonical = {
-      resultCommentNodeId: payload.resultCommentNodeId,
-      resultBodyDigest: payload.resultBodyDigest,
-      feedback: payload.feedback,
-    };
-  }
-  return fenced(marker, "json", JSON.stringify(canonical, null, 2));
-}
-
-export function formatTask(task) {
-  validateTask(task);
-  const key =
-    task.taskType === "validate-issue"
-      ? "validationProfile"
-      : "validationResultCommentNodeId";
-  return fenced(
-    TASK_MARKER,
-    "yaml",
-    `taskType: ${task.taskType}\ninputs:\n  ${key}: ${task.inputs[key]}`,
-  );
-}
-
-function validateTask(task) {
-  exact(task, ["taskType", "inputs"], "task");
-  if (!TASK_TYPES.includes(task.taskType)) {
-    throw new WorkGraphError("task.taskType must be validate-issue or request-info");
-  }
-  if (task.taskType === "validate-issue") {
-    exact(task.inputs, ["validationProfile"], "task.inputs");
-    if (task.inputs.validationProfile !== "new-issue-default") {
-      throw new WorkGraphError(
-        "task.inputs.validationProfile must be new-issue-default",
-      );
-    }
-  } else {
-    exact(task.inputs, ["validationResultCommentNodeId"], "task.inputs");
-    identifier(
-      task.inputs.validationResultCommentNodeId,
-      "task.inputs.validationResultCommentNodeId",
-    );
-  }
-}
-
-export function parseTask(body) {
-  if (typeof body !== "string" || body.includes("\r")) {
-    throw new WorkGraphError("WorkGraphTask body is not canonical");
-  }
-  const match = body.match(
-    /^WorkGraphTask\/v1\n\n```yaml\ntaskType: (validate-issue|request-info)\ninputs:\n  (validationProfile|validationResultCommentNodeId): ([A-Za-z0-9_-]+)\n```\n$/,
-  );
-  if (!match) throw new WorkGraphError("WorkGraphTask body is not canonical");
-  const task = { taskType: match[1], inputs: { [match[2]]: match[3] } };
-  validateTask(task);
-  if (body !== formatTask(task)) {
-    throw new WorkGraphError("WorkGraphTask body is not canonical");
-  }
-  return task;
-}
-
-export function formatAssignment(agentId) {
-  if (!Object.values(AGENT_ID_BY_TASK).includes(agentId)) {
-    throw new WorkGraphError("agentId is not supported");
-  }
-  return canonicalJson(ASSIGNMENT_MARKER, { agentId });
-}
-
-function parseCanonicalJson(body, marker, validator) {
-  if (typeof body !== "string" || body.includes("\r")) return null;
-  const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const match = body.match(
-    new RegExp(`^${escaped}\\n\\n\\\`\\\`\\\`json\\n([\\s\\S]+)\\n\\\`\\\`\\\`\\n$`),
-  );
-  if (!match) return null;
-  let payload;
-  try {
-    payload = JSON.parse(match[1]);
-    validator(payload);
-  } catch {
-    return null;
-  }
-  return body === canonicalJson(marker, payload) ? payload : null;
-}
-
-function validateAssignment(value) {
-  exact(value, ["agentId"], "Assignment");
-  if (!Object.values(AGENT_ID_BY_TASK).includes(value.agentId)) {
-    throw new WorkGraphError("Assignment.agentId is not supported");
-  }
-}
-
-function validateResult(value) {
-  exact(
-    value,
-    ["taskType", "leaseId", "outcome", "summary", "result"],
-    "Result",
-  );
-  opaque(value.leaseId, "Result.leaseId");
-  if (!TASK_TYPES.includes(value.taskType)) {
-    throw new WorkGraphError("Result.taskType is not supported");
-  }
-  if (!OUTCOMES.includes(value.outcome)) {
-    throw new WorkGraphError("Result.outcome is not supported");
-  }
-  plain(value.summary, "Result.summary");
-  if (value.taskType === "validate-issue") {
-    exact(value.result, ["criteria"], "Result.result");
-    if (!Array.isArray(value.result.criteria) || value.result.criteria.length !== 2) {
-      throw new WorkGraphError("validation Result must contain exactly two criteria");
-    }
-    value.result.criteria.forEach((entry, index) => {
-      exact(entry, ["criterion", "passed", "evidence"], `criterion[${index}]`);
-      if (entry.criterion !== CRITERIA[index]) {
-        throw new WorkGraphError("validation criteria must match the repository profile");
-      }
-      if (typeof entry.passed !== "boolean") {
-        throw new WorkGraphError(`criterion[${index}].passed must be boolean`);
-      }
-      plain(entry.evidence, `criterion[${index}].evidence`);
-    });
-  } else {
-    exact(value.result, ["requestCommentNodeId"], "Result.result");
-    identifier(
-      value.result.requestCommentNodeId,
-      "Result.result.requestCommentNodeId",
-    );
-  }
-}
-
-export function formatTaskResult(result) {
-  validateResult(result);
-  return canonicalJson(RESULT_MARKER, result);
-}
-
-function timestamp(value, label) {
-  if (
-    typeof value !== "string" ||
-    !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,9})?Z$/.test(value) ||
-    !Number.isFinite(Date.parse(value))
-  ) {
-    throw new WorkGraphError(`${label} must be a canonical UTC timestamp`);
-  }
-}
-
-function opaque(value, label) {
-  nonempty(value, label);
-  if (
-    value.length > MAX_ID ||
-    [...value].some((character) => /\s/.test(character) || /[\x00-\x1f\x7f]/.test(character))
-  ) {
-    throw new WorkGraphError(`${label} must be a bounded opaque ID`);
-  }
-}
-
-function parseAssignment(body) {
-  return parseCanonicalJson(body, ASSIGNMENT_MARKER, validateAssignment);
-}
-
-function parseResult(body) {
-  return parseCanonicalJson(body, RESULT_MARKER, validateResult);
-}
-
-function canonicalJsonValue(value, label = "output") {
-  if (value === null || typeof value === "boolean" || typeof value === "string") {
-    if (typeof value === "string") {
-      for (let index = 0; index < value.length; index += 1) {
-        const code = value.charCodeAt(index);
-        if (code >= 0xd800 && code <= 0xdbff) {
-          const next = value.charCodeAt(index + 1);
-          if (next < 0xdc00 || next > 0xdfff) {
-            throw new WorkGraphError(`${label} contains an unpaired UTF-16 surrogate`);
-          }
-          index += 1;
-        } else if (code >= 0xdc00 && code <= 0xdfff) {
-          throw new WorkGraphError(`${label} contains an unpaired UTF-16 surrogate`);
-        }
-      }
-    }
-    return value;
-  }
-  if (typeof value === "number") {
-    if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
-      throw new WorkGraphError(`${label} contains an unsupported JSON number`);
-    }
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value.map((entry, index) =>
-      canonicalJsonValue(entry, `${label}[${index}]`),
-    );
-  }
-  if (!object(value)) {
-    throw new WorkGraphError(`${label} must be JSON`);
-  }
-  const normalized = Object.create(null);
-  const keys = Object.keys(value).sort((left, right) =>
-    Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8")),
-  );
-  for (const key of keys) {
-    canonicalJsonValue(key, `${label} key`);
-    normalized[key] = canonicalJsonValue(value[key], `${label}.${key}`);
-  }
-  return normalized;
-}
-
-const VNEXT_TASK_IDENTITY_KEYS = [
+const WORKFLOW_DEFINITION_ID = "demo-issue-lifecycle";
+const WORKFLOW_DEFINITION_VERSION = "v1";
+const WORKFLOW_DEFINITION_DIGEST = `sha256:${"a".repeat(64)}`;
+const ROOT_TASK_DEFINITION_ID = "demo-root-v1";
+const VALIDATOR_TASK_DEFINITION_ID = "demo-validate-v1";
+const TASK_DISPATCH_MARKER = "WorkGraphTaskDispatch/v1";
+const TASK_RESULT_MARKER = "WorkGraphTaskResult/v1";
+const LEASE_VALIDATION_PATH = "/github/workgraph-v1/lease/validate";
+const MAX_ID_BYTES = 256;
+const MAX_BODY_BYTES = 64 * 1024;
+const TASK_IDENTITY_KEYS = [
   "taskId",
   "workflowRunId",
   "workflowDefinitionId",
@@ -382,176 +32,113 @@ const VNEXT_TASK_IDENTITY_KEYS = [
   "taskDefinitionId",
 ];
 
-function normalizeVNextTaskIdentity(value, label) {
-  exact(value, VNEXT_TASK_IDENTITY_KEYS, label);
-  for (const key of VNEXT_TASK_IDENTITY_KEYS) {
-    nonempty(value[key], `${label}.${key}`);
-  }
-  if (!/^sha256:[0-9a-f]{64}$/.test(value.workflowDefinitionDigest)) {
-    throw new WorkGraphError(`${label}.workflowDefinitionDigest is invalid`);
-  }
-  return Object.fromEntries(VNEXT_TASK_IDENTITY_KEYS.map((key) => [key, value[key]]));
+export class WorkGraphReporterError extends Error {}
+
+function object(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function normalizeVNextDispatch(value) {
-  exact(value, ["dispatchId", "launchId", "task", "lease"], "Dispatch");
-  opaque(value.dispatchId, "Dispatch.dispatchId");
-  opaque(value.launchId, "Dispatch.launchId");
-  const task = normalizeVNextTaskIdentity(value.task, "Dispatch.task");
-  exact(
-    value.lease,
-    ["leaseId", "assignmentId", "executorId", "slotId"],
-    "Dispatch.lease",
-  );
-  for (const key of ["leaseId", "assignmentId", "executorId", "slotId"]) {
-    opaque(value.lease[key], `Dispatch.lease.${key}`);
-  }
-  return {
-    dispatchId: value.dispatchId,
-    launchId: value.launchId,
-    task,
-    lease: {
-      leaseId: value.lease.leaseId,
-      assignmentId: value.lease.assignmentId,
-      executorId: value.lease.executorId,
-      slotId: value.lease.slotId,
-    },
-  };
-}
-
-function formatVNextDispatch(value) {
-  const normalized = normalizeVNextDispatch(value);
-  return fenced(DISPATCH_MARKER, "json", JSON.stringify(normalized, null, 2));
-}
-
-function parseVNextDispatch(body) {
+function exact(value, keys, label) {
   if (
-    typeof body !== "string" ||
-    body.includes("\r") ||
-    Buffer.byteLength(body, "utf8") > MAX_VNEXT_BODY_BYTES
+    !object(value) ||
+    !isDeepStrictEqual(Object.keys(value).sort(), [...keys].sort())
   ) {
-    return null;
-  }
-  const prefix = `${DISPATCH_MARKER}\n\n\`\`\`json\n`;
-  const suffix = "\n```\n";
-  if (!body.startsWith(prefix) || !body.endsWith(suffix)) return null;
-  try {
-    const payload = JSON.parse(body.slice(prefix.length, -suffix.length));
-    return formatVNextDispatch(payload) === body
-      ? normalizeVNextDispatch(payload)
-      : null;
-  } catch {
-    return null;
+    throw new WorkGraphReporterError(
+      `${label} properties must be exactly ${[...keys].sort().join(", ")}`,
+    );
   }
 }
 
-function framedSha256(parts) {
-  const digest = createHash("sha256");
-  for (const [label, value] of parts) {
-    if (typeof value !== "string") {
-      throw new WorkGraphError(`${label} must be a string`);
+function wellFormed(value) {
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next < 0xdc00 || next > 0xdfff) return false;
+      index += 1;
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return false;
     }
-    const bytes = Buffer.from(value, "utf8");
-    const frame = Buffer.alloc(8);
-    frame.writeBigUInt64BE(BigInt(bytes.length));
-    digest.update(frame);
-    digest.update(bytes);
   }
-  return digest.digest("hex");
+  return true;
 }
 
-export function deriveVNextTaskResultId(taskId, dispatchId, leaseId) {
-  for (const [label, value] of [
-    ["taskId", taskId],
-    ["dispatchId", dispatchId],
-    ["leaseId", leaseId],
-  ]) {
-    opaque(value, label);
+function opaque(value, label) {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    Buffer.byteLength(value, "utf8") > MAX_ID_BYTES ||
+    !wellFormed(value) ||
+    /[\p{White_Space}\p{Cc}]/u.test(value)
+  ) {
+    throw new WorkGraphReporterError(`${label} must be a bounded opaque ID`);
   }
-  const digest = framedSha256([
-    ["taskId", taskId],
-    ["dispatchId", dispatchId],
-    ["leaseId", leaseId],
-  ]);
-  return `workgraph-vnext:result:sha256:${digest}`;
+  return value;
 }
 
-export function deriveVNextPrincipalContentDigest(title, body) {
-  if (typeof title !== "string") {
-    throw new WorkGraphError("principal Issue title must be a string");
+function issueNumber(value, label) {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new WorkGraphReporterError(`${label} must be a positive integer`);
   }
-  if (body !== null && typeof body !== "string") {
-    throw new WorkGraphError("principal Issue body must be a string or null");
+  return value;
+}
+
+function digest(value, label) {
+  if (typeof value !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value)) {
+    throw new WorkGraphReporterError(`${label} must be sha256:<64 lowercase hex>`);
   }
-  const digest = framedSha256([
-    ["principal content domain", "workgraph-vnext-principal-content-v1"],
-    ["principal title", title],
-    ["principal body", body ?? ""],
-  ]);
-  return `sha256:${digest}`;
+  return value;
 }
 
-export function deriveVNextWorkflowRunId(
-  repositoryNodeId,
-  principalIssueNodeId,
-  workflowDefinitionId,
-  workflowDefinitionVersion,
-  workflowDefinitionDigest,
-) {
-  const digest = framedSha256([
-    ["repositoryNodeId", repositoryNodeId],
-    ["principalIssueNodeId", principalIssueNodeId],
-    ["workflowDefinitionId", workflowDefinitionId],
-    ["workflowDefinitionVersion", workflowDefinitionVersion],
-    ["workflowDefinitionDigest", workflowDefinitionDigest],
-  ]);
-  return `workgraph-vnext:run:sha256:${digest}`;
+function utf8Compare(left, right) {
+  return Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"));
 }
 
-export function deriveVNextRootTaskId(workflowRunId, rootTaskDefinitionId) {
-  const digest = framedSha256([
-    ["workflowRunId", workflowRunId],
-    ["rootTaskDefinitionId", rootTaskDefinitionId],
-  ]);
-  return `wgt-${digest.slice(0, 60)}`;
-}
-
-export function deriveVNextAdmissionId(workflowRunId, rootTaskId) {
-  const digest = framedSha256([
-    ["workflowRunId", workflowRunId],
-    ["rootTaskId", rootTaskId],
-  ]);
-  return `workgraph-vnext:admission:sha256:${digest}`;
-}
-
-function normalizeVNextResult(value) {
-  exact(
-    value,
-    ["resultId", "taskId", "dispatchId", "leaseId", "outcome", "output"],
-    "VNext Result",
+function canonicalJsonValue(value, label = "output", depth = 0) {
+  if (depth > 32) {
+    throw new WorkGraphReporterError(`${label} exceeds the maximum nesting depth`);
+  }
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    if (!wellFormed(value)) {
+      throw new WorkGraphReporterError(`${label} contains an unpaired UTF-16 surrogate`);
+    }
+    if (value.includes("\r") || value.includes("```")) {
+      throw new WorkGraphReporterError(`${label} strings must be ordinary LF text`);
+    }
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value) || Object.is(value, -0)) {
+      throw new WorkGraphReporterError(
+        `${label} numbers must be JavaScript-safe integers`,
+      );
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry, index) =>
+      canonicalJsonValue(entry, `${label}[${index}]`, depth + 1),
+    );
+  }
+  if (!object(value)) {
+    throw new WorkGraphReporterError(`${label} must contain only JSON values`);
+  }
+  for (const key of Object.keys(value)) {
+    if (key.length === 0 || key.includes("\r") || key.includes("```")) {
+      throw new WorkGraphReporterError(
+        `${label} property names must be non-empty ordinary LF text`,
+      );
+    }
+  }
+  return Object.fromEntries(
+    Object.keys(value)
+      .sort(utf8Compare)
+      .map((key) => [
+        canonicalJsonValue(key, `${label} key`, depth + 1),
+        canonicalJsonValue(value[key], `${label}.${key}`, depth + 1),
+      ]),
   );
-  for (const key of ["resultId", "taskId", "dispatchId", "leaseId"]) {
-    opaque(value[key], `VNext Result.${key}`);
-  }
-  if (!["succeeded", "failed"].includes(value.outcome)) {
-    throw new WorkGraphError("VNext Result.outcome must be succeeded or failed");
-  }
-  const expectedId = deriveVNextTaskResultId(
-    value.taskId,
-    value.dispatchId,
-    value.leaseId,
-  );
-  if (value.resultId !== expectedId) {
-    throw new WorkGraphError("VNext Result.resultId is not canonical");
-  }
-  return {
-    resultId: value.resultId,
-    taskId: value.taskId,
-    dispatchId: value.dispatchId,
-    leaseId: value.leaseId,
-    outcome: value.outcome,
-    output: canonicalJsonValue(value.output),
-  };
 }
 
 function serdeJsonNumber(value) {
@@ -563,8 +150,7 @@ function serdeJsonNumber(value) {
   let exponent;
   if (source.includes("e")) {
     const [coefficient, rawExponent] = source.split("e");
-    const unsigned = coefficient.replace(/^-/, "");
-    digits = unsigned.replace(".", "");
+    digits = coefficient.replace(/^-/, "").replace(".", "");
     exponent = Number(rawExponent);
   } else {
     const unsigned = source.replace(/^-/, "");
@@ -584,8 +170,7 @@ function serdeJsonNumber(value) {
   const sign = value < 0 ? "-" : "";
   if (exponent <= -6 || exponent >= 16) {
     const fraction = digits.length > 1 ? `.${digits.slice(1)}` : "";
-    const exponentSign = exponent >= 0 ? "+" : "-";
-    return `${sign}${digits[0]}${fraction}e${exponentSign}${Math.abs(exponent)}`;
+    return `${sign}${digits[0]}${fraction}e${exponent >= 0 ? "+" : "-"}${Math.abs(exponent)}`;
   }
   if (exponent < 0) {
     return `${sign}0.${"0".repeat(-exponent - 1)}${digits}`;
@@ -596,7 +181,7 @@ function serdeJsonNumber(value) {
   return `${sign}${digits.slice(0, exponent + 1)}.${digits.slice(exponent + 1)}`;
 }
 
-function prettyVNextJson(value, depth = 0, dataMode = false) {
+function prettyJson(value, depth = 0, sortData = false) {
   if (value === null || typeof value === "boolean") return String(value);
   if (typeof value === "number") return serdeJsonNumber(value);
   if (typeof value === "string") return JSON.stringify(value);
@@ -605,367 +190,366 @@ function prettyVNextJson(value, depth = 0, dataMode = false) {
   if (Array.isArray(value)) {
     if (value.length === 0) return "[]";
     return `[\n${value
-      .map(
-        (entry) =>
-          `${childIndent}${prettyVNextJson(entry, depth + 1, dataMode)}`,
-      )
+      .map((entry) => `${childIndent}${prettyJson(entry, depth + 1, sortData)}`)
       .join(",\n")}\n${indent}]`;
   }
-  const keys = Object.getOwnPropertyNames(value);
-  if (dataMode) {
-    keys.sort((left, right) =>
-      Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8")),
-    );
-  }
+  const keys = Object.keys(value);
+  if (sortData) keys.sort(utf8Compare);
   if (keys.length === 0) return "{}";
   return `{\n${keys
     .map((key) => {
-      const childDataMode = dataMode || key === "output";
-      return `${childIndent}${JSON.stringify(key)}: ${prettyVNextJson(
+      const childSort = sortData || key === "output";
+      return `${childIndent}${JSON.stringify(key)}: ${prettyJson(
         value[key],
         depth + 1,
-        childDataMode,
+        childSort,
       )}`;
     })
     .join(",\n")}\n${indent}}`;
 }
 
-export function formatVNextTaskResult(result) {
-  const normalized = normalizeVNextResult(result);
-  const body = fenced(RESULT_MARKER, "json", prettyVNextJson(normalized));
-  if (Buffer.byteLength(body, "utf8") > MAX_VNEXT_BODY_BYTES) {
-    throw new WorkGraphError(`VNext Result exceeds ${MAX_VNEXT_BODY_BYTES} bytes`);
+function canonicalBody(marker, value) {
+  const body = `${marker}\n\n\`\`\`json\n${prettyJson(value)}\n\`\`\`\n`;
+  if (Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
+    throw new WorkGraphReporterError(`${marker} body exceeds ${MAX_BODY_BYTES} bytes`);
   }
   return body;
 }
 
-function parseVNextTaskResult(body) {
+function parseCanonicalBody(body, marker, normalize) {
   if (
     typeof body !== "string" ||
     body.includes("\r") ||
-    Buffer.byteLength(body, "utf8") > MAX_VNEXT_BODY_BYTES
+    Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES
   ) {
     return null;
   }
-  const prefix = `${RESULT_MARKER}\n\n\`\`\`json\n`;
+  const prefix = `${marker}\n\n\`\`\`json\n`;
   const suffix = "\n```\n";
   if (!body.startsWith(prefix) || !body.endsWith(suffix)) return null;
   try {
-    const payload = JSON.parse(body.slice(prefix.length, -suffix.length));
-    return formatVNextTaskResult(payload) === body
-      ? normalizeVNextResult(payload)
-      : null;
+    const value = normalize(JSON.parse(body.slice(prefix.length, -suffix.length)));
+    return canonicalBody(marker, value) === body ? value : null;
   } catch {
     return null;
   }
 }
 
-function durationSeconds(value, label) {
-  const match =
-    typeof value === "string"
-      ? value.match(/^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/)
-      : null;
-  const hasTime =
-    match !== null && match.slice(2).some((part) => part !== undefined);
-  if (
-    !match ||
-    match.slice(1).every((part) => part === undefined) ||
-    (value.includes("T") && !hasTime)
-  ) {
-    throw new WorkGraphError(`${label} must be a whole-unit ISO-8601 duration`);
-  }
-  const seconds =
-    Number(match[1] ?? 0) * 86400 +
-    Number(match[2] ?? 0) * 3600 +
-    Number(match[3] ?? 0) * 60 +
-    Number(match[4] ?? 0);
-  if (!Number.isSafeInteger(seconds) || seconds < 1 || seconds > 86400) {
-    throw new WorkGraphError(`${label} must be between one second and 24 hours`);
-  }
-  return seconds;
+function normalizeTaskIdentity(value, label = "task identity") {
+  exact(value, TASK_IDENTITY_KEYS, label);
+  const normalized = Object.fromEntries(
+    TASK_IDENTITY_KEYS.map((key) => [key, opaque(value[key], `${label}.${key}`)]),
+  );
+  digest(
+    normalized.workflowDefinitionDigest,
+    `${label}.workflowDefinitionDigest`,
+  );
+  return normalized;
 }
 
-export function parseAgentsYaml(body) {
-  if (
-    typeof body !== "string" ||
-    new TextEncoder().encode(body).length > 256 * 1024 ||
-    body.includes("\r")
-  ) {
-    throw new WorkGraphError("agent config must be bounded LF UTF-8 text");
-  }
-  const root = body.match(/^version: 1\nagents:\n([\s\S]+)$/);
-  if (!root) {
-    throw new WorkGraphError("agent config must have version 1 and an agents list");
-  }
-  const entryPattern =
-    /  - agentId: ([A-Za-z0-9._-]{1,64})\n    slots: (\d+)\n    leaseDuration: ([A-Z0-9]+)\n/g;
-  const agents = [];
-  let consumed = "";
-  for (const match of root[1].matchAll(entryPattern)) {
-    consumed += match[0];
-    const agent = {
-      agentId: match[1],
-      slots: Number(match[2]),
-      leaseDuration: match[3],
-    };
-    if (!Number.isSafeInteger(agent.slots) || agent.slots < 1 || agent.slots > 16) {
-      throw new WorkGraphError("agent config slots must be between 1 and 16");
-    }
-    durationSeconds(agent.leaseDuration, "agent config leaseDuration");
-    agents.push(agent);
-  }
-  if (consumed !== root[1] || agents.length === 0 || agents.length > 64) {
-    throw new WorkGraphError("agent config contains unsupported or malformed fields");
-  }
-  if (new Set(agents.map((agent) => agent.agentId)).size !== agents.length) {
-    throw new WorkGraphError("agent config agentId values must be unique");
-  }
-  return agents;
+function normalizeTaskDispatch(value) {
+  exact(value, ["dispatchId", "launchId", "task", "lease"], "Dispatch");
+  exact(
+    value.lease,
+    ["leaseId", "assignmentId", "executorId", "slotId"],
+    "Dispatch.lease",
+  );
+  return {
+    dispatchId: opaque(value.dispatchId, "Dispatch.dispatchId"),
+    launchId: opaque(value.launchId, "Dispatch.launchId"),
+    task: normalizeTaskIdentity(value.task, "Dispatch.task"),
+    lease: {
+      leaseId: opaque(value.lease.leaseId, "Dispatch.lease.leaseId"),
+      assignmentId: opaque(
+        value.lease.assignmentId,
+        "Dispatch.lease.assignmentId",
+      ),
+      executorId: opaque(value.lease.executorId, "Dispatch.lease.executorId"),
+      slotId: opaque(value.lease.slotId, "Dispatch.lease.slotId"),
+    },
+  };
 }
 
-function validateAcceptance(value) {
+export function formatTaskDispatch(value) {
+  return canonicalBody(TASK_DISPATCH_MARKER, normalizeTaskDispatch(value));
+}
+
+export function parseTaskDispatch(body) {
+  return parseCanonicalBody(body, TASK_DISPATCH_MARKER, normalizeTaskDispatch);
+}
+
+export function deriveWorkGraphTaskResultId(taskId, dispatchId, leaseId) {
+  for (const [label, value] of [
+    ["taskId", taskId],
+    ["dispatchId", dispatchId],
+    ["leaseId", leaseId],
+  ]) {
+    opaque(value, label);
+  }
+  return `workgraph-v1:result:sha256:${framedSha256([
+    taskId,
+    dispatchId,
+    leaseId,
+  ])}`;
+}
+
+function normalizeTaskResult(value) {
   exact(
     value,
-    ["resultCommentNodeId", "resultBodyDigest", "summary"],
-    "Acceptance",
+    ["resultId", "taskId", "dispatchId", "leaseId", "outcome", "output"],
+    "Result",
   );
-  identifier(value.resultCommentNodeId, "Acceptance.resultCommentNodeId");
-  if (
-    typeof value.resultBodyDigest !== "string" ||
-    !/^sha256:[0-9a-f]{64}$/.test(value.resultBodyDigest)
-  ) {
-    throw new WorkGraphError("Acceptance.resultBodyDigest must be sha256:<64 lowercase hex>");
+  for (const key of ["resultId", "taskId", "dispatchId", "leaseId"]) {
+    opaque(value[key], `Result.${key}`);
   }
-  plain(value.summary, "Acceptance.summary");
-}
-
-export function formatAcceptance(value) {
-  validateAcceptance(value);
-  return canonicalJson(ACCEPTANCE_MARKER, value);
-}
-
-function validateFeedback(value) {
-  exact(
-    value,
-    ["resultCommentNodeId", "resultBodyDigest", "feedback"],
-    "Feedback",
-  );
-  identifier(value.resultCommentNodeId, "Feedback.resultCommentNodeId");
-  if (
-    typeof value.resultBodyDigest !== "string" ||
-    !/^sha256:[0-9a-f]{64}$/.test(value.resultBodyDigest)
-  ) {
-    throw new WorkGraphError("Feedback.resultBodyDigest must be sha256:<64 lowercase hex>");
+  if (!["succeeded", "failed", "cancelled"].includes(value.outcome)) {
+    throw new WorkGraphReporterError(
+      "Result.outcome must be succeeded, failed, or cancelled",
+    );
   }
-  plain(value.feedback, "Feedback.feedback");
+  if (
+    value.resultId !==
+    deriveWorkGraphTaskResultId(value.taskId, value.dispatchId, value.leaseId)
+  ) {
+    throw new WorkGraphReporterError("Result.resultId is not canonical");
+  }
+  return {
+    resultId: value.resultId,
+    taskId: value.taskId,
+    dispatchId: value.dispatchId,
+    leaseId: value.leaseId,
+    outcome: value.outcome,
+    output: canonicalJsonValue(value.output),
+  };
 }
 
-export function resultDigest(body) {
+export function formatTaskResult(value) {
+  return canonicalBody(TASK_RESULT_MARKER, normalizeTaskResult(value));
+}
+
+export function parseTaskResult(body) {
+  return parseCanonicalBody(body, TASK_RESULT_MARKER, normalizeTaskResult);
+}
+
+function framedSha256(parts) {
+  const hash = createHash("sha256");
+  for (const value of parts) {
+    const bytes = Buffer.from(value, "utf8");
+    const frame = Buffer.alloc(8);
+    frame.writeBigUInt64BE(BigInt(bytes.length));
+    hash.update(frame);
+    hash.update(bytes);
+  }
+  return hash.digest("hex");
+}
+
+export function deriveWorkGraphAdmissionId(rootIssueId, deliveryId) {
+  opaque(rootIssueId, "rootIssueId");
+  opaque(deliveryId, "deliveryId");
+  const hash = createHash("sha256");
+  hash.update("workgraph-v1-admission-generation\0", "utf8");
+  hash.update(rootIssueId, "utf8");
+  hash.update("\0", "utf8");
+  hash.update(deliveryId, "utf8");
+  return `wga-${hash.digest("hex")}`;
+}
+
+export function deriveWorkGraphRootIssueContentDigest(title, body) {
+  if (typeof title !== "string" || (body !== null && typeof body !== "string")) {
+    throw new WorkGraphReporterError(
+      "Root Issue title and body must be strings or a null body",
+    );
+  }
+  return `sha256:${framedSha256([
+    "workgraph-v1-root-issue-content",
+    title,
+    body ?? "",
+  ])}`;
+}
+
+export function deriveWorkGraphWorkflowRunId(
+  repositoryNodeId,
+  rootIssueId,
+  admissionId,
+  workflowDefinitionId,
+  workflowDefinitionVersion,
+  workflowDefinitionDigest,
+) {
+  for (const [label, value] of [
+    ["repositoryNodeId", repositoryNodeId],
+    ["rootIssueId", rootIssueId],
+    ["admissionId", admissionId],
+    ["workflowDefinitionId", workflowDefinitionId],
+    ["workflowDefinitionVersion", workflowDefinitionVersion],
+    ["workflowDefinitionDigest", workflowDefinitionDigest],
+  ]) {
+    opaque(value, label);
+  }
+  digest(workflowDefinitionDigest, "workflowDefinitionDigest");
+  return `workgraph-v1:run:sha256:${framedSha256([
+    repositoryNodeId,
+    rootIssueId,
+    admissionId,
+    workflowDefinitionId,
+    workflowDefinitionVersion,
+    workflowDefinitionDigest,
+  ])}`;
+}
+
+export function deriveWorkGraphRootTaskId(workflowRunId, rootTaskDefinitionId) {
+  opaque(workflowRunId, "workflowRunId");
+  opaque(rootTaskDefinitionId, "rootTaskDefinitionId");
+  return `wgt-${framedSha256([workflowRunId, rootTaskDefinitionId]).slice(0, 60)}`;
+}
+
+export function resultBodyDigest(body) {
   return `sha256:${createHash("sha256").update(body, "utf8").digest("hex")}`;
 }
 
-function digestString(value, label) {
-  if (typeof value !== "string" || !/^sha256:[0-9a-f]{64}$/.test(value)) {
-    throw new WorkGraphError(`${label} must be sha256:<64 lowercase hex>`);
-  }
-  return value;
-}
-
-function structured(body, marker) {
-  return typeof body === "string" && body.includes(marker);
-}
-
-function envId(name) {
-  const value = Number(process.env[name] ?? "");
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new WorkGraphError(`${name} must be a positive integer`);
-  }
-  return value;
-}
-
-const IDENTITY_ENV = {
-  launcherId: "COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID",
-  assignmentId: "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
-  resultId: "COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID",
-  acceptanceId: "COPILOT_MCP_WORKGRAPH_ACCEPTANCE_REPORTER_USER_ID",
-  orchestratorId: "COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_USER_ID",
-  infoId: "COPILOT_MCP_WORKGRAPH_INFO_REPORTER_USER_ID",
-  feedbackId: "COPILOT_MCP_WORKGRAPH_FEEDBACK_REPORTER_USER_ID",
-};
-
-function configuredIdentities(keys) {
-  return Object.fromEntries(
-    keys.map((key) => [key, envId(IDENTITY_ENV[key])]),
+function validateTaskLocator(value) {
+  exact(
+    value,
+    [
+      "repositoryOwner",
+      "repositoryName",
+      "repositoryNodeId",
+      "issueNumber",
+      "issueNodeId",
+      "parentIssueNumber",
+      "parentIssueNodeId",
+    ],
+    "arguments.taskLocator",
   );
-}
-
-function requiredEnv(name) {
-  const value = process.env[name] ?? "";
-  if (!value) throw new WorkGraphError(`${name} is required`);
+  if (value.repositoryOwner !== OWNER || value.repositoryName !== REPO) {
+    throw new WorkGraphReporterError("taskLocator repository is not authorized");
+  }
+  opaque(value.repositoryNodeId, "taskLocator.repositoryNodeId");
+  issueNumber(value.issueNumber, "taskLocator.issueNumber");
+  opaque(value.issueNodeId, "taskLocator.issueNodeId");
+  issueNumber(value.parentIssueNumber, "taskLocator.parentIssueNumber");
+  opaque(value.parentIssueNodeId, "taskLocator.parentIssueNodeId");
+  if (
+    value.issueNumber === value.parentIssueNumber ||
+    value.issueNodeId === value.parentIssueNodeId
+  ) {
+    throw new WorkGraphReporterError("taskLocator task and parent must differ");
+  }
   return value;
 }
 
-export function leaseValidationPathForTool(toolName) {
-  if (
-    toolName === "submit_workflow_task_result" ||
-    toolName === "post_workflow_parent_info_request"
-  ) {
-    return V2_LEASE_VALIDATION_PATH;
-  }
-  if (toolName === "post_parent_info_request") {
-    return V1_LEASE_VALIDATION_PATH;
-  }
-  throw new WorkGraphError(`unknown lease-bound tool ${toolName}`);
+function env(name) {
+  const value = process.env[name] ?? "";
+  if (!value) throw new WorkGraphReporterError(`${name} is required`);
+  return value;
 }
 
-export function validateLeaseValidationUrl(
-  value,
-  toolName,
-  allowTestLoopback = process.env.NODE_ENV === "test",
-) {
+function envUserId(name) {
+  const value = Number(env(name));
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new WorkGraphReporterError(`${name} must be a positive integer`);
+  }
+  return value;
+}
+
+function apiBaseUrl() {
+  const configured = process.env.WORKGRAPH_TEST_GITHUB_API_URL;
+  if (!configured) return API;
+  if (process.env.NODE_ENV !== "test") {
+    throw new WorkGraphReporterError("test GitHub API URL is forbidden outside tests");
+  }
+  const url = new URL(configured);
+  if (
+    url.protocol !== "http:" ||
+    !["127.0.0.1", "::1", "localhost"].includes(url.hostname) ||
+    url.username ||
+    url.password ||
+    url.search ||
+    url.hash
+  ) {
+    throw new WorkGraphReporterError("test GitHub API URL must be loopback HTTP");
+  }
+  return url.toString().replace(/\/$/, "");
+}
+
+export function validateLeaseValidationUrl(value) {
   let url;
   try {
     url = new URL(value);
-    const expectedPath = leaseValidationPathForTool(toolName);
-    const loopback =
-      allowTestLoopback &&
+    const testLoopback =
+      process.env.NODE_ENV === "test" &&
       url.protocol === "http:" &&
       ["127.0.0.1", "::1", "localhost"].includes(url.hostname);
-    const validPath = loopback
-      ? url.pathname.endsWith("/lease/validate")
-      : [V1_LEASE_VALIDATION_PATH, V2_LEASE_VALIDATION_PATH].includes(
-          url.pathname,
-        );
     if (
-      (!loopback && url.protocol !== "https:") ||
+      (!testLoopback && url.protocol !== "https:") ||
       url.username ||
       url.password ||
       url.search ||
       url.hash ||
-      !validPath
+      url.pathname !== LEASE_VALIDATION_PATH
     ) {
-      throw Error();
+      throw new Error();
     }
-    if (!loopback) url.pathname = expectedPath;
   } catch {
-    throw new WorkGraphError(
-      "Source Lease validation configuration is invalid for this tool",
+    throw new WorkGraphReporterError(
+      `lease validation URL must use ${LEASE_VALIDATION_PATH}`,
     );
   }
   return url.toString();
 }
 
-function config(toolName, args) {
-  const token = requiredEnv("COPILOT_MCP_WORKGRAPH_TOKEN");
-  const taskTypeId =
-    process.env.COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID ?? "";
-  identifier(taskTypeId, "COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID");
-  let api = API;
-  if (
-    process.env.NODE_ENV === "test" &&
-    process.env.WORKGRAPH_TEST_GITHUB_API_URL
-  ) {
-    const url = new URL(process.env.WORKGRAPH_TEST_GITHUB_API_URL);
-    if (url.protocol !== "http:" || !["127.0.0.1", "::1", "localhost"].includes(url.hostname)) {
-      throw new WorkGraphError("test API URL must be loopback HTTP");
-    }
-    api = url.toString().replace(/\/$/, "");
+function configuration(toolName) {
+  if (!["get_root_issue", "submit_task_result"].includes(toolName)) {
+    throw new WorkGraphReporterError(`unknown tool ${toolName}`);
   }
-  const common = {
-    token,
+  const taskTypeId = env("COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID");
+  opaque(taskTypeId, "COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID");
+  const config = {
+    token: env("COPILOT_MCP_WORKGRAPH_TOKEN"),
     taskTypeId,
-    api,
+    launcherId: envUserId("COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID"),
+    resultId: envUserId("COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID"),
+    api: apiBaseUrl(),
   };
-  let identities;
-  let lease = false;
-  if (
-    toolName === "submit_task_assignment" ||
-    toolName === "submit_workflow_task_assignment"
-  ) {
-    identities = ["launcherId", "assignmentId"];
-  } else if (
-    toolName === "get_result_snapshot" ||
-    toolName === "submit_result_acceptance"
-  ) {
-    identities = ["launcherId", "assignmentId", "resultId", "acceptanceId"];
-  } else if (toolName === "submit_task_feedback") {
-    identities = ["launcherId", "assignmentId", "resultId", "feedbackId"];
-  } else if (
-    toolName === "get_vnext_principal_issue" ||
-    toolName === "submit_task_result"
-  ) {
-    identities = ["launcherId", "assignmentId", "resultId"];
-  } else if (toolName === "submit_workflow_task_result") {
-    identities = ["launcherId", "assignmentId", "resultId"];
-    if (
-      typeof args?.workResult?.result?.requestCommentNodeId === "string"
-    ) {
-      identities.push("infoId");
-    }
-    lease = true;
-  } else if (toolName === "post_parent_info_request") {
-    identities = [
-      "launcherId",
-      "assignmentId",
-      "resultId",
-      "acceptanceId",
-      "infoId",
-    ];
-    lease = true;
-  } else if (toolName === "post_workflow_parent_info_request") {
-    identities = ["launcherId", "assignmentId", "resultId", "infoId"];
-    lease = true;
-  } else if (toolName === "transition_issue") {
-    identities = [
-      "launcherId",
-      "assignmentId",
-      "resultId",
-      "acceptanceId",
-      "orchestratorId",
-      "infoId",
-      "feedbackId",
-    ];
-  } else {
-    throw new WorkGraphError(`unknown tool ${toolName}`);
+  if (toolName === "submit_task_result") {
+    return {
+      ...config,
+      assignmentId: envUserId(
+        "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
+      ),
+      executorId: env("COPILOT_MCP_WORKGRAPH_EXECUTOR_ID"),
+      leaseValidationToken: env(
+        "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN",
+      ),
+      leaseValidationUrl: validateLeaseValidationUrl(
+        env("COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL"),
+      ),
+    };
   }
-  return {
-    ...common,
-    ...configuredIdentities(identities),
-    ...(lease
-      ? {
-          leaseValidationToken:
-            requiredEnv("COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN"),
-          leaseValidationUrl: validateLeaseValidationUrl(
-            requiredEnv("COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL"),
-            toolName,
-          ),
-        }
-      : {}),
-  };
+  return config;
 }
 
 class GitHub {
-  constructor(cfg) {
-    this.cfg = cfg;
+  constructor(config) {
+    this.config = config;
   }
 
   async request(method, route, payload, { allowNotFound = false } = {}) {
     let response;
     try {
-      response = await fetch(`${this.cfg.api}${route}`, {
+      response = await fetch(`${this.config.api}${route}`, {
         method,
         headers: {
           Accept: "application/vnd.github+json",
-          Authorization: `Bearer ${this.cfg.token}`,
+          Authorization: `Bearer ${this.config.token}`,
           "Content-Type": "application/json",
-          "User-Agent": "drasi-workgraph-reporter",
+          "User-Agent": "drasi-workgraph-v1-reporter",
           "X-GitHub-Api-Version": "2026-03-10",
         },
         body: payload === undefined ? undefined : JSON.stringify(payload),
         signal: AbortSignal.timeout(30_000),
       });
     } catch (error) {
-      throw new WorkGraphError(`GitHub request failed: ${error.message}`);
+      throw new WorkGraphReporterError(`GitHub request failed: ${error.message}`);
     }
     const text = await response.text();
     let body = null;
@@ -973,12 +557,12 @@ class GitHub {
       try {
         body = JSON.parse(text);
       } catch {
-        throw new WorkGraphError("GitHub response was not JSON");
+        throw new WorkGraphReporterError("GitHub response was not JSON");
       }
     }
     if (allowNotFound && response.status === 404) return null;
     if (!response.ok) {
-      throw new WorkGraphError(
+      throw new WorkGraphReporterError(
         `GitHub request failed with HTTP ${response.status}: ${body?.message ?? text}`,
       );
     }
@@ -988,60 +572,40 @@ class GitHub {
   identity() {
     return this.request("GET", "/user");
   }
-  issue(number) {
-    return this.request("GET", `/repos/${OWNER}/${REPO}/issues/${number}`);
-  }
+
   repository() {
     return this.request("GET", `/repos/${OWNER}/${REPO}`);
   }
-  parent(number) {
-    return this.request("GET", `/repos/${OWNER}/${REPO}/issues/${number}/parent`);
+
+  issue(number) {
+    return this.request("GET", `/repos/${OWNER}/${REPO}/issues/${number}`);
   }
-  optionalParent(number) {
+
+  parent(number) {
     return this.request(
       "GET",
       `/repos/${OWNER}/${REPO}/issues/${number}/parent`,
-      undefined,
-      { allowNotFound: true },
     );
   }
-  comment(id) {
-    return this.request("GET", `/repos/${OWNER}/${REPO}/issues/comments/${id}`);
-  }
-  agentConfig() {
-    return this.request(
-      "GET",
-      `/repos/${OWNER}/${REPO}/contents/${AGENT_CONFIG_PATH}?ref=${AGENT_CONFIG_REF}`,
-    );
-  }
-  async paginate(route) {
-    const items = [];
+
+  async comments(number) {
+    const comments = [];
     for (let page = 1; page <= 100; page += 1) {
-      const separator = route.includes("?") ? "&" : "?";
       const batch = await this.request(
         "GET",
-        `${route}${separator}per_page=100&page=${page}`,
+        `/repos/${OWNER}/${REPO}/issues/${number}/comments?per_page=100&page=${page}`,
       );
       if (!Array.isArray(batch)) {
-        throw new WorkGraphError("paginated GitHub response must be an array");
+        throw new WorkGraphReporterError(
+          "paginated GitHub comments response must be an array",
+        );
       }
-
-      items.push(...batch);
-      if (batch.length < 100) return items;
+      comments.push(...batch);
+      if (batch.length < 100) return comments;
     }
-    throw new WorkGraphError("GitHub pagination exceeded 100 pages");
+    throw new WorkGraphReporterError("GitHub comments pagination exceeded 100 pages");
   }
-  comments(number) {
-    return this.paginate(`/repos/${OWNER}/${REPO}/issues/${number}/comments`);
-  }
-  subIssues(number) {
-    return this.paginate(
-      `/repos/${OWNER}/${REPO}/issues/${number}/sub_issues`,
-    );
-  }
-  openIssues() {
-    return this.paginate(`/repos/${OWNER}/${REPO}/issues?state=open`);
-  }
+
   postComment(number, body) {
     return this.request(
       "POST",
@@ -1049,868 +613,574 @@ class GitHub {
       { body },
     );
   }
-  patchComment(id, body) {
-    return this.request(
-      "PATCH",
-      `/repos/${OWNER}/${REPO}/issues/comments/${id}`,
-      { body },
-    );
-  }
-  createIssue(title, body) {
-    return this.request("POST", `/repos/${OWNER}/${REPO}/issues`, {
-      title,
-      body,
-      type: TASK_TYPE_NAME,
-    });
-  }
-  attachSubIssue(parentNumber, childId) {
-    return this.request(
-      "POST",
-      `/repos/${OWNER}/${REPO}/issues/${parentNumber}/sub_issues`,
-      { sub_issue_id: childId },
-    );
-  }
-  replaceLabels(number, labels) {
-    return this.request(
-      "PUT",
-      `/repos/${OWNER}/${REPO}/issues/${number}/labels`,
-      { labels },
+}
+
+function verifyReporterIdentity(identity, expectedId) {
+  if (
+    !object(identity) ||
+    identity.id !== expectedId ||
+    typeof identity.login !== "string" ||
+    identity.login.length === 0
+  ) {
+    throw new WorkGraphReporterError(
+      "token identity does not match the configured Result reporter",
     );
   }
 }
 
-async function authoritativeAgents(github) {
-  const response = await github.agentConfig();
+function verifyRepository(repository, repositoryNodeId) {
   if (
-    !object(response) ||
-    response.path !== AGENT_CONFIG_PATH ||
-    response.encoding !== "base64" ||
-    typeof response.content !== "string" ||
-    typeof response.sha !== "string" ||
-    !/^[0-9a-f]{40}$/.test(response.sha)
+    !object(repository) ||
+    repository.name !== REPO ||
+    repository.owner?.login !== OWNER ||
+    repository.node_id !== repositoryNodeId
   ) {
-    throw new WorkGraphError("authoritative agent config response is invalid");
-  }
-  let bytes;
-  const encoded = response.content.replace(/\n/g, "");
-  if (
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
-      encoded,
-    )
-  ) {
-    throw new WorkGraphError("authoritative agent config is not valid base64");
-  }
-  try {
-    bytes = Buffer.from(encoded, "base64");
-  } catch {
-    throw new WorkGraphError("authoritative agent config is not valid base64");
-  }
-  let body;
-  try {
-    body = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    throw new WorkGraphError("authoritative agent config is not valid UTF-8");
-  }
-  return parseAgentsYaml(body);
-}
-
-function verifyIdentity(identity, expected, label) {
-  if (!object(identity) || identity.id !== expected || !identity.login) {
-    throw new WorkGraphError(`token identity does not match configured ${label}`);
+    throw new WorkGraphReporterError("taskLocator repository does not match GitHub");
   }
 }
 
-function validateParent(parent, input) {
-  if (
-    !object(parent) ||
-    parent.pull_request ||
-    parent.number !== input.parentIssueNumber ||
-    parent.node_id !== input.parentIssueNodeId ||
-    parent.state !== "open"
-  ) {
-    throw new WorkGraphError("native parent is not the requested open Issue");
-  }
-  if (parent.repository_url !== REPOSITORY_URL) {
-    throw new WorkGraphError("native parent is outside the fixed repository");
-  }
-}
-
-function validateTaskIssueIdentity(
-  task,
-  taskIssueNumber,
-  taskIssueNodeId,
-  cfg,
-  { open = false } = {},
-) {
-  if (
-    !object(task) ||
-    task.pull_request ||
-    task.number !== taskIssueNumber ||
-    task.node_id !== taskIssueNodeId ||
-    task.repository_url !== REPOSITORY_URL
-  ) {
-    throw new WorkGraphError("task is not the requested fixed-repository Issue");
-  }
-  if (
-    task.type?.name !== TASK_TYPE_NAME ||
-    task.type?.node_id !== cfg.taskTypeId
-  ) {
-    throw new WorkGraphError("task does not have the configured exact WorkGraphTask type name and ID");
-  }
-  if (task.user?.id !== cfg.launcherId) {
-    throw new WorkGraphError("task creator is not the configured launcher identity");
-  }
-  if (open && task.state !== "open") {
-    throw new WorkGraphError("task must be open");
-  }
-}
-
-function validateTaskIssue(task, input, cfg, options = {}) {
-  validateTaskIssueIdentity(
-    task,
-    input.taskIssueNumber,
-    input.taskIssueNodeId,
-    cfg,
-    options,
-  );
-  return parseTask(task.body);
-}
-
-function validateWorkflowTaskIssue(task, input, cfg, options = {}) {
-  validateTaskIssueIdentity(
-    task,
-    input.taskIssueNumber,
-    input.taskIssueNodeId,
-    cfg,
-    options,
-  );
-  return parseWorkflowTask(task.body);
-}
-
-async function context(github, input, cfg, options) {
-  const [identity, task, parent] = await Promise.all([
-    github.identity(),
-    github.issue(input.taskIssueNumber),
-    github.parent(input.taskIssueNumber),
-  ]);
-  verifyIdentity(identity, options.actorId, options.actorLabel);
-  const taskPayload = validateTaskIssue(task, input, cfg, { open: options.open });
-  validateParent(parent, input);
-  return { identity, task, parent, taskPayload };
-}
-
-function validateWorkflowParent(parent, input, cfg, taskPayload) {
-  validateParent(parent, input);
-  if (taskPayload.inputs.branchId === undefined) {
-    if (
-      parent.type?.name === TASK_TYPE_NAME ||
-      parent.type?.node_id === cfg.taskTypeId
-    ) {
-      throw new WorkGraphError(
-        "top-level workflow task parent must be a principal Issue",
-      );
-    }
-    return null;
-  }
-  const parentPayload = validateWorkflowTaskIssue(
-    parent,
-    {
-      taskIssueNumber: input.parentIssueNumber,
-      taskIssueNodeId: input.parentIssueNodeId,
-    },
-    cfg,
-    { open: true },
-  );
-  validateWorkflowChildTask(parentPayload, taskPayload);
-  return parentPayload;
-}
-
-async function workflowContext(github, input, cfg, options) {
-  const [identity, task, parent] = await Promise.all([
-    github.identity(),
-    github.issue(input.taskIssueNumber),
-    github.parent(input.taskIssueNumber),
-  ]);
-  verifyIdentity(identity, options.actorId, options.actorLabel);
-  const taskPayload = validateWorkflowTaskIssue(task, input, cfg, {
-    open: options.open,
-  });
-  const parentTaskPayload = validateWorkflowParent(
-    parent,
-    input,
-    cfg,
-    taskPayload,
-  );
-  return { identity, task, parent, taskPayload, parentTaskPayload };
-}
-
-function candidates(comments, marker, parser) {
-  const marked = comments.filter((comment) => structured(comment.body, marker));
-  return {
-    marked,
-    parsed: marked.map((comment) => ({
-      comment,
-      payload: parser(comment.body),
-    })),
-  };
-}
-
-function oneAssignment(
-  comments,
-  taskPayload,
-  cfg,
-  { agentId = null, assignmentCommentNodeId = null } = {},
-) {
-  const found = candidates(comments, ASSIGNMENT_MARKER, parseAssignment);
-  if (
-    found.marked.length !== 1 ||
-    !found.parsed[0]?.payload ||
-    found.parsed[0].comment.user?.id !== cfg.assignmentId
-  ) {
-    throw new WorkGraphError("task must have one canonical Assignment by the configured Assignment reporter");
-  }
-  const entry = {
-    comment: found.parsed[0].comment,
-    payload: found.parsed[0].payload,
-  };
-  if (entry.payload.agentId !== AGENT_ID_BY_TASK[taskPayload.taskType]) {
-    throw new WorkGraphError("Assignment agentId does not match taskType");
-  }
-  if (
-    agentId !== null &&
-    (entry.payload.agentId !== agentId ||
-      entry.comment.node_id !== assignmentCommentNodeId)
-  ) {
-    throw new WorkGraphError(
-      "active work requires the exact Assignment/v1 agent and comment ID",
-    );
-  }
-  return entry;
-}
-
-function oneWorkflowAssignment(
-  comments,
-  taskPayload,
-  cfg,
-  { agentId = null, assignmentCommentNodeId = null } = {},
-) {
-  const found = candidates(
-    comments,
-    ASSIGNMENT_MARKER,
-    parseWorkflowAssignment,
-  );
-  if (
-    found.marked.length !== 1 ||
-    !found.parsed[0]?.payload ||
-    found.parsed[0].comment.user?.id !== cfg.assignmentId
-  ) {
-    throw new WorkGraphError(
-      "workflow task must have one canonical Assignment by the configured Assignment reporter",
-    );
-  }
-  const entry = {
-    comment: found.parsed[0].comment,
-    payload: found.parsed[0].payload,
-  };
-  if (entry.payload.agentId !== taskPayload.inputs.agent) {
-    throw new WorkGraphError(
-      "Assignment agentId does not match the workflow task manifest",
-    );
-  }
-  if (
-    agentId !== null &&
-    (entry.payload.agentId !== agentId ||
-      entry.comment.node_id !== assignmentCommentNodeId)
-  ) {
-    throw new WorkGraphError(
-      "active workflow work requires the exact Assignment/v1 agent and comment ID",
-    );
-  }
-  return entry;
-}
-
-function oneResult(comments, taskPayload, cfg) {
-  const found = candidates(comments, RESULT_MARKER, parseResult);
-  if (
-    found.marked.length !== 1 ||
-    !found.parsed[0]?.payload ||
-    found.parsed[0].comment.user?.id !== cfg.resultId
-  ) {
-    throw new WorkGraphError("task must have one canonical Result by the configured Result reporter");
-  }
-  const entry = {
-    comment: found.parsed[0].comment,
-    payload: found.parsed[0].payload,
-  };
-  if (entry.payload.taskType !== taskPayload.taskType) {
-    throw new WorkGraphError("Result taskType does not match the task");
-  }
-  return entry;
-}
-
-function oneWorkflowResult(comments, cfg) {
-  const found = candidates(comments, RESULT_MARKER, parseWorkflowResult);
-  if (
-    found.marked.length !== 1 ||
-    !found.parsed[0]?.payload ||
-    found.parsed[0].comment.user?.id !== cfg.resultId
-  ) {
-    throw new WorkGraphError(
-      "workflow task must have one canonical Result by the configured Result reporter",
-    );
-  }
-  return {
-    comment: found.parsed[0].comment,
-    payload: found.parsed[0].payload,
-  };
-}
-
-function acceptanceFor(comments, resultEntry, cfg) {
-  const found = candidates(comments, ACCEPTANCE_MARKER, (body) =>
-    parseCanonicalJson(body, ACCEPTANCE_MARKER, validateAcceptance),
-  );
-  if (found.parsed.length !== 1 || !found.parsed[0].payload) {
-    throw new WorkGraphError("task must have one canonical Result Acceptance");
-  }
-  const entry = found.parsed[0];
-  if (entry.comment.user?.id !== cfg.acceptanceId) {
-    throw new WorkGraphError("Acceptance author is not configured");
-  }
-  const digest = resultDigest(resultEntry.comment.body);
-  if (
-    entry.payload.resultCommentNodeId !== resultEntry.comment.node_id ||
-    entry.payload.resultBodyDigest !== digest
-  ) {
-    throw new WorkGraphError("Acceptance does not target the exact current Result and digest");
-  }
-  return entry;
-}
-
-function verifiedCommentWrite(comment, expectedBody, actorId, label) {
-  if (
-    !object(comment) ||
-    !Number.isSafeInteger(comment.id) ||
-    comment.id <= 0 ||
-    typeof comment.node_id !== "string" ||
-    !/^[A-Za-z0-9_-]+$/.test(comment.node_id) ||
-    comment.user?.id !== actorId ||
-    comment.body !== expectedBody
-  ) {
-    throw new WorkGraphError(`${label} write response did not reconcile`);
-  }
-  return comment;
-}
-
-function verifyResultSnapshot(comment, expected, cfg) {
-  if (
-    !object(comment) ||
-    comment.id !== expected.id ||
-    comment.node_id !== expected.node_id ||
-    comment.user?.id !== cfg.resultId ||
-    comment.body !== expected.body
-  ) {
-    throw new WorkGraphError("current Result changed during reconciliation");
-  }
-}
-
-async function submitAssignment(input, github, cfg) {
-  refs(input, ["agentId"]);
-  if (!Object.values(AGENT_ID_BY_TASK).includes(input.agentId)) {
-    throw new WorkGraphError("arguments.agentId is unsupported");
-  }
-  const ctx = await context(github, input, cfg, {
-    actorId: cfg.assignmentId,
-    actorLabel: "Assignment reporter",
-    open: true,
-  });
-  if (input.agentId !== AGENT_ID_BY_TASK[ctx.taskPayload.taskType]) {
-    throw new WorkGraphError("agentId does not match taskType");
-  }
-  const agents = await authoritativeAgents(github);
-  const configured = agents.find((agent) => agent.agentId === input.agentId);
-  if (!configured) {
-    throw new WorkGraphError(
-      "agentId is absent from authoritative config",
-    );
-  }
-  const comments = await github.comments(input.taskIssueNumber);
-  const found = candidates(comments, ASSIGNMENT_MARKER, parseAssignment);
-  const body = formatAssignment(input.agentId);
-  if (found.marked.length > 0) {
-    if (
-      found.marked.length === 1 &&
-      found.parsed[0].payload?.agentId === input.agentId &&
-      found.parsed[0].comment.user?.id === cfg.assignmentId &&
-      found.parsed[0].comment.body === body
-    ) {
-      return {
-        commentNodeId: found.parsed[0].comment.node_id,
-        reconciled: true,
-      };
-    }
-    throw new WorkGraphError("task already has a malformed, foreign, or conflicting Assignment");
-  }
-  const beforeCtx = await context(github, input, cfg, {
-    actorId: cfg.assignmentId,
-    actorLabel: "Assignment reporter",
-    open: true,
-  });
-  if (beforeCtx.taskPayload.taskType !== ctx.taskPayload.taskType) {
-    throw new WorkGraphError("task changed immediately before Assignment");
-  }
-  const beforeAgents = await authoritativeAgents(github);
-  const beforeAgent = beforeAgents.find(
-    (agent) => agent.agentId === input.agentId,
-  );
-  if (!beforeAgent) {
-    throw new WorkGraphError("agent config changed immediately before Assignment");
-  }
-  const beforeComments = await github.comments(input.taskIssueNumber);
-  if (candidates(beforeComments, ASSIGNMENT_MARKER, parseAssignment).marked.length > 0) {
-    throw new WorkGraphError("Assignment appeared immediately before creation");
-  }
-  const comment = verifiedCommentWrite(
-    await github.postComment(input.taskIssueNumber, body),
-    body,
-    cfg.assignmentId,
-    "Assignment",
-  );
-  const afterComments = await github.comments(input.taskIssueNumber);
-  const afterAssignment = oneAssignment(afterComments, ctx.taskPayload, cfg, {
-    agentId: input.agentId,
-    assignmentCommentNodeId: comment.node_id,
-  });
-  if (afterAssignment.comment.body !== body) {
-    throw new WorkGraphError(
-      "Assignment race left the task inconsistent; manual remediation is required",
-    );
-  }
-  return { commentNodeId: comment.node_id, reconciled: false };
-}
-
-async function submitWorkflowAssignment(input, github, cfg) {
-  refs(input, ["agentId"]);
-  const body = formatWorkflowAssignment(input.agentId);
-  const ctx = await workflowContext(github, input, cfg, {
-    actorId: cfg.assignmentId,
-    actorLabel: "Assignment reporter",
-    open: true,
-  });
-  if (input.agentId !== ctx.taskPayload.inputs.agent) {
-    throw new WorkGraphError(
-      "agentId does not match the workflow task manifest",
-    );
-  }
-  const agents = await authoritativeAgents(github);
-  if (!agents.some((agent) => agent.agentId === input.agentId)) {
-    throw new WorkGraphError("agentId is absent from authoritative config");
-  }
-  const comments = await github.comments(input.taskIssueNumber);
-  const found = candidates(
-    comments,
-    ASSIGNMENT_MARKER,
-    parseWorkflowAssignment,
-  );
-  if (found.marked.length > 0) {
-    if (
-      found.marked.length === 1 &&
-      found.parsed[0].payload?.agentId === input.agentId &&
-      found.parsed[0].comment.user?.id === cfg.assignmentId &&
-      found.parsed[0].comment.body === body
-    ) {
-      return {
-        commentNodeId: found.parsed[0].comment.node_id,
-        reconciled: true,
-      };
-    }
-    throw new WorkGraphError(
-      "workflow task already has a malformed, foreign, or conflicting Assignment",
-    );
-  }
-  const beforeCtx = await workflowContext(github, input, cfg, {
-    actorId: cfg.assignmentId,
-    actorLabel: "Assignment reporter",
-    open: true,
-  });
-  if (!isDeepStrictEqual(beforeCtx.taskPayload, ctx.taskPayload)) {
-    throw new WorkGraphError(
-      "workflow task changed immediately before Assignment",
-    );
-  }
-  const beforeAgents = await authoritativeAgents(github);
-  if (!beforeAgents.some((agent) => agent.agentId === input.agentId)) {
-    throw new WorkGraphError(
-      "agent config changed immediately before Assignment",
-    );
-  }
-  const beforeComments = await github.comments(input.taskIssueNumber);
-  if (
-    candidates(
-      beforeComments,
-      ASSIGNMENT_MARKER,
-      parseWorkflowAssignment,
-    ).marked.length > 0
-  ) {
-    throw new WorkGraphError(
-      "Assignment appeared immediately before creation",
-    );
-  }
-  const comment = verifiedCommentWrite(
-    await github.postComment(input.taskIssueNumber, body),
-    body,
-    cfg.assignmentId,
-    "workflow Assignment",
-  );
-  const afterComments = await github.comments(input.taskIssueNumber);
-  const afterAssignment = oneWorkflowAssignment(
-    afterComments,
-    ctx.taskPayload,
-    cfg,
-    {
-      agentId: input.agentId,
-      assignmentCommentNodeId: comment.node_id,
-    },
-  );
-  if (afterAssignment.comment.body !== body) {
-    throw new WorkGraphError(
-      "Assignment race left the workflow task inconsistent; manual remediation is required",
-    );
-  }
-  return { commentNodeId: comment.node_id, reconciled: false };
-}
-
-const LEASE_ARGUMENTS = [
-  "assignmentCommentNodeId",
-  "leaseId",
-  "agentId",
-  "slotId",
-];
-
-function nowMilliseconds() {
-  if (process.env.NODE_ENV === "test" && process.env.WORKGRAPH_TEST_NOW) {
-    timestamp(process.env.WORKGRAPH_TEST_NOW, "WORKGRAPH_TEST_NOW");
-    return Date.parse(process.env.WORKGRAPH_TEST_NOW);
-  }
-  return Date.now();
-}
-
-async function validateSourceLease(input, taskPayload, cfg) {
-  let validationUrl;
-  try {
-    validationUrl = new URL(cfg.leaseValidationUrl);
-    const loopback = process.env.NODE_ENV === "test" && validationUrl.protocol === "http:" &&
-      ["127.0.0.1", "::1", "localhost"].includes(validationUrl.hostname);
-    if (!cfg.leaseValidationToken || (validationUrl.protocol !== "https:" && !loopback) ||
-        validationUrl.username || validationUrl.password || validationUrl.search || validationUrl.hash ||
-        !validationUrl.pathname.endsWith("/lease/validate")) throw Error();
-  } catch {
-    throw new WorkGraphError("Source Lease validation configuration is invalid");
-  }
-  const expected = {
-    leaseId: input.leaseId,
-    taskNodeId: input.taskIssueNodeId,
-    assignmentCommentNodeId: input.assignmentCommentNodeId,
-    agentId: input.agentId,
-    slotId: input.slotId,
-    taskType: taskPayload.taskType,
-  };
-  for (const key of ["leaseId", "taskNodeId", "assignmentCommentNodeId", "agentId", "slotId"]) {
-    opaque(expected[key], `Source Lease.${key}`);
-  }
-  const response = await fetch(validationUrl, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${cfg.leaseValidationToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        taskNodeId: expected.taskNodeId,
-        leaseId: expected.leaseId,
-        assignmentCommentNodeId: expected.assignmentCommentNodeId,
-        agentId: expected.agentId,
-        slotId: expected.slotId,
-      }),
-      signal: AbortSignal.timeout(30_000),
-  });
-  if (!response.ok) {
-    throw new WorkGraphError(`Source Lease validation failed with HTTP ${response.status}`);
-  }
-  const snapshot = await response.json().catch(() => {
-    throw new WorkGraphError("Source Lease validation response was not JSON");
-  });
-  exact(
-    snapshot,
-    [...Object.keys(expected), "acquiredAt", "expiresAt"],
-    "Source Lease validation response",
-  );
-  if (
-    Object.entries(expected).some(([key, value]) => snapshot[key] !== value)
-  ) {
-    throw new WorkGraphError("Source Lease validation response does not match the dispatch");
-  }
-  timestamp(snapshot.acquiredAt, "Source Lease.acquiredAt");
-  timestamp(snapshot.expiresAt, "Source Lease.expiresAt");
-  if (
-    Date.parse(snapshot.acquiredAt) >= Date.parse(snapshot.expiresAt) ||
-    nowMilliseconds() >= Date.parse(snapshot.expiresAt)
-  ) {
-    throw new WorkGraphError("Source Lease is expired or has an invalid interval");
-  }
-  return snapshot;
-}
-
-function validateVNextTaskLocator(locator, { requireParent = false } = {}) {
-  const locatorKeys = [
-    "repositoryOwner",
-    "repositoryName",
-    "repositoryNodeId",
-    "issueNumber",
-    "issueNodeId",
-  ];
-  const hasParent =
-    Object.prototype.hasOwnProperty.call(locator ?? {}, "parentIssueNumber") ||
-    Object.prototype.hasOwnProperty.call(locator ?? {}, "parentIssueNodeId");
-  exact(
-    locator,
-    [
-      ...locatorKeys,
-      ...(hasParent ? ["parentIssueNumber", "parentIssueNodeId"] : []),
-    ],
-    "arguments.taskLocator",
-  );
-  if (requireParent && !hasParent) {
-    throw new WorkGraphError("taskLocator must identify the immediate typed root parent");
-  }
-  if (
-    locator.repositoryOwner !== OWNER ||
-    locator.repositoryName !== REPO
-  ) {
-    throw new WorkGraphError("taskLocator repository is not authorized");
-  }
-  opaque(locator.repositoryNodeId, "taskLocator.repositoryNodeId");
-  issueNumber(locator.issueNumber, "taskLocator.issueNumber");
-  identifier(locator.issueNodeId, "taskLocator.issueNodeId");
-  if (hasParent) {
-    issueNumber(locator.parentIssueNumber, "taskLocator.parentIssueNumber");
-    identifier(locator.parentIssueNodeId, "taskLocator.parentIssueNodeId");
-    if (
-      locator.parentIssueNumber === locator.issueNumber ||
-      locator.parentIssueNodeId === locator.issueNodeId
-    ) {
-      throw new WorkGraphError("taskLocator task and parent must differ");
-    }
-  }
-  return hasParent;
-}
-
-function parseCurrentVNextTask(issue, expected, cfg, label) {
+function taskIssue(issue, locator, config, label) {
   if (
     !object(issue) ||
-    issue.number !== expected.issueNumber ||
-    issue.node_id !== expected.issueNodeId ||
+    issue.number !== locator.issueNumber ||
+    issue.node_id !== locator.issueNodeId ||
     issue.repository_url !== REPOSITORY_URL ||
-    issue.state !== "open" ||
+    !["open", "closed"].includes(issue.state) ||
     issue.type?.name !== TASK_TYPE_NAME ||
-    issue.type?.node_id !== cfg.taskTypeId ||
-    issue.user?.id !== cfg.launcherId
+    issue.type?.node_id !== config.taskTypeId ||
+    issue.user?.id !== config.launcherId
   ) {
-    throw new WorkGraphError(`${label} is not the current trusted open WorkGraphTask`);
+    throw new WorkGraphReporterError(
+      `${label} is not a trusted WorkGraphTask Issue`,
+    );
   }
   try {
     return parseRuntimeTask(issue.body);
   } catch {
-    throw new WorkGraphError(`${label} body is not canonical WorkGraphTask/v3`);
+    throw new WorkGraphReporterError(
+      `${label} body is not canonical WorkGraphTask/v1`,
+    );
   }
 }
 
-function validatePrincipalIssueInput(value, repositoryNodeId) {
+function validateTaskContract(task, label) {
+  if (
+    task.workflowDefinitionId !== WORKFLOW_DEFINITION_ID ||
+    task.workflowDefinitionVersion !== WORKFLOW_DEFINITION_VERSION ||
+    task.workflowDefinitionDigest !== WORKFLOW_DEFINITION_DIGEST ||
+    ![ROOT_TASK_DEFINITION_ID, VALIDATOR_TASK_DEFINITION_ID].includes(
+      task.taskDefinitionId,
+    )
+  ) {
+    throw new WorkGraphReporterError(
+      `${label} does not belong to the pinned v1 workflow`,
+    );
+  }
+  if (task.taskDefinitionId === ROOT_TASK_DEFINITION_ID) {
+    exact(task.resolvedInputs, ["proofMode", "rootIssue"], `${label} resolvedInputs`);
+    if (task.resolvedInputs.proofMode !== "isolated") {
+      throw new WorkGraphReporterError(`${label} proofMode must be isolated`);
+    }
+  } else {
+    exact(
+      task.resolvedInputs,
+      ["validationProfile"],
+      `${label} resolvedInputs`,
+    );
+    if (task.resolvedInputs.validationProfile !== "new-issue-default") {
+      throw new WorkGraphReporterError(
+        `${label} validationProfile is not canonical`,
+      );
+    }
+  }
+}
+
+function linkedIssue(link, number, nodeId, label) {
+  if (
+    !object(link) ||
+    link.number !== number ||
+    link.node_id !== nodeId ||
+    link.repository_url !== REPOSITORY_URL
+  ) {
+    throw new WorkGraphReporterError(`${label} does not match GitHub`);
+  }
+}
+
+function hasAdmissionLabel(issue) {
+  return (
+    Array.isArray(issue?.labels) &&
+    issue.labels.some((label) => object(label) && label.name === "workgraph")
+  );
+}
+
+function ordinaryRootIssue(issue, number, nodeId, config) {
+  if (
+    !object(issue) ||
+    issue.number !== number ||
+    issue.node_id !== nodeId ||
+    issue.repository_url !== REPOSITORY_URL ||
+    issue.state !== "open" ||
+    !hasAdmissionLabel(issue) ||
+    issue.pull_request ||
+    issue.type?.name === TASK_TYPE_NAME ||
+    issue.type?.node_id === config.taskTypeId ||
+    typeof issue.title !== "string" ||
+    (issue.body !== null && typeof issue.body !== "string")
+  ) {
+    throw new WorkGraphReporterError(
+      "Root Issue is missing, stale, or not an open ordinary Issue",
+    );
+  }
+  return { ...issue, body: issue.body ?? "" };
+}
+
+function validateRootAdmission(rootTask, rootIssue, repositoryNodeId) {
+  validateTaskContract(rootTask, "Root Task");
+  if (rootTask.taskDefinitionId !== ROOT_TASK_DEFINITION_ID) {
+    throw new WorkGraphReporterError("task ancestry does not reach the v1 Root Task");
+  }
+  const input = rootTask.resolvedInputs.rootIssue;
   exact(
-    value,
+    input,
     [
       "repositoryOwner",
       "repositoryName",
       "repositoryNodeId",
       "issueNumber",
       "issueNodeId",
+      "admissionId",
       "contentDigest",
     ],
-    "root resolvedInputs.principalIssue",
+    "Root Task resolvedInputs.rootIssue",
   );
   if (
-    value.repositoryOwner !== OWNER ||
-    value.repositoryName !== REPO ||
-    value.repositoryNodeId !== repositoryNodeId
+    input.repositoryOwner !== OWNER ||
+    input.repositoryName !== REPO ||
+    input.repositoryNodeId !== repositoryNodeId ||
+    input.issueNumber !== rootIssue.number ||
+    input.issueNodeId !== rootIssue.node_id ||
+    rootTask.rootIssueId !== rootIssue.node_id
   ) {
-    throw new WorkGraphError("principalIssue repository does not match the task repository");
+    throw new WorkGraphReporterError(
+      "Root Task does not identify the current Root Issue",
+    );
   }
-  issueNumber(value.issueNumber, "principalIssue.issueNumber");
-  identifier(value.issueNodeId, "principalIssue.issueNodeId");
+  opaque(input.admissionId, "Root Task rootIssue.admissionId");
+  digest(input.contentDigest, "Root Task rootIssue.contentDigest");
+  const currentDigest = deriveWorkGraphRootIssueContentDigest(
+    rootIssue.title,
+    rootIssue.body,
+  );
+  if (currentDigest !== input.contentDigest) {
+    throw new WorkGraphReporterError(
+      "Root Issue title or body changed after admission",
+    );
+  }
+  const workflowRunId = deriveWorkGraphWorkflowRunId(
+    repositoryNodeId,
+    rootIssue.node_id,
+    input.admissionId,
+    rootTask.workflowDefinitionId,
+    rootTask.workflowDefinitionVersion,
+    rootTask.workflowDefinitionDigest,
+  );
   if (
-    typeof value.contentDigest !== "string" ||
-    !/^sha256:[0-9a-f]{64}$/.test(value.contentDigest)
+    rootTask.workflowRunId !== workflowRunId ||
+    rootTask.taskId !==
+      deriveWorkGraphRootTaskId(workflowRunId, rootTask.taskDefinitionId)
   ) {
-    throw new WorkGraphError("principalIssue.contentDigest must be sha256:<64 lowercase hex>");
+    throw new WorkGraphReporterError(
+      "Root Task does not match its v1 admission identity",
+    );
+  }
+  return { input, currentDigest };
+}
+
+async function loadTaskContext(locator, taskId, github, config, includeComments) {
+  const [identity, repository, issue, parentLink, comments] = await Promise.all([
+    github.identity(),
+    github.repository(),
+    github.issue(locator.issueNumber),
+    github.parent(locator.issueNumber),
+    includeComments ? github.comments(locator.issueNumber) : Promise.resolve([]),
+  ]);
+  verifyReporterIdentity(identity, config.resultId);
+  verifyRepository(repository, locator.repositoryNodeId);
+  const task = taskIssue(issue, locator, config, "Task");
+  validateTaskContract(task, "Task");
+  if (task.taskId !== taskId) {
+    throw new WorkGraphReporterError("taskId does not match WorkGraphTask/v1");
+  }
+  linkedIssue(
+    parentLink,
+    locator.parentIssueNumber,
+    locator.parentIssueNodeId,
+    "task native parent",
+  );
+
+  let rootTask;
+  let rootTaskIssue;
+  let rootIssue;
+  if (task.taskDefinitionId === ROOT_TASK_DEFINITION_ID) {
+    rootTask = task;
+    rootTaskIssue = issue;
+    const fullRootIssue = await github.issue(locator.parentIssueNumber);
+    linkedIssue(
+      fullRootIssue,
+      locator.parentIssueNumber,
+      locator.parentIssueNodeId,
+      "Root Issue",
+    );
+    rootIssue = ordinaryRootIssue(
+      fullRootIssue,
+      locator.parentIssueNumber,
+      locator.parentIssueNodeId,
+      config,
+    );
+  } else {
+    const rootTaskLocator = {
+      issueNumber: locator.parentIssueNumber,
+      issueNodeId: locator.parentIssueNodeId,
+    };
+    const fullRootTaskIssue = await github.issue(rootTaskLocator.issueNumber);
+    rootTaskIssue = fullRootTaskIssue;
+    linkedIssue(
+      fullRootTaskIssue,
+      rootTaskLocator.issueNumber,
+      rootTaskLocator.issueNodeId,
+      "Root Task",
+    );
+    rootTask = taskIssue(
+      fullRootTaskIssue,
+      {
+        ...rootTaskLocator,
+      },
+      config,
+      "Root Task",
+    );
+    const rootIssueLink = await github.parent(rootTaskLocator.issueNumber);
+    if (!object(rootIssueLink)) {
+      throw new WorkGraphReporterError("Root Task has no Root Issue parent");
+    }
+    const fullRootIssue = await github.issue(rootIssueLink.number);
+    linkedIssue(
+      rootIssueLink,
+      fullRootIssue?.number,
+      fullRootIssue?.node_id,
+      "Root Task native parent",
+    );
+    rootIssue = ordinaryRootIssue(
+      fullRootIssue,
+      rootIssueLink.number,
+      rootIssueLink.node_id,
+      config,
+    );
+    if (
+      task.rootIssueId !== rootTask.rootIssueId ||
+      task.workflowRunId !== rootTask.workflowRunId
+    ) {
+      throw new WorkGraphReporterError(
+        "task identity does not match its Root Task",
+      );
+    }
+  }
+  const admission = validateRootAdmission(
+    rootTask,
+    rootIssue,
+    locator.repositoryNodeId,
+  );
+  return {
+    task,
+    rootTask,
+    rootTaskIssue,
+    rootIssue,
+    admission,
+    issue,
+    comments,
+  };
+}
+
+function markedComments(comments, marker, parser) {
+  if (!Array.isArray(comments)) {
+    throw new WorkGraphReporterError("GitHub comments response must be an array");
+  }
+  return comments
+    .filter(
+      (comment) =>
+        object(comment) &&
+        typeof comment.body === "string" &&
+        comment.body.startsWith(`${marker}\n`),
+    )
+    .map((comment) => {
+      if (
+        typeof comment.created_at !== "string" ||
+        comment.updated_at !== comment.created_at
+      ) {
+        throw new WorkGraphReporterError(
+          `${marker} comment is edited or lacks immutable revision evidence`,
+        );
+      }
+      return { comment, payload: parser(comment.body) };
+    });
+}
+
+function resultContext(context, input, config, expectedBody) {
+  const dispatches = markedComments(
+    context.comments,
+    TASK_DISPATCH_MARKER,
+    parseTaskDispatch,
+  );
+  const expectedExecutor =
+    context.task.taskDefinitionId === ROOT_TASK_DEFINITION_ID
+      ? "demo-orchestrator"
+      : "issue-validator";
+  if (config.executorId !== expectedExecutor) {
+    throw new WorkGraphReporterError(
+      "reporter executor profile is not authorized for this task",
+    );
+  }
+  if (
+    dispatches.length === 0 ||
+    dispatches.some(
+      ({ comment, payload }) =>
+        !payload ||
+        comment.user?.id !== config.assignmentId ||
+        TASK_IDENTITY_KEYS.some(
+          (key) => payload.task[key] !== context.task[key],
+        ) ||
+        payload.lease.executorId !== expectedExecutor,
+    ) ||
+    new Set(dispatches.map(({ payload }) => payload.dispatchId)).size !==
+      dispatches.length ||
+    new Set(dispatches.map(({ payload }) => payload.lease.leaseId)).size !==
+      dispatches.length
+  ) {
+    throw new WorkGraphReporterError(
+      "task has a malformed, foreign, or duplicate WorkGraphTaskDispatch/v1",
+    );
+  }
+  const matchingDispatches = dispatches.filter(
+    ({ payload }) =>
+      payload.dispatchId === input.dispatchId &&
+      payload.task.taskId === input.taskId &&
+      payload.lease.leaseId === input.leaseId,
+  );
+  if (matchingDispatches.length !== 1) {
+    throw new WorkGraphReporterError(
+      "Dispatch task or Lease identity does not match",
+    );
+  }
+  const dispatch = matchingDispatches[0].payload;
+
+  const results = markedComments(
+    context.comments,
+    TASK_RESULT_MARKER,
+    parseTaskResult,
+  );
+  if (
+    results.some(
+      ({ comment, payload }) =>
+        !payload ||
+        comment.user?.id !== config.resultId ||
+        payload.taskId !== context.task.taskId ||
+        !dispatches.some(
+          ({ payload: candidate }) =>
+            candidate.dispatchId === payload.dispatchId &&
+            candidate.task.taskId === payload.taskId &&
+            candidate.lease.leaseId === payload.leaseId,
+        ),
+    ) ||
+    new Set(results.map(({ payload }) => payload.resultId)).size !== results.length
+  ) {
+    throw new WorkGraphReporterError(
+      "task has a malformed, foreign, duplicate, or conflicting Result",
+    );
+  }
+  const matchingResults = results.filter(
+    ({ payload }) =>
+      payload.taskId === input.taskId &&
+      payload.dispatchId === input.dispatchId &&
+      payload.leaseId === input.leaseId,
+  );
+  if (matchingResults.length > 0) {
+    if (
+      matchingResults.length !== 1 ||
+      matchingResults[0].comment.body !== expectedBody
+    ) {
+      throw new WorkGraphReporterError(
+        "task has a malformed, foreign, duplicate, or conflicting Result",
+      );
+    }
+    return { dispatch, existing: matchingResults[0].comment };
+  }
+  if (
+    context.issue.state !== "open" ||
+    context.rootTaskIssue.state !== "open"
+  ) {
+    throw new WorkGraphReporterError(
+      "a new Result requires open task and Root Task Issues",
+    );
+  }
+  return { dispatch, existing: null };
+}
+
+function timestamp(value, label) {
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/.test(value) ||
+    !Number.isFinite(Date.parse(value))
+  ) {
+    throw new WorkGraphReporterError(`${label} must be a UTC timestamp`);
   }
   return value;
 }
 
-async function getVNextPrincipalIssue(input, github, cfg) {
+function now() {
+  const configured = process.env.WORKGRAPH_TEST_NOW;
+  if (process.env.NODE_ENV === "test" && configured) {
+    timestamp(configured, "WORKGRAPH_TEST_NOW");
+    return Date.parse(configured);
+  }
+  return Date.now();
+}
+
+async function validateActiveLease(dispatch, claimId, config) {
+  const expected = {
+    taskId: dispatch.task.taskId,
+    leaseId: dispatch.lease.leaseId,
+    assignmentId: dispatch.lease.assignmentId,
+    executorId: dispatch.lease.executorId,
+    slotId: dispatch.lease.slotId,
+    claimId,
+  };
+  let response;
+  try {
+    response = await fetch(config.leaseValidationUrl, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${config.leaseValidationToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(expected),
+      signal: AbortSignal.timeout(30_000),
+    });
+  } catch (error) {
+    throw new WorkGraphReporterError(
+      `Source Lease validation request failed: ${error.message}`,
+    );
+  }
+  if (!response.ok) {
+    throw new WorkGraphReporterError(
+      `Source Lease validation failed with HTTP ${response.status}`,
+    );
+  }
+  let snapshot;
+  try {
+    snapshot = await response.json();
+  } catch {
+    throw new WorkGraphReporterError(
+      "Source Lease validation response was not JSON",
+    );
+  }
+  exact(
+    snapshot,
+    [...Object.keys(expected), "acquiredAt", "expiresAt"],
+    "Source Lease validation response",
+  );
+  if (Object.entries(expected).some(([key, value]) => snapshot[key] !== value)) {
+    throw new WorkGraphReporterError(
+      "Source Lease validation response does not match the Dispatch",
+    );
+  }
+  timestamp(snapshot.acquiredAt, "Source Lease acquiredAt");
+  timestamp(snapshot.expiresAt, "Source Lease expiresAt");
+  if (
+    Date.parse(snapshot.acquiredAt) >= Date.parse(snapshot.expiresAt) ||
+    now() >= Date.parse(snapshot.expiresAt)
+  ) {
+    throw new WorkGraphReporterError(
+      "Source Lease is expired or has an invalid interval",
+    );
+  }
+}
+
+function verifiedComment(comment, expectedBody, expectedActorId) {
+  if (
+    !object(comment) ||
+    !Number.isSafeInteger(comment.id) ||
+    comment.id <= 0 ||
+    typeof comment.node_id !== "string" ||
+    comment.node_id.length === 0 ||
+    comment.body !== expectedBody ||
+    comment.user?.id !== expectedActorId
+  ) {
+    throw new WorkGraphReporterError(
+      "GitHub did not return the expected Result comment",
+    );
+  }
+  return comment;
+}
+
+async function getRootIssue(input, github, config) {
   exact(input, ["taskLocator", "taskId"], "arguments");
-  const locator = input.taskLocator;
-  validateVNextTaskLocator(locator, { requireParent: true });
+  const locator = validateTaskLocator(input.taskLocator);
   opaque(input.taskId, "arguments.taskId");
-
-  const [identity, repository, taskIssue, linkedRoot, rootIssue, rootParent] =
-    await Promise.all([
-      github.identity(),
-      github.repository(),
-      github.issue(locator.issueNumber),
-      github.parent(locator.issueNumber),
-      github.issue(locator.parentIssueNumber),
-      github.optionalParent(locator.parentIssueNumber),
-    ]);
-  verifyIdentity(identity, cfg.resultId, "Result reporter");
-  if (
-    !object(repository) ||
-    repository.name !== REPO ||
-    repository.owner?.login !== OWNER ||
-    repository.node_id !== locator.repositoryNodeId
-  ) {
-    throw new WorkGraphError("taskLocator repository does not match GitHub");
-  }
-  const task = parseCurrentVNextTask(
-    taskIssue,
-    { issueNumber: locator.issueNumber, issueNodeId: locator.issueNodeId },
-    cfg,
-    "validator task Issue",
+  const context = await loadTaskContext(
+    locator,
+    input.taskId,
+    github,
+    config,
+    false,
   );
-  if (
-    task.taskId !== input.taskId ||
-    task.workflowDefinitionId !== VNEXT_WORKFLOW_DEFINITION_ID ||
-    task.workflowDefinitionVersion !== VNEXT_WORKFLOW_DEFINITION_VERSION ||
-    task.workflowDefinitionDigest !== VNEXT_WORKFLOW_DEFINITION_DIGEST ||
-    task.taskDefinitionId !== VNEXT_VALIDATOR_TASK_DEFINITION_ID
-  ) {
-    throw new WorkGraphError("validator task identity does not match the VNext admission workflow");
-  }
-  exact(task.resolvedInputs, ["validationProfile"], "validator task resolvedInputs");
-  if (task.resolvedInputs.validationProfile !== "new-issue-default") {
-    throw new WorkGraphError("validator task resolvedInputs are not canonical");
+  if (context.task.taskDefinitionId !== VALIDATOR_TASK_DEFINITION_ID) {
+    throw new WorkGraphReporterError(
+      "get_root_issue requires the validator child task",
+    );
   }
   if (
-    !object(linkedRoot) ||
-    linkedRoot.number !== locator.parentIssueNumber ||
-    linkedRoot.node_id !== locator.parentIssueNodeId ||
-    linkedRoot.body !== rootIssue?.body
+    context.issue.state !== "open" ||
+    context.rootTaskIssue.state !== "open"
   ) {
-    throw new WorkGraphError("validator task immediate parent is not the requested root");
-  }
-  const root = parseCurrentVNextTask(
-    rootIssue,
-    {
-      issueNumber: locator.parentIssueNumber,
-      issueNodeId: locator.parentIssueNodeId,
-    },
-    cfg,
-    "root task Issue",
-  );
-  if (
-    rootParent !== null ||
-    root.taskDefinitionId !== VNEXT_ROOT_TASK_DEFINITION_ID ||
-    root.workflowRunId !== task.workflowRunId ||
-    root.workflowDefinitionId !== task.workflowDefinitionId ||
-    root.workflowDefinitionVersion !== task.workflowDefinitionVersion ||
-    root.workflowDefinitionDigest !== task.workflowDefinitionDigest
-  ) {
-    throw new WorkGraphError("validator task ancestry is not the canonical parentless VNext root");
-  }
-  exact(root.resolvedInputs, ["principalIssue", "proofMode"], "root resolvedInputs");
-  if (root.resolvedInputs.proofMode !== "isolated") {
-    throw new WorkGraphError("root resolvedInputs.proofMode is not isolated");
-  }
-  const principalInput = validatePrincipalIssueInput(
-    root.resolvedInputs.principalIssue,
-    locator.repositoryNodeId,
-  );
-  const expectedWorkflowRunId = deriveVNextWorkflowRunId(
-    principalInput.repositoryNodeId,
-    principalInput.issueNodeId,
-    root.workflowDefinitionId,
-    root.workflowDefinitionVersion,
-    root.workflowDefinitionDigest,
-  );
-  const expectedRootTaskId = deriveVNextRootTaskId(
-    expectedWorkflowRunId,
-    root.taskDefinitionId,
-  );
-  if (
-    root.workflowRunId !== expectedWorkflowRunId ||
-    root.taskId !== expectedRootTaskId
-  ) {
-    throw new WorkGraphError("root task does not match deterministic admission identity");
-  }
-  if (
-    principalInput.issueNumber === locator.issueNumber ||
-    principalInput.issueNumber === locator.parentIssueNumber ||
-    principalInput.issueNodeId === locator.issueNodeId ||
-    principalInput.issueNodeId === locator.parentIssueNodeId
-  ) {
-    throw new WorkGraphError("principalIssue must differ from the validator and root tasks");
-  }
-
-  const principal = await github.issue(principalInput.issueNumber);
-  if (
-    !object(principal) ||
-    principal.number !== principalInput.issueNumber ||
-    principal.node_id !== principalInput.issueNodeId ||
-    principal.repository_url !== REPOSITORY_URL ||
-    principal.state !== "open" ||
-    principal.pull_request ||
-    principal.type?.name === TASK_TYPE_NAME ||
-    principal.type?.node_id === cfg.taskTypeId ||
-    typeof principal.title !== "string" ||
-    (principal.body !== null && typeof principal.body !== "string")
-  ) {
-    throw new WorkGraphError("principalIssue is missing, stale, or not an open ordinary Issue");
-  }
-  const body = principal.body ?? "";
-  const contentDigest = deriveVNextPrincipalContentDigest(principal.title, body);
-  if (contentDigest !== principalInput.contentDigest) {
-    throw new WorkGraphError("principalIssue title or body changed after admission");
+    throw new WorkGraphReporterError(
+      "get_root_issue requires open validator and Root Task Issues",
+    );
   }
   return {
-    taskId: task.taskId,
-    rootTaskId: root.taskId,
-    workflowRunId: root.workflowRunId,
-    principalIssue: {
-      repositoryOwner: principalInput.repositoryOwner,
-      repositoryName: principalInput.repositoryName,
-      repositoryNodeId: principalInput.repositoryNodeId,
-      issueNumber: principalInput.issueNumber,
-      issueNodeId: principalInput.issueNodeId,
-      contentDigest,
-      title: principal.title,
-      body,
+    taskId: context.task.taskId,
+    rootTaskId: context.rootTask.taskId,
+    rootIssueId: context.rootIssue.node_id,
+    workflowRunId: context.rootTask.workflowRunId,
+    rootIssue: {
+      repositoryOwner: OWNER,
+      repositoryName: REPO,
+      repositoryNodeId: locator.repositoryNodeId,
+      issueNumber: context.rootIssue.number,
+      issueNodeId: context.rootIssue.node_id,
+      admissionId: context.admission.input.admissionId,
+      contentDigest: context.admission.currentDigest,
+      title: context.rootIssue.title,
+      body: context.rootIssue.body,
     },
   };
 }
 
-async function submitResult(input, github, cfg) {
+async function submitTaskResult(input, github, config) {
   exact(
     input,
     ["taskLocator", "taskId", "dispatchId", "leaseId", "outcome", "output"],
     "arguments",
   );
-  const locator = input.taskLocator;
-  const hasParent = validateVNextTaskLocator(locator);
+  const locator = validateTaskLocator(input.taskLocator);
   for (const key of ["taskId", "dispatchId", "leaseId"]) {
     opaque(input[key], `arguments.${key}`);
   }
   if (!["succeeded", "failed"].includes(input.outcome)) {
-    throw new WorkGraphError("arguments.outcome must be succeeded or failed");
+    throw new WorkGraphReporterError(
+      "arguments.outcome must be succeeded or failed",
+    );
   }
   const result = {
-    resultId: deriveVNextTaskResultId(
+    resultId: deriveWorkGraphTaskResultId(
       input.taskId,
       input.dispatchId,
       input.leaseId,
@@ -1921,1623 +1191,113 @@ async function submitResult(input, github, cfg) {
     outcome: input.outcome,
     output: canonicalJsonValue(input.output),
   };
-  const body = formatVNextTaskResult(result);
+  const body = formatTaskResult(result);
+  const claimId = randomUUID();
 
-  async function readContext() {
-    const [identity, repository, issue, parent, comments] = await Promise.all([
-      github.identity(),
-      github.repository(),
-      github.issue(locator.issueNumber),
-      hasParent
-        ? github.parent(locator.issueNumber)
-        : github.optionalParent(locator.issueNumber),
-      github.comments(locator.issueNumber),
-    ]);
-    verifyIdentity(identity, cfg.resultId, "Result reporter");
-    if (
-      !object(repository) ||
-      repository.name !== REPO ||
-      repository.owner?.login !== OWNER ||
-      repository.node_id !== locator.repositoryNodeId
-    ) {
-      throw new WorkGraphError("taskLocator repository does not match GitHub");
-    }
-    if (
-      !object(issue) ||
-      issue.number !== locator.issueNumber ||
-      issue.node_id !== locator.issueNodeId ||
-      issue.repository_url !== REPOSITORY_URL ||
-      !["open", "closed"].includes(issue.state) ||
-      issue.type?.name !== TASK_TYPE_NAME ||
-      issue.type?.node_id !== cfg.taskTypeId ||
-      issue.user?.id !== cfg.launcherId
-    ) {
-      throw new WorkGraphError("taskLocator Issue is not the current trusted WorkGraphTask");
-    }
-    if (
-      hasParent
-        ? !object(parent) ||
-          parent.number !== locator.parentIssueNumber ||
-          parent.node_id !== locator.parentIssueNodeId ||
-          parent.repository_url !== REPOSITORY_URL
-        : parent !== null
-    ) {
-      throw new WorkGraphError("taskLocator parent does not match GitHub");
-    }
-    let task;
-    try {
-      task = parseRuntimeTask(issue.body);
-    } catch {
-      throw new WorkGraphError("task Issue body is not canonical WorkGraphTask/v3");
-    }
-    if (task.taskId !== input.taskId) {
-      throw new WorkGraphError("taskId does not match the current WorkGraphTask/v3");
-    }
-
-    const dispatches = candidates(
-      comments,
-      DISPATCH_MARKER,
-      parseVNextDispatch,
+  const read = async () => {
+    const context = await loadTaskContext(
+      locator,
+      input.taskId,
+      github,
+      config,
+      true,
     );
-    if (
-      dispatches.marked.length !== 1 ||
-      !dispatches.parsed[0].payload ||
-      dispatches.parsed[0].comment.user?.id !== cfg.assignmentId
-    ) {
-      throw new WorkGraphError(
-        "task must have exactly one trusted canonical WorkGraphTaskDispatch/v1",
-      );
-    }
-    const dispatch = dispatches.parsed[0].payload;
-    if (
-      dispatch.dispatchId !== input.dispatchId ||
-      dispatch.task.taskId !== input.taskId ||
-      dispatch.lease.leaseId !== input.leaseId ||
-      VNEXT_TASK_IDENTITY_KEYS.some(
-        (key) => dispatch.task[key] !== task[key],
-      )
-    ) {
-      throw new WorkGraphError("Dispatch task or Lease identity does not match");
-    }
+    return { context, ...resultContext(context, input, config, body) };
+  };
 
-    const results = candidates(comments, RESULT_MARKER, parseVNextTaskResult);
-    if (results.marked.length > 0) {
-      if (
-        results.marked.length !== 1 ||
-        !results.parsed[0].payload ||
-        results.parsed[0].comment.user?.id !== cfg.resultId ||
-        results.parsed[0].payload.resultId !== result.resultId ||
-        results.parsed[0].comment.body !== body
-      ) {
-        throw new WorkGraphError(
-          "task has a malformed, foreign, duplicate, or conflicting Result",
-        );
-      }
-      return { existing: results.parsed[0].comment };
-    }
-    if (issue.state !== "open") {
-      throw new WorkGraphError("a new VNext Result requires an open task Issue");
-    }
-    return { existing: null };
-  }
-
-  const initial = await readContext();
+  const initial = await read();
   if (initial.existing) {
     return {
       commentNodeId: initial.existing.node_id,
       resultId: result.resultId,
-      resultBodyDigest: resultDigest(body),
+      resultBodyDigest: resultBodyDigest(body),
       reconciled: true,
     };
   }
-  const before = await readContext();
+  const before = await read();
   if (before.existing) {
-    if (before.existing.body !== body) {
-      throw new WorkGraphError("Result changed immediately before creation");
-    }
     return {
       commentNodeId: before.existing.node_id,
       resultId: result.resultId,
-      resultBodyDigest: resultDigest(body),
+      resultBodyDigest: resultBodyDigest(body),
       reconciled: true,
     };
   }
-  const comment = verifiedCommentWrite(
+  await validateActiveLease(before.dispatch, claimId, config);
+  const posted = verifiedComment(
     await github.postComment(locator.issueNumber, body),
     body,
-    cfg.resultId,
-    "VNext Result",
+    config.resultId,
   );
-  const after = await readContext();
+  const after = await read();
   if (
     !after.existing ||
-    after.existing.id !== comment.id ||
-    after.existing.node_id !== comment.node_id ||
+    after.existing.id !== posted.id ||
+    after.existing.node_id !== posted.node_id ||
     after.existing.body !== body
   ) {
-    throw new WorkGraphError("VNext Result creation did not reconcile");
+    throw new WorkGraphReporterError("Result creation did not reconcile");
   }
   return {
-    commentNodeId: comment.node_id,
+    commentNodeId: posted.node_id,
     resultId: result.resultId,
-    resultBodyDigest: resultDigest(body),
+    resultBodyDigest: resultBodyDigest(body),
     reconciled: false,
   };
 }
 
-function validateWorkflowInfoTaskPayload(taskPayload) {
-  const inputs = taskPayload.inputs;
-  exact(inputs.inputs, ["fromStep"], "request-info workflow inputs");
-  identifier(inputs.inputs.fromStep, "request-info workflow inputs.fromStep");
-  if (
-    taskPayload.taskType !== "workflow-task" ||
-    inputs.operation !== "request-info" ||
-    inputs.agent !== "issue-info-requester" ||
-    inputs.branchId !== undefined ||
-    inputs.join !== undefined
-  ) {
-    throw new WorkGraphError(
-      "workflow info request requires the top-level request-info task manifest",
-    );
-  }
-  return inputs.inputs.fromStep;
-}
-
-function workflowInfoToken(input, taskPayload) {
-  return (
-    `${WORKFLOW_INFO_MARKER} workflowRunId=${taskPayload.inputs.workflowRunId} ` +
-    `generation=${taskPayload.inputs.generation} taskNodeId=${input.taskIssueNodeId}`
-  );
-}
-
-function workflowInfoBody(input, taskPayload, login, priorResult, missing) {
-  const bullets = missing.map((criterion) => `- ${criterion}`).join("\n");
-  return (
-    `@${login}, please provide the missing issue information:\n\n${bullets}\n\n` +
-    `<!-- ${workflowInfoToken(input, taskPayload)} ` +
-    `priorResultCommentNodeId=${priorResult.comment.node_id} ` +
-    `priorResultBodyDigest=${resultDigest(priorResult.comment.body)} -->\n`
-  );
-}
-
-function workflowInfoComment(
-  comments,
-  input,
-  taskPayload,
-  cfg,
-  { nodeId = null, body = null } = {},
-) {
-  const token = workflowInfoToken(input, taskPayload);
-  const marked = comments.filter(
-    (comment) =>
-      structured(comment.body, WORKFLOW_INFO_MARKER) &&
-      comment.body.includes(token),
-  );
-  if (
-    marked.length !== 1 ||
-    marked[0].user?.id !== cfg.infoId ||
-    (nodeId !== null && marked[0].node_id !== nodeId) ||
-    (body !== null && marked[0].body !== body)
-  ) {
-    throw new WorkGraphError(
-      "parent must have one exact reporter-owned workflow info request",
-    );
-  }
-  const markerLines = marked[0].body
-    .split("\n")
-    .filter((line) => line.includes(WORKFLOW_INFO_MARKER));
-  if (
-    markerLines.length !== 1 ||
-    !markerLines[0].startsWith(`<!-- ${token} `) ||
-    !/ priorResultCommentNodeId=[A-Za-z0-9_-]+ priorResultBodyDigest=sha256:[0-9a-f]{64} -->$/.test(
-      markerLines[0],
-    )
-  ) {
-    throw new WorkGraphError("workflow info request marker is not canonical");
-  }
-  return marked[0];
-}
-
-function validateWorkflowInfoResult(input, taskPayload, parentComments, cfg) {
-  validateWorkflowInfoTaskPayload(taskPayload);
-  if (
-    input.workResult.taskType !== "workflow-task" ||
-    input.workResult.outcome !== "succeeded" ||
-    input.workResult.summary !== "Requested the missing issue information."
-  ) {
-    throw new WorkGraphError(
-      "request-info workflow Result does not match the deterministic contract",
-    );
-  }
-  exact(
-    input.workResult.result,
-    ["requestCommentNodeId"],
-    "request-info workflow Result.result",
-  );
-  identifier(
-    input.workResult.result.requestCommentNodeId,
-    "request-info workflow Result.result.requestCommentNodeId",
-  );
-  workflowInfoComment(parentComments, input, taskPayload, cfg, {
-    nodeId: input.workResult.result.requestCommentNodeId,
-  });
-}
-
-async function workflowInfoEvidence(input, github, cfg) {
-  const ctx = await workflowContext(github, input, cfg, {
-    actorId: cfg.infoId,
-    actorLabel: "Info reporter",
-    open: true,
-  });
-  const fromStep = validateWorkflowInfoTaskPayload(ctx.taskPayload);
-  const requestComments = await github.comments(input.taskIssueNumber);
-  oneWorkflowAssignment(requestComments, ctx.taskPayload, cfg, {
-    agentId: input.agentId,
-    assignmentCommentNodeId: input.assignmentCommentNodeId,
-  });
-  if (
-    candidates(requestComments, RESULT_MARKER, parseWorkflowResult).marked.length >
-    0
-  ) {
-    throw new WorkGraphError(
-      "request-info workflow task already has a Result",
-    );
-  }
-
-  const priorInput = {
-    ...input,
-    taskIssueNumber: input.priorTaskIssueNumber,
-    taskIssueNodeId: input.priorTaskIssueNodeId,
-  };
-  const [priorTask, priorParent, priorComments] = await Promise.all([
-    github.issue(input.priorTaskIssueNumber),
-    github.parent(input.priorTaskIssueNumber),
-    github.comments(input.priorTaskIssueNumber),
-  ]);
-  const priorTaskPayload = validateWorkflowTaskIssue(
-    priorTask,
-    priorInput,
-    cfg,
-  );
-  validateParent(priorParent, priorInput);
-  if (
-    priorTask.state !== "closed" ||
-    priorTask.state_reason !== "completed" ||
-    priorTaskPayload.taskType !== "workflow-task" ||
-    priorTaskPayload.inputs.operation !== "evaluate-validation" ||
-    priorTaskPayload.inputs.agent !== "issue-validation-evaluator" ||
-    priorTaskPayload.inputs.stepId !== fromStep ||
-    priorTaskPayload.inputs.branchId !== undefined ||
-    priorTaskPayload.inputs.join !== "all" ||
-    priorTaskPayload.inputs.expectedChildCount !== 2
-  ) {
-    throw new WorkGraphError(
-      "prior workflow task is not the completed parallel validation evaluator",
-    );
-  }
-  exact(priorTaskPayload.inputs.inputs, [], "prior evaluator inputs");
-  const expectedChildren = [
-    {
-      branchId: "title",
-      operation: "validate-title",
-      agent: "issue-title-validator",
-      inputs: { field: "title", rule: "non-empty" },
-    },
-    {
-      branchId: "body",
-      operation: "validate-body",
-      agent: "issue-body-validator",
-      inputs: { field: "body", rule: "non-empty" },
-    },
-  ];
-  if (!isDeepStrictEqual(priorTaskPayload.inputs.children, expectedChildren)) {
-    throw new WorkGraphError(
-      "prior evaluator does not contain the exact parallel validation branches",
-    );
-  }
-  for (const key of [
-    "workflowId",
-    "workflowRunId",
-    "definitionCommit",
-    "definitionDigest",
-    "generation",
-  ]) {
-    if (priorTaskPayload.inputs[key] !== ctx.taskPayload.inputs[key]) {
-      throw new WorkGraphError(
-        "prior evaluator does not belong to the request-info workflow generation",
-      );
-    }
-  }
-
-  const priorResult = oneWorkflowResult(priorComments, cfg);
-  if (
-    priorResult.comment.node_id !== input.priorResultCommentNodeId ||
-    resultDigest(priorResult.comment.body) !== input.priorResultBodyDigest ||
-    priorResult.payload.taskType !== "workflow-task" ||
-    priorResult.payload.outcome !== "succeeded"
-  ) {
-    throw new WorkGraphError(
-      "prior evaluator Result identity or revision is not current",
-    );
-  }
-  exact(
-    priorResult.payload.result,
-    ["decision", "titlePassed", "bodyPassed"],
-    "prior evaluator Result.result",
-  );
-  if (
-    priorResult.payload.result.decision !== ctx.taskPayload.inputs.stepId ||
-    typeof priorResult.payload.result.titlePassed !== "boolean" ||
-    typeof priorResult.payload.result.bodyPassed !== "boolean"
-  ) {
-    throw new WorkGraphError(
-      "prior evaluator Result does not select request-info with boolean decisions",
-    );
-  }
-  const missing = [];
-  if (!priorResult.payload.result.titlePassed) missing.push(CRITERIA[0]);
-  if (!priorResult.payload.result.bodyPassed) missing.push(CRITERIA[1]);
-  if (missing.length === 0) {
-    throw new WorkGraphError(
-      "request-info evaluator Result has no missing criteria",
-    );
-  }
-  if (
-    typeof ctx.parent.user?.login !== "string" ||
-    !/^[A-Za-z0-9-]+$/.test(ctx.parent.user.login)
-  ) {
-    throw new WorkGraphError("parent submitter login is unavailable");
-  }
-  return { ctx, priorResult, missing };
-}
-
-async function submitWorkflowResult(input, github, cfg) {
-  refs(input, ["workResult", ...LEASE_ARGUMENTS]);
-  for (const key of LEASE_ARGUMENTS) {
-    opaque(input[key], `arguments.${key}`);
-  }
-  const body = formatWorkflowResult(input.workResult);
-  if (input.workResult.leaseId !== input.leaseId) {
-    throw new WorkGraphError(
-      "Result.leaseId must match the active dispatch Lease",
-    );
-  }
-  const ctx = await workflowContext(github, input, cfg, {
-    actorId: cfg.resultId,
-    actorLabel: "Result reporter",
-    open: true,
-  });
-  if (input.agentId !== ctx.taskPayload.inputs.agent) {
-    throw new WorkGraphError(
-      "active Lease agentId does not match the workflow task manifest",
-    );
-  }
-  const isInfoRequest = ctx.taskPayload.inputs.operation === "request-info";
-  const [comments, parentComments] = await Promise.all([
-    github.comments(input.taskIssueNumber),
-    isInfoRequest
-      ? github.comments(input.parentIssueNumber)
-      : Promise.resolve([]),
-  ]);
-  oneWorkflowAssignment(comments, ctx.taskPayload, cfg, {
-    agentId: input.agentId,
-    assignmentCommentNodeId: input.assignmentCommentNodeId,
-  });
-  if (isInfoRequest) {
-    validateWorkflowInfoResult(input, ctx.taskPayload, parentComments, cfg);
-  }
-  const found = candidates(comments, RESULT_MARKER, parseWorkflowResult);
-  if (found.marked.length > 0) {
-    if (
-      found.marked.length === 1 &&
-      found.parsed[0].payload &&
-      found.parsed[0].comment.user?.id === cfg.resultId &&
-      found.parsed[0].comment.body === body
-    ) {
-      return {
-        commentNodeId: found.parsed[0].comment.node_id,
-        resultBodyDigest: resultDigest(body),
-        reconciled: true,
-      };
-    }
-    throw new WorkGraphError(
-      "workflow task already has a malformed, foreign, or conflicting Result",
-    );
-  }
-  const beforeCtx = await workflowContext(github, input, cfg, {
-    actorId: cfg.resultId,
-    actorLabel: "Result reporter",
-    open: true,
-  });
-  if (!isDeepStrictEqual(beforeCtx.taskPayload, ctx.taskPayload)) {
-    throw new WorkGraphError("workflow task changed immediately before Result");
-  }
-  const beforeComments = await github.comments(input.taskIssueNumber);
-  oneWorkflowAssignment(beforeComments, beforeCtx.taskPayload, cfg, {
-    agentId: input.agentId,
-    assignmentCommentNodeId: input.assignmentCommentNodeId,
-  });
-  if (isInfoRequest) {
-    validateWorkflowInfoResult(
-      input,
-      beforeCtx.taskPayload,
-      await github.comments(input.parentIssueNumber),
-      cfg,
-    );
-  }
-  if (
-    candidates(beforeComments, RESULT_MARKER, parseWorkflowResult).marked
-      .length > 0
-  ) {
-    throw new WorkGraphError("Result appeared immediately before creation");
-  }
-  await validateSourceLease(input, beforeCtx.taskPayload, cfg);
-  const comment = verifiedCommentWrite(
-    await github.postComment(input.taskIssueNumber, body),
-    body,
-    cfg.resultId,
-    "workflow Result",
-  );
-  const afterResult = oneWorkflowResult(
-    await github.comments(input.taskIssueNumber),
-    cfg,
-  );
-  if (
-    afterResult.comment.node_id !== comment.node_id ||
-    afterResult.comment.body !== body
-  ) {
-    throw new WorkGraphError(
-      "Result creation did not reconcile for the workflow task",
-    );
-  }
-  return {
-    commentNodeId: comment.node_id,
-    resultBodyDigest: resultDigest(body),
-    reconciled: false,
-  };
-}
-
-async function submitAcceptance(input, github, cfg) {
-  refs(input, [
-    "resultCommentNodeId",
-    "resultBodyDigest",
-    "summary",
-  ]);
-  validateAcceptance({
-    resultCommentNodeId: input.resultCommentNodeId,
-    resultBodyDigest: input.resultBodyDigest,
-    summary: input.summary,
-  });
-  const ctx = await context(github, input, cfg, {
-    actorId: cfg.acceptanceId,
-    actorLabel: "Acceptance reporter",
-    open: true,
-  });
-  const comments = await github.comments(input.taskIssueNumber);
-  oneAssignment(comments, ctx.taskPayload, cfg);
-  const current = oneResult(comments, ctx.taskPayload, cfg);
-  const digest = resultDigest(current.comment.body);
-  if (
-    current.comment.node_id !== input.resultCommentNodeId ||
-    digest !== input.resultBodyDigest
-  ) {
-    throw new WorkGraphError("Acceptance request targets a stale Result ID or digest");
-  }
-  const payload = {
-    resultCommentNodeId: input.resultCommentNodeId,
-    resultBodyDigest: input.resultBodyDigest,
-    summary: input.summary,
-  };
-  const body = formatAcceptance(payload);
-  const found = candidates(comments, ACCEPTANCE_MARKER, (candidate) =>
-    parseCanonicalJson(candidate, ACCEPTANCE_MARKER, validateAcceptance),
-  );
-  if (found.marked.length > 0) {
-    if (
-      found.parsed.length === 1 &&
-      found.parsed[0].comment.user?.id === cfg.acceptanceId &&
-      found.parsed[0].comment.body === body
-    ) {
-      if (!Number.isSafeInteger(current.comment.id) || current.comment.id <= 0) {
-        throw new WorkGraphError("current Result lacks a REST comment ID");
-      }
-      verifyResultSnapshot(
-        await github.comment(current.comment.id),
-        current.comment,
-        cfg,
-      );
-      acceptanceFor(comments, current, cfg);
-      return {
-        commentNodeId: found.parsed[0].comment.node_id,
-        reconciled: true,
-      };
-    }
-    throw new WorkGraphError("task already has a stale, malformed, foreign, or conflicting Acceptance");
-  }
-  const beforeComments = await github.comments(input.taskIssueNumber);
-  oneAssignment(beforeComments, ctx.taskPayload, cfg);
-  const beforeResult = oneResult(beforeComments, ctx.taskPayload, cfg);
-  const beforeDigest = resultDigest(beforeResult.comment.body);
-  if (
-    beforeResult.comment.node_id !== input.resultCommentNodeId ||
-    beforeDigest !== input.resultBodyDigest
-  ) {
-    throw new WorkGraphError("Acceptance request targets a stale Result ID or digest");
-  }
-  if (!Number.isSafeInteger(beforeResult.comment.id) || beforeResult.comment.id <= 0) {
-    throw new WorkGraphError("current Result lacks a REST comment ID");
-  }
-  verifyResultSnapshot(
-    await github.comment(beforeResult.comment.id),
-    beforeResult.comment,
-    cfg,
-  );
-  const beforeAcceptances = candidates(
-    beforeComments,
-    ACCEPTANCE_MARKER,
-    (candidate) =>
-      parseCanonicalJson(candidate, ACCEPTANCE_MARKER, validateAcceptance),
-  );
-  if (beforeAcceptances.marked.length > 0) {
-    throw new WorkGraphError(
-      "task already has a stale, malformed, foreign, or conflicting Acceptance",
-    );
-  }
-  const comment = verifiedCommentWrite(
-    await github.postComment(input.taskIssueNumber, body),
-    body,
-    cfg.acceptanceId,
-    "Acceptance",
-  );
-  const afterComments = await github.comments(input.taskIssueNumber);
-  const afterResult = oneResult(afterComments, ctx.taskPayload, cfg);
-  if (
-    afterResult.comment.node_id !== input.resultCommentNodeId ||
-    resultDigest(afterResult.comment.body) !== input.resultBodyDigest
-  ) {
-    throw new WorkGraphError(
-      "Result/Acceptance race left the task inconsistent; manual remediation is required",
-    );
-  }
-  acceptanceFor(afterComments, afterResult, cfg);
-  return { commentNodeId: comment.node_id, reconciled: false };
-}
-
-function infoBody(login, validationResultCommentNodeId, missing) {
-  const bullets = missing.map((criterion) => `- ${criterion}`).join("\n");
-  return (
-    `@${login}, please provide the missing issue information:\n\n${bullets}\n\n` +
-    `<!-- ${INFO_MARKER} validationResultCommentNodeId=${validationResultCommentNodeId} -->\n`
-  );
-}
-
-async function postInfo(input, github, cfg) {
-  refs(input, [
-    "validationTaskIssueNumber",
-    "validationTaskIssueNodeId",
-    "validationResultCommentNodeId",
-    ...LEASE_ARGUMENTS,
-  ]);
-  issueNumber(input.validationTaskIssueNumber, "arguments.validationTaskIssueNumber");
-  identifier(input.validationTaskIssueNodeId, "arguments.validationTaskIssueNodeId");
-  identifier(input.validationResultCommentNodeId, "arguments.validationResultCommentNodeId");
-  const ctx = await context(github, input, cfg, {
-    actorId: cfg.infoId,
-    actorLabel: "Info reporter",
-    open: true,
-  });
-  if (
-    ctx.taskPayload.taskType !== "request-info" ||
-    ctx.taskPayload.inputs.validationResultCommentNodeId !==
-      input.validationResultCommentNodeId
-  ) {
-    throw new WorkGraphError("request-info task does not reference the requested validation Result");
-  }
-  const requestChildren = await authoritativeChildren(
-    github,
-    input.parentIssueNumber,
-    cfg,
-  );
-  requireCurrentChild(requestChildren, input, "request-info");
-  const requestComments = await github.comments(input.taskIssueNumber);
-  oneAssignment(requestComments, ctx.taskPayload, cfg, {
-    agentId: input.agentId,
-    assignmentCommentNodeId: input.assignmentCommentNodeId,
-  });
-  const validationInput = {
-    ...input,
-    taskIssueNumber: input.validationTaskIssueNumber,
-    taskIssueNodeId: input.validationTaskIssueNodeId,
-  };
-  const validationTask = await github.issue(input.validationTaskIssueNumber);
-  const validationPayload = validateTaskIssue(validationTask, validationInput, cfg);
-  if (validationPayload.taskType !== "validate-issue") {
-    throw new WorkGraphError("referenced Result is not on a validate-issue task");
-  }
-  const validationParent = await github.parent(input.validationTaskIssueNumber);
-  validateParent(validationParent, validationInput);
-  const validationComments = await github.comments(input.validationTaskIssueNumber);
-  oneAssignment(validationComments, validationPayload, cfg);
-  const result = oneResult(validationComments, validationPayload, cfg);
-  if (result.comment.node_id !== input.validationResultCommentNodeId) {
-    throw new WorkGraphError("validation Result comment ID is not current");
-  }
-  acceptanceFor(validationComments, result, cfg);
-  const missing = result.payload.result.criteria
-    .filter((criterion) => !criterion.passed)
-    .map((criterion) => criterion.criterion);
-  if (missing.length === 0) {
-    throw new WorkGraphError("validation Result has no missing criteria");
-  }
-  if (
-    typeof ctx.parent.user?.login !== "string" ||
-    !/^[A-Za-z0-9-]+$/.test(ctx.parent.user.login)
-  ) {
-    throw new WorkGraphError("parent submitter login is unavailable");
-  }
-  const body = infoBody(
-    ctx.parent.user?.login,
-    input.validationResultCommentNodeId,
-    missing,
-  );
-  const parentComments = await github.comments(input.parentIssueNumber);
-  const infoToken =
-    `${INFO_MARKER} validationResultCommentNodeId=` +
-    input.validationResultCommentNodeId;
-  const marked = parentComments.filter(
-    (comment) =>
-      structured(comment.body, INFO_MARKER) &&
-      comment.body.includes(infoToken),
-  );
-  if (marked.length > 0) {
-    if (
-      marked.length === 1 &&
-      marked[0].user?.id === cfg.infoId &&
-      marked[0].body === body
-    ) {
-      return {
-        requestCommentNodeId: marked[0].node_id,
-        reconciled: true,
-      };
-    }
-    throw new WorkGraphError("parent already has a malformed, foreign, or conflicting info request");
-  }
-  const beforeRequestComments = await github.comments(input.taskIssueNumber);
-  oneAssignment(beforeRequestComments, ctx.taskPayload, cfg, {
-    agentId: input.agentId,
-    assignmentCommentNodeId: input.assignmentCommentNodeId,
-  });
-  const beforeParentComments = await github.comments(input.parentIssueNumber);
-  if (
-    beforeParentComments.some(
-      (comment) =>
-        structured(comment.body, INFO_MARKER) &&
-        comment.body.includes(infoToken),
-    )
-  ) {
-    throw new WorkGraphError("parent info request appeared immediately before creation");
-  }
-  await validateSourceLease(input, ctx.taskPayload, cfg);
-  const comment = verifiedCommentWrite(
-    await github.postComment(input.parentIssueNumber, body),
-    body,
-    cfg.infoId,
-    "parent info request",
-  );
-  if (
-    typeof comment.created_at !== "string" ||
-    !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(comment.created_at)
-  ) {
-    throw new WorkGraphError("parent info request response lacks a canonical timestamp");
-  }
-  return {
-    requestCommentNodeId: comment.node_id,
-    reconciled: false,
-  };
-}
-
-async function postWorkflowInfo(input, github, cfg) {
-  refs(input, [
-    "priorTaskIssueNumber",
-    "priorTaskIssueNodeId",
-    "priorResultCommentNodeId",
-    "priorResultBodyDigest",
-    ...LEASE_ARGUMENTS,
-  ]);
-  issueNumber(
-    input.priorTaskIssueNumber,
-    "arguments.priorTaskIssueNumber",
-  );
-  identifier(
-    input.priorTaskIssueNodeId,
-    "arguments.priorTaskIssueNodeId",
-  );
-  identifier(
-    input.priorResultCommentNodeId,
-    "arguments.priorResultCommentNodeId",
-  );
-  digestString(
-    input.priorResultBodyDigest,
-    "arguments.priorResultBodyDigest",
-  );
-  for (const key of LEASE_ARGUMENTS) {
-    opaque(input[key], `arguments.${key}`);
-  }
-  if (
-    input.priorTaskIssueNumber === input.taskIssueNumber ||
-    input.priorTaskIssueNumber === input.parentIssueNumber ||
-    input.priorTaskIssueNodeId === input.taskIssueNodeId ||
-    input.priorTaskIssueNodeId === input.parentIssueNodeId
-  ) {
-    throw new WorkGraphError(
-      "prior evaluator, request task, and principal identifiers must differ",
-    );
-  }
-
-  const evidence = await workflowInfoEvidence(input, github, cfg);
-  const body = workflowInfoBody(
-    input,
-    evidence.ctx.taskPayload,
-    evidence.ctx.parent.user.login,
-    evidence.priorResult,
-    evidence.missing,
-  );
-  const token = workflowInfoToken(input, evidence.ctx.taskPayload);
-  const parentComments = await github.comments(input.parentIssueNumber);
-  const marked = parentComments.filter(
-    (comment) =>
-      structured(comment.body, WORKFLOW_INFO_MARKER) &&
-      comment.body.includes(token),
-  );
-  if (marked.length > 0) {
-    const existing = workflowInfoComment(
-      parentComments,
-      input,
-      evidence.ctx.taskPayload,
-      cfg,
-      { body },
-    );
-    return {
-      requestCommentNodeId: existing.node_id,
-      reconciled: true,
-    };
-  }
-
-  const before = await workflowInfoEvidence(input, github, cfg);
-  const beforeBody = workflowInfoBody(
-    input,
-    before.ctx.taskPayload,
-    before.ctx.parent.user.login,
-    before.priorResult,
-    before.missing,
-  );
-  if (beforeBody !== body) {
-    throw new WorkGraphError(
-      "workflow info request evidence changed immediately before creation",
-    );
-  }
-  const beforeParentComments = await github.comments(
-    input.parentIssueNumber,
-  );
-  if (
-    beforeParentComments.some(
-      (comment) =>
-        structured(comment.body, WORKFLOW_INFO_MARKER) &&
-        comment.body.includes(token),
-    )
-  ) {
-    throw new WorkGraphError(
-      "workflow info request appeared immediately before creation",
-    );
-  }
-  await validateSourceLease(input, before.ctx.taskPayload, cfg);
-  const comment = verifiedCommentWrite(
-    await github.postComment(input.parentIssueNumber, body),
-    body,
-    cfg.infoId,
-    "workflow parent info request",
-  );
-  if (
-    typeof comment.created_at !== "string" ||
-    !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(comment.created_at)
-  ) {
-    throw new WorkGraphError(
-      "workflow parent info request response lacks a canonical timestamp",
-    );
-  }
-  const reconciled = workflowInfoComment(
-    await github.comments(input.parentIssueNumber),
-    input,
-    before.ctx.taskPayload,
-    cfg,
-    { nodeId: comment.node_id, body },
-  );
-  return {
-    requestCommentNodeId: reconciled.node_id,
-    reconciled: false,
-  };
-}
-
-function statusOf(issue) {
-  const statuses = (issue.labels ?? [])
-    .map((label) => (typeof label === "string" ? label : label.name))
-    .filter((name) => STATUS_LABELS.includes(name));
-  if (statuses.length !== 1) {
-    throw new WorkGraphError("parent must have exactly one WorkGraph status label");
-  }
-  return statuses[0];
-}
-
-async function replaceStatus(github, input, expectedStatus, status) {
-  const parent = await github.issue(input.parentIssueNumber);
-  validateParent(parent, input);
-  if (statusOf(parent) !== expectedStatus) {
-    throw new WorkGraphError("parent status changed immediately before mutation");
-  }
-  const labels = (parent.labels ?? [])
-    .map((label) => (typeof label === "string" ? label : label.name))
-    .filter((name) => name && !STATUS_LABELS.includes(name));
-  labels.push(status);
-  const updated = await github.replaceLabels(parent.number, labels);
-  const updatedNames = Array.isArray(updated)
-    ? updated
-        .map((label) => (typeof label === "string" ? label : label.name))
-        .filter(Boolean)
-        .sort()
-    : [];
-  if (
-    !Array.isArray(updated) ||
-    !isDeepStrictEqual(updatedNames, [...labels].sort()) ||
-    updatedNames.filter((name) => STATUS_LABELS.includes(name)).join("") !==
-      status
-  ) {
-    throw new WorkGraphError("status replacement response did not reconcile");
-  }
-}
-
-async function authoritativeChildren(github, parentNumber, cfg) {
-  const summaries = await github.subIssues(parentNumber);
-  if (!Array.isArray(summaries)) {
-    throw new WorkGraphError("sub-issues response must be an array");
-  }
-  const children = [];
-  for (const summary of summaries) {
-    if (
-      !object(summary) ||
-      !Number.isSafeInteger(summary.number) ||
-      summary.number <= 0 ||
-      summary.repository_url !== REPOSITORY_URL ||
-      typeof summary.node_id !== "string" ||
-      !summary.node_id
-    ) {
-      throw new WorkGraphError(
-        "parent has a child outside the fixed repository or with invalid identity",
-      );
-    }
-    const issue = await github.issue(summary.number);
-    if (
-      issue.number !== summary.number ||
-      issue.node_id !== summary.node_id ||
-      issue.repository_url !== REPOSITORY_URL
-    ) {
-      throw new WorkGraphError("child summary does not match the fixed-repository Issue");
-    }
-    if (issue.type?.name !== TASK_TYPE_NAME || issue.type?.node_id !== cfg.taskTypeId) {
-      throw new WorkGraphError("parent has a child that is not the configured WorkGraphTask type");
-    }
-    if (issue.user?.id !== cfg.launcherId) {
-      throw new WorkGraphError("child task has the wrong creator");
-    }
-    children.push(issue);
-  }
-  return children;
-}
-
-function requireNoOpenChildren(children, allowedNodeId = null) {
-  if (
-    children.some(
-      (child) => child.state === "open" && child.node_id !== allowedNodeId,
-    )
-  ) {
-    throw new WorkGraphError(
-      "parent has an unexpected open child/sibling WorkGraphTask",
-    );
-  }
-}
-
-function requireCurrentChild(children, input, taskType) {
-  const typed = children
-    .map((child) => ({ child, payload: parseTask(child.body) }))
-    .filter((entry) => entry.payload.taskType === taskType);
-  if (typed.length === 0) {
-    throw new WorkGraphError(`parent has no ${taskType} task`);
-  }
-  const latestNumber = Math.max(...typed.map((entry) => entry.child.number));
-  const latest = typed.filter((entry) => entry.child.number === latestNumber);
-  if (latest.length !== 1) {
-    throw new WorkGraphError(`parent does not have one unique latest ${taskType} task`);
-  }
-  if (
-    latest[0].child.number !== input.taskIssueNumber ||
-    latest[0].child.node_id !== input.taskIssueNodeId
-  ) {
-    throw new WorkGraphError(`supplied task is not the current latest ${taskType} task`);
-  }
-  return latest[0];
-}
-
-function transitionTitle(parentNumber, transition, correlationNodeId = null) {
-  let title;
-  if (transition === "start-validation") {
-    title = `WorkGraph: validate-issue parent #${parentNumber} start-validation`;
-  } else if (transition === "advance-validation") {
-    identifier(correlationNodeId, "transition validation Result correlation");
-    title =
-      `WorkGraph: request-info parent #${parentNumber} ` +
-      `validation-result ${correlationNodeId}`;
-  } else {
-    identifier(correlationNodeId, "transition human reply correlation");
-    title =
-      `WorkGraph: validate-issue parent #${parentNumber} ` +
-      `human-reply ${correlationNodeId}`;
-  }
-  if (title.length > MAX_TITLE) {
-    throw new WorkGraphError("canonical transition title exceeds GitHub's limit");
-  }
-  return title;
-}
-
-function matchesTransitionTask(issue, title, body, cfg) {
-  return (
-    object(issue) &&
-    !issue.pull_request &&
-    issue.title === title &&
-    issue.body === body &&
-    issue.state === "open" &&
-    issue.type?.name === TASK_TYPE_NAME &&
-    issue.type?.node_id === cfg.taskTypeId &&
-    issue.user?.id === cfg.launcherId
-  );
-}
-
-async function findUnattachedTransitionTask(
-  github,
-  parentNumber,
-  title,
-  body,
-  cfg,
-) {
-  const listed = await github.openIssues();
-  const possible = listed.filter(
-    (issue) =>
-      object(issue) &&
-      !issue.pull_request &&
-      issue.title === title &&
-      issue.body === body &&
-      issue.state === "open" &&
-      issue.user?.id === cfg.launcherId,
-  );
-  const unattached = [];
-  for (const summary of possible) {
-    const issue = await github.issue(summary.number);
-    if (!matchesTransitionTask(issue, title, body, cfg)) continue;
-    const nativeParent = await github.optionalParent(issue.number);
-    if (nativeParent === null) {
-      unattached.push(issue);
-    } else if (nativeParent.number === parentNumber) {
-      throw new WorkGraphError(
-        "matching task parent relation is inconsistent with authoritative children",
-      );
-    } else {
-      throw new WorkGraphError(
-        "matching canonical transition task is attached to another parent",
-      );
-    }
-  }
-  if (unattached.length > 1) {
-    throw new WorkGraphError(
-      "multiple unattached Issues match the canonical transition correlation",
-    );
-  }
-  return unattached[0] ?? null;
-}
-
-async function ensureTransitionTask(
-  github,
-  parent,
-  children,
-  task,
-  transition,
-  correlationNodeId,
-  cfg,
-  { create = true } = {},
-) {
-  const body = formatTask(task);
-  const title = transitionTitle(parent.number, transition, correlationNodeId);
-  const matching = children.filter((child) =>
-    matchesTransitionTask(child, title, body, cfg),
-  );
-  if (matching.length > 1) {
-    throw new WorkGraphError("multiple attached tasks match the transition correlation");
-  }
-  requireNoOpenChildren(children, matching[0]?.node_id ?? null);
-  if (matching.length === 1) return matching[0];
-  if (!create) {
-    throw new WorkGraphError(
-      "completed transition lacks its canonical correlated child task",
-    );
-  }
-  let candidate = await findUnattachedTransitionTask(
-    github,
-    parent.number,
-    title,
-    body,
-    cfg,
-  );
-  if (!candidate) {
-    candidate = await github.createIssue(title, body);
-    if (!matchesTransitionTask(candidate, title, body, cfg)) {
-      throw new WorkGraphError(
-        "created task did not reconcile to the canonical transition correlation",
-      );
-    }
-  }
-  await github.attachSubIssue(parent.number, candidate.id);
-  const attached = await authoritativeChildren(github, parent.number, cfg);
-  const reconciled = attached.filter((child) =>
-    matchesTransitionTask(child, title, body, cfg),
-  );
-  if (reconciled.length !== 1) {
-    throw new WorkGraphError("task attachment did not reconcile");
-  }
-  requireNoOpenChildren(attached, reconciled[0].node_id);
-  return reconciled[0];
-}
-
-async function transitionIssue(input, github, cfg) {
-  exact(input, [
-    "parentIssueNumber",
-    "parentIssueNodeId",
-    "expectedStatus",
-    "transition",
-    ...(input.transition === "advance-validation"
-      ? ["taskIssueNumber", "taskIssueNodeId", "resultCommentNodeId"]
-      : input.transition === "resume-after-human-reply"
-        ? [
-            "taskIssueNumber",
-            "taskIssueNodeId",
-            "requestCommentNodeId",
-            "humanReplyCommentNodeId",
-          ]
-        : []),
-  ], "arguments");
-  issueNumber(input.parentIssueNumber, "arguments.parentIssueNumber");
-  identifier(input.parentIssueNodeId, "arguments.parentIssueNodeId");
-  if (
-    !["start-validation", "advance-validation", "resume-after-human-reply"].includes(
-      input.transition,
-    )
-  ) {
-    throw new WorkGraphError("arguments.transition is unsupported");
-  }
-  const expectedByTransition = {
-    "start-validation": "status:new",
-    "advance-validation": "status:awaiting-validation",
-    "resume-after-human-reply": "status:awaiting-need-info",
-  };
-  if (input.expectedStatus !== expectedByTransition[input.transition]) {
-    throw new WorkGraphError("supplied expectedStatus does not match transition");
-  }
-  const [identity, parent] = await Promise.all([
-    github.identity(),
-    github.issue(input.parentIssueNumber),
-  ]);
-  verifyIdentity(identity, cfg.orchestratorId, "orchestrator");
-  validateParent(parent, input);
-  const initialStatus = statusOf(parent);
-  const children = await authoritativeChildren(github, parent.number, cfg);
-
-  if (input.transition === "start-validation") {
-    if (
-      initialStatus !== input.expectedStatus &&
-      initialStatus !== "status:awaiting-validation"
-    ) {
-      throw new WorkGraphError("stale supplied parent status");
-    }
-    const task = await ensureTransitionTask(
-      github,
-      parent,
-      children,
-      {
-        taskType: "validate-issue",
-        inputs: { validationProfile: "new-issue-default" },
-      },
-      input.transition,
-      null,
-      cfg,
-      { create: initialStatus === input.expectedStatus },
-    );
-    if (initialStatus === input.expectedStatus) {
-      await replaceStatus(
-        github,
-        input,
-        input.expectedStatus,
-        "status:awaiting-validation",
-      );
-    }
-    return { taskIssueNumber: task.number, taskIssueNodeId: task.node_id, status: "status:awaiting-validation" };
-  }
-
-  issueNumber(input.taskIssueNumber, "arguments.taskIssueNumber");
-  identifier(input.taskIssueNodeId, "arguments.taskIssueNodeId");
-
-  if (input.transition === "advance-validation") {
-    identifier(input.resultCommentNodeId, "arguments.resultCommentNodeId");
-    const { child, payload } = requireCurrentChild(
-      children,
-      input,
-      "validate-issue",
-    );
-    if (child.state !== "closed") {
-      throw new WorkGraphError("accepted validation task must be closed by the external runtime");
-    }
-    const comments = await github.comments(child.number);
-    oneAssignment(comments, payload, cfg);
-    const result = oneResult(comments, payload, cfg);
-    if (result.comment.node_id !== input.resultCommentNodeId) {
-      throw new WorkGraphError("supplied Result is not the current validation Result");
-    }
-    acceptanceFor(comments, result, cfg);
-    if (result.payload.result.criteria.every((criterion) => criterion.passed)) {
-      requireNoOpenChildren(children);
-      if (
-        initialStatus !== input.expectedStatus &&
-        initialStatus !== "status:awaiting-triage"
-      ) {
-        throw new WorkGraphError("stale supplied parent status");
-      }
-      if (initialStatus === input.expectedStatus) {
-        await replaceStatus(
-          github,
-          input,
-          input.expectedStatus,
-          "status:awaiting-triage",
-        );
-      }
-      return { status: "status:awaiting-triage" };
-    }
-    if (
-      initialStatus !== input.expectedStatus &&
-      initialStatus !== "status:awaiting-need-info"
-    ) {
-      throw new WorkGraphError("stale supplied parent status");
-    }
-    const task = await ensureTransitionTask(
-      github,
-      parent,
-      children,
-      {
-        taskType: "request-info",
-        inputs: {
-          validationResultCommentNodeId: result.comment.node_id,
-        },
-      },
-      input.transition,
-      result.comment.node_id,
-      cfg,
-      { create: initialStatus === input.expectedStatus },
-    );
-    if (initialStatus === input.expectedStatus) {
-      await replaceStatus(
-        github,
-        input,
-        input.expectedStatus,
-        "status:awaiting-need-info",
-      );
-    }
-    return {
-      taskIssueNumber: task.number,
-      taskIssueNodeId: task.node_id,
-      status: "status:awaiting-need-info",
-    };
-  }
-
-  identifier(input.requestCommentNodeId, "arguments.requestCommentNodeId");
-  identifier(input.humanReplyCommentNodeId, "arguments.humanReplyCommentNodeId");
-  const { child, payload } = requireCurrentChild(
-    children,
-    input,
-    "request-info",
-  );
-  if (child.state !== "closed") {
-    throw new WorkGraphError("request-info task must be closed by the external runtime");
-  }
-  const comments = await github.comments(child.number);
-  oneAssignment(comments, payload, cfg);
-  const result = oneResult(comments, payload, cfg);
-  acceptanceFor(comments, result, cfg);
-  if (
-    result.payload.result.requestCommentNodeId !== input.requestCommentNodeId
-  ) {
-    throw new WorkGraphError("supplied parent info comment is not the accepted Result target");
-  }
-  const parentComments = await github.comments(parent.number);
-  const info = parentComments.find(
-    (comment) => comment.node_id === input.requestCommentNodeId,
-  );
-  const reply = parentComments.find(
-    (comment) => comment.node_id === input.humanReplyCommentNodeId,
-  );
-  const botIds = new Set([
-    cfg.launcherId,
-    cfg.assignmentId,
-    cfg.resultId,
-    cfg.acceptanceId,
-    cfg.orchestratorId,
-    cfg.infoId,
-    cfg.feedbackId,
-  ]);
-  if (
-    !info ||
-    info.user?.id !== cfg.infoId ||
-    !reply ||
-    reply.user?.type !== "User" ||
-    botIds.has(reply.user?.id) ||
-    Date.parse(reply.created_at) <= Date.parse(info.created_at)
-  ) {
-    throw new WorkGraphError("supplied comment is not a qualifying human reply after the info request");
-  }
-  if (
-    initialStatus !== input.expectedStatus &&
-    initialStatus !== "status:awaiting-validation"
-  ) {
-    throw new WorkGraphError("stale supplied parent status");
-  }
-  const task = await ensureTransitionTask(
-    github,
-    parent,
-    children,
-    {
-      taskType: "validate-issue",
-      inputs: { validationProfile: "new-issue-default" },
-    },
-    input.transition,
-    input.humanReplyCommentNodeId,
-    cfg,
-    { create: initialStatus === input.expectedStatus },
-  );
-  if (initialStatus === input.expectedStatus) {
-    await replaceStatus(
-      github,
-      input,
-      input.expectedStatus,
-      "status:awaiting-validation",
-    );
-  }
-  return { taskIssueNumber: task.number, taskIssueNodeId: task.node_id, status: "status:awaiting-validation" };
-}
-
-export function formatFeedback(
-  resultCommentNodeId,
-  resultBodyDigest,
-  feedback,
-) {
-  const payload = { resultCommentNodeId, resultBodyDigest, feedback };
-  validateFeedback(payload);
-  return canonicalJson(FEEDBACK_MARKER, payload);
-}
-
-async function getResultSnapshot(input, github, cfg) {
-  refs(input);
-  const ctx = await context(github, input, cfg, {
-    actorId: cfg.acceptanceId,
-    actorLabel: "acceptance reporter",
-    open: true,
-  });
-  const comments = await github.comments(input.taskIssueNumber);
-  oneAssignment(comments, ctx.taskPayload, cfg);
-  const result = oneResult(comments, ctx.taskPayload, cfg);
-  return {
-    resultCommentNodeId: result.comment.node_id,
-    resultBodyDigest: resultDigest(result.comment.body),
-    workResult: result.payload,
-  };
-}
-
-async function submitFeedback(input, github, cfg) {
-  refs(input, ["resultCommentNodeId", "resultBodyDigest", "feedback"]);
-  identifier(input.resultCommentNodeId, "arguments.resultCommentNodeId");
-  digestString(input.resultBodyDigest, "arguments.resultBodyDigest");
-  plain(input.feedback, "arguments.feedback");
-  const ctx = await context(github, input, cfg, {
-    actorId: cfg.feedbackId,
-    actorLabel: "feedback reporter",
-    open: true,
-  });
-  const comments = await github.comments(input.taskIssueNumber);
-  oneAssignment(comments, ctx.taskPayload, cfg);
-  const result = oneResult(comments, ctx.taskPayload, cfg);
-  if (result.comment.node_id !== input.resultCommentNodeId) {
-    throw new WorkGraphError("feedback does not target the current Result");
-  }
-  if (comments.some((comment) => structured(comment.body, ACCEPTANCE_MARKER))) {
-    throw new WorkGraphError("feedback cannot target an accepted Result");
-  }
-  const currentDigest = resultDigest(result.comment.body);
-  if (currentDigest !== input.resultBodyDigest) {
-    throw new WorkGraphError("feedback targets a stale Result digest");
-  }
-  const body = formatFeedback(
-    input.resultCommentNodeId,
-    currentDigest,
-    input.feedback,
-  );
-  const existing = candidates(comments, FEEDBACK_MARKER, (candidate) =>
-    parseCanonicalJson(candidate, FEEDBACK_MARKER, validateFeedback),
-  );
-  let comment;
-  let reconciled = false;
-  let revised = false;
-  if (existing.marked.length > 0) {
-    if (
-      existing.parsed.length !== 1 ||
-      !existing.parsed[0].payload ||
-      existing.parsed[0].comment.user?.id !== cfg.feedbackId ||
-      existing.parsed[0].payload.resultCommentNodeId !==
-        input.resultCommentNodeId
-    ) {
-      throw new WorkGraphError("task has conflicting or foreign feedback");
-    }
-    comment = existing.parsed[0].comment;
-    if (comment.body === body) {
-      reconciled = true;
-    } else {
-      if (!Number.isSafeInteger(comment.id) || comment.id <= 0) {
-        throw new WorkGraphError("current feedback lacks a REST comment ID");
-      }
-      const patched = verifiedCommentWrite(
-        await github.patchComment(comment.id, body),
-        body,
-        cfg.feedbackId,
-        "feedback revision",
-      );
-      if (patched.id !== comment.id || patched.node_id !== comment.node_id) {
-        throw new WorkGraphError("revised feedback changed comment identity");
-      }
-      comment = patched;
-      revised = true;
-    }
-  } else {
-    comment = verifiedCommentWrite(
-      await github.postComment(input.taskIssueNumber, body),
-      body,
-      cfg.feedbackId,
-      "feedback",
-    );
-  }
-  return {
-    feedbackCommentNodeId: comment.node_id,
-    resultBodyDigest: currentDigest,
-    reconciled,
-    revised,
-  };
-}
-
-const referenceProperties = {
-  taskIssueNumber: { type: "integer", minimum: 1 },
-  taskIssueNodeId: { type: "string", minLength: 1, maxLength: MAX_ID },
-  parentIssueNumber: { type: "integer", minimum: 1 },
-  parentIssueNodeId: { type: "string", minLength: 1, maxLength: MAX_ID },
-};
-
-const vnextTaskLocatorSchema = schema(
-  {
-    repositoryOwner: { type: "string", const: OWNER },
-    repositoryName: { type: "string", const: REPO },
-    repositoryNodeId: { type: "string", minLength: 1, maxLength: MAX_ID },
-    issueNumber: { type: "integer", minimum: 1 },
-    issueNodeId: { type: "string", minLength: 1, maxLength: MAX_ID },
-    parentIssueNumber: { type: "integer", minimum: 1 },
-    parentIssueNodeId: { type: "string", minLength: 1, maxLength: MAX_ID },
-  },
-  [
-    "repositoryOwner",
-    "repositoryName",
-    "repositoryNodeId",
-    "issueNumber",
-    "issueNodeId",
-  ],
-);
-const vnextChildTaskLocatorSchema = schema(
-  vnextTaskLocatorSchema.properties,
-);
-
-function schema(properties, required = Object.keys(properties)) {
+function schema(properties) {
   return {
     type: "object",
     additionalProperties: false,
     properties,
-    required,
+    required: Object.keys(properties),
   };
 }
 
-const tools = [
+const locatorSchema = schema({
+  repositoryOwner: { type: "string", const: OWNER },
+  repositoryName: { type: "string", const: REPO },
+  repositoryNodeId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
+  issueNumber: { type: "integer", minimum: 1 },
+  issueNodeId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
+  parentIssueNumber: { type: "integer", minimum: 1 },
+  parentIssueNodeId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
+});
+
+export const tools = [
   {
-    name: "get_vnext_principal_issue",
+    name: "get_root_issue",
     description:
-      "Return the exact ordinary principal Issue after verifying the typed validator/root ancestry and admission snapshot digest.",
+      "Return the admitted ordinary Root Issue after verifying its Root Task ancestry and immutable content digest.",
     inputSchema: schema({
-      taskLocator: vnextChildTaskLocatorSchema,
-      taskId: { type: "string", minLength: 1, maxLength: MAX_ID },
-    }),
-  },
-  {
-    name: "get_result_snapshot",
-    description:
-      "Return the verified current Result payload, comment node ID, and SHA-256 digest.",
-    inputSchema: schema({
-      ...referenceProperties,
-    }),
-  },
-  {
-    name: "submit_task_assignment",
-    description: "Submit or reconcile one strict task Assignment.",
-    inputSchema: schema({
-      ...referenceProperties,
-      agentId: { type: "string", enum: Object.values(AGENT_ID_BY_TASK) },
+      taskLocator: locatorSchema,
+      taskId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
     }),
   },
   {
     name: "submit_task_result",
     description:
-      "Create or reconcile one canonical VNext Result bound to an exact task Dispatch.",
+      "Create or reconcile one canonical WorkGraphTaskResult/v1 after validating the exact active Dispatch Lease.",
     inputSchema: schema({
-      taskLocator: vnextTaskLocatorSchema,
-      taskId: { type: "string", minLength: 1, maxLength: MAX_ID },
-      dispatchId: { type: "string", minLength: 1, maxLength: MAX_ID },
-      leaseId: { type: "string", minLength: 1, maxLength: MAX_ID },
+      taskLocator: locatorSchema,
+      taskId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
+      dispatchId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
+      leaseId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
       outcome: { type: "string", enum: ["succeeded", "failed"] },
       output: {},
     }),
   },
-  {
-    name: "submit_workflow_task_assignment",
-    description:
-      "Submit or reconcile one Assignment matching a WorkGraphTask/v2 manifest.",
-    inputSchema: schema({
-      ...referenceProperties,
-      agentId: {
-        type: "string",
-        minLength: 1,
-        maxLength: 64,
-        pattern: "^[A-Za-z0-9._-]+$",
-      },
-    }),
-  },
-  {
-    name: "submit_workflow_task_result",
-    description:
-      "Create one lease-bound workflow Result; never revise or close a task.",
-    inputSchema: schema({
-      ...referenceProperties,
-      workResult: { type: "object" },
-      assignmentCommentNodeId: { type: "string" },
-      leaseId: { type: "string" },
-      agentId: { type: "string" },
-      slotId: { type: "string" },
-    }),
-  },
-  {
-    name: "submit_result_acceptance",
-    description: "Accept the exact current Result comment ID and SHA-256 digest.",
-    inputSchema: schema({
-      ...referenceProperties,
-      resultCommentNodeId: { type: "string" },
-      resultBodyDigest: { type: "string" },
-      summary: { type: "string" },
-    }),
-  },
-  {
-    name: "transition_issue",
-    description: "Expected-state parent status/task transition in one narrow operation.",
-    inputSchema: schema(
-      {
-        parentIssueNumber: referenceProperties.parentIssueNumber,
-        parentIssueNodeId: referenceProperties.parentIssueNodeId,
-        expectedStatus: { type: "string", enum: STATUS_LABELS },
-        transition: {
-          type: "string",
-          enum: [
-            "start-validation",
-            "advance-validation",
-            "resume-after-human-reply",
-          ],
-        },
-        taskIssueNumber: referenceProperties.taskIssueNumber,
-        taskIssueNodeId: referenceProperties.taskIssueNodeId,
-        resultCommentNodeId: { type: "string" },
-        requestCommentNodeId: { type: "string" },
-        humanReplyCommentNodeId: { type: "string" },
-      },
-      ["parentIssueNumber", "parentIssueNodeId", "expectedStatus", "transition"],
-    ),
-  },
-  {
-    name: "post_parent_info_request",
-    description: "Post or reconcile one parent info request from a validation Result.",
-    inputSchema: schema({
-      ...referenceProperties,
-      validationTaskIssueNumber: { type: "integer", minimum: 1 },
-      validationTaskIssueNodeId: { type: "string" },
-      validationResultCommentNodeId: { type: "string" },
-      assignmentCommentNodeId: { type: "string" },
-      leaseId: { type: "string" },
-      agentId: { type: "string" },
-      slotId: { type: "string" },
-    }),
-  },
-  {
-    name: "post_workflow_parent_info_request",
-    description:
-      "Post or reconcile one parent info request from an exact prior workflow evaluator Result.",
-    inputSchema: schema({
-      ...referenceProperties,
-      priorTaskIssueNumber: { type: "integer", minimum: 1 },
-      priorTaskIssueNodeId: {
-        type: "string",
-        minLength: 1,
-        maxLength: MAX_ID,
-      },
-      priorResultCommentNodeId: {
-        type: "string",
-        minLength: 1,
-        maxLength: MAX_ID,
-      },
-      priorResultBodyDigest: {
-        type: "string",
-        pattern: "^sha256:[0-9a-f]{64}$",
-      },
-      assignmentCommentNodeId: { type: "string" },
-      leaseId: { type: "string" },
-      agentId: { type: "string" },
-      slotId: { type: "string" },
-    }),
-  },
-  {
-    name: "submit_task_feedback",
-    description: "Post or revise exact digest-bound Result feedback.",
-    inputSchema: schema({
-      ...referenceProperties,
-      resultCommentNodeId: { type: "string" },
-      resultBodyDigest: { type: "string" },
-      feedback: { type: "string" },
-    }),
-  },
 ];
 
-async function callTool(name, args) {
-  const cfg = config(name, args);
-  const github = new GitHub(cfg);
-  if (name === "get_vnext_principal_issue") {
-    return getVNextPrincipalIssue(args, github, cfg);
+export async function callTool(name, args) {
+  const config = configuration(name);
+  const github = new GitHub(config);
+  if (name === "get_root_issue") return getRootIssue(args, github, config);
+  if (name === "submit_task_result") {
+    return submitTaskResult(args, github, config);
   }
-  if (name === "get_result_snapshot") return getResultSnapshot(args, github, cfg);
-  if (name === "submit_task_assignment") return submitAssignment(args, github, cfg);
-  if (name === "submit_task_result") return submitResult(args, github, cfg);
-  if (name === "submit_workflow_task_assignment") {
-    return submitWorkflowAssignment(args, github, cfg);
-  }
-  if (name === "submit_workflow_task_result") {
-    return submitWorkflowResult(args, github, cfg);
-  }
-  if (name === "submit_result_acceptance") return submitAcceptance(args, github, cfg);
-  if (name === "transition_issue") return transitionIssue(args, github, cfg);
-  if (name === "post_parent_info_request") return postInfo(args, github, cfg);
-  if (name === "post_workflow_parent_info_request") {
-    return postWorkflowInfo(args, github, cfg);
-  }
-  if (name === "submit_task_feedback") return submitFeedback(args, github, cfg);
-  throw new WorkGraphError(`unknown tool ${name}`);
+  throw new WorkGraphReporterError(`unknown tool ${name}`);
 }
 
 async function rpc(message) {
@@ -3545,7 +1305,7 @@ async function rpc(message) {
     return {
       protocolVersion: "2025-06-18",
       capabilities: { tools: {} },
-      serverInfo: { name: "drasi-workgraph-reporter", version: "3.0.0" },
+      serverInfo: { name: "drasi-workgraph-v1-reporter", version: "1.0.0" },
     };
   }
   if (message.method === "ping") return {};
@@ -3562,29 +1322,27 @@ async function rpc(message) {
         isError: false,
       };
     } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "unknown WorkGraph tool failure";
       if (process.env.NODE_ENV !== "test") {
-        process.stderr.write(
-          `[drasi-workgraph-reporter] ${error instanceof Error ? error.message : "unknown tool failure"}\n`,
-        );
+        process.stderr.write(`[drasi-workgraph-v1-reporter] ${message}\n`);
       }
       return {
-        content: [{ type: "text", text: error.message }],
+        content: [{ type: "text", text: message }],
         isError: true,
       };
     }
   }
-  throw new WorkGraphError(`unsupported method ${message.method}`);
+  throw new WorkGraphReporterError(`unsupported method ${message.method}`);
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) {
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const lines = readline.createInterface({ input: process.stdin });
   lines.on("line", async (line) => {
     let request;
     try {
       request = JSON.parse(line);
-      if (request.id === undefined) {
-        return;
-      }
+      if (request.id === undefined) return;
       const result = await rpc(request);
       process.stdout.write(
         `${JSON.stringify({ jsonrpc: "2.0", id: request.id, result })}\n`,
@@ -3594,7 +1352,10 @@ if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).
         `${JSON.stringify({
           jsonrpc: "2.0",
           id: request?.id ?? null,
-          error: { code: -32603, message: error.message },
+          error: {
+            code: -32603,
+            message: error instanceof Error ? error.message : "unknown error",
+          },
         })}\n`,
       );
     }

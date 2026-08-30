@@ -1,0 +1,85 @@
+{
+  "runtimeContract": {
+    "sourceId": "github-workgraph-v1",
+    "reactionId": "workgraph-v1",
+    "serverConfig": "server-config-v1.yaml",
+    "stateStorePath": "data/workgraph-v1.redb",
+    "queryIds": [
+      "wg-issues-waiting-for-admission",
+      "wg-tasks-waiting-for-fork",
+      "wg-tasks-waiting-for-join-all",
+      "wg-task-leaves-waiting-for-assign",
+      "wg-task-parents-waiting-for-assign",
+      "wg-tasks-waiting-for-lease",
+      "wg-tasks-waiting-for-dispatch",
+      "wg-tasks-waiting-for-result",
+      "wg-tasks-waiting-for-evaluate",
+      "wg-tasks-waiting-for-close",
+      "wg-tasks-closed",
+      "wg-task-detail",
+      "wg-task-definition-detail",
+      "wg-child-realization-detail",
+      "wg-task-artifact-detail",
+      "wg-result-detail",
+      "wg-evaluation-detail"
+    ]
+  },
+  "definition": {
+    "bodyPath": "../../workflows/issue-lifecycle-v1.body",
+    "workflowDefinitionId": "demo-issue-lifecycle",
+    "version": "v1",
+    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "rootIssueAdmission": {
+    "repositoryOwner": "drasi-project",
+    "repositoryName": "drasi-workgraph-demo",
+    "repositoryNodeId": "R_demo",
+    "issueNumber": 9000,
+    "issueNodeId": "I_demo_root_issue",
+    "label": "workgraph",
+    "deliveryId": "demo-delivery-1",
+    "admissionId": "wga-8e18eb61298b072660c33ae67887cf28a1ca1f69739197b82f6fc4b4a06a1911",
+    "title": "Demo Root Issue",
+    "body": "Validate this issue.",
+    "contentDigest": "sha256:1ce8a562497ecef8e50c6277e9af879641c728482d310e642a20c3014ddabcd1"
+  },
+  "expectedRootTask": {
+    "taskId": "wgt-43e0da998942f4c58f26545c23c9606aba8d393ee8b63e142bffe4297c0e",
+    "rootIssueId": "I_demo_root_issue",
+    "workflowRunId": "workgraph-v1:run:sha256:75cd99d4a1f67448bec1db7032b5ef81482111aae1100a31828fcb36fc77f3f4",
+    "taskDefinitionId": "demo-root-v1",
+    "firstLifecycleState": "FORK",
+    "precreatedChildCount": 0
+  },
+  "expectedLifecycle": [
+    "FORK",
+    "JOIN_ALL",
+    "ASSIGN",
+    "LEASE",
+    "DISPATCH",
+    "RESULT",
+    "EVALUATE",
+    "CLOSE",
+    "CLOSED"
+  ],
+  "leaseValidation": {
+    "path": "/github/workgraph-v1/lease/validate",
+    "requestFields": [
+      "taskId",
+      "leaseId",
+      "assignmentId",
+      "executorId",
+      "slotId",
+      "claimId"
+    ]
+  },
+  "activation": {
+    "serverAutoStart": false,
+    "sourceAutoStart": false,
+    "queryAutoStart": false,
+    "reactionMode": "disabled",
+    "dryRun": true,
+    "liveAcknowledgment": false,
+    "githubWritesAllowed": false
+  }
+}
