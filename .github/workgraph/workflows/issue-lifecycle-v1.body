@@ -2,16 +2,16 @@ WorkGraphWorkflowDefinition/v1
 
 ```json
 {
-  "workflowDefinitionId": "demo-issue-lifecycle",
+  "workflowDefinitionId": "issue-lifecycle",
   "version": "v1",
   "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
   "root": {
-    "taskDefinitionId": "demo-root-v1",
+    "taskDefinitionId": "root-v1",
     "taskKey": "root",
     "operation": "coordinate-issue",
     "routing": {
       "permittedExecutors": [
-        "demo-orchestrator"
+        "issue-coordinator"
       ]
     },
     "staticInputs": {
@@ -19,7 +19,7 @@ WorkGraphWorkflowDefinition/v1
     },
     "children": [
       {
-        "taskDefinitionId": "demo-validate-v1",
+        "taskDefinitionId": "validate-v1",
         "taskKey": "validate",
         "operation": "validate-issue",
         "routing": {

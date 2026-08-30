@@ -1,13 +1,13 @@
-# WorkGraph v1 definition demo
+# WorkGraph v1 definition
 
-The Demo workflow is frozen in
+The reference workflow is frozen in
 `.github/workgraph/workflows/issue-lifecycle-v1.body` under the
 `WorkGraphWorkflowDefinition/v1` marker. It defines:
 
 | Task key | Definition ID | Operation | Executor |
 |---|---|---|---|
-| `root` | `demo-root-v1` | `coordinate-issue` | `demo-orchestrator` |
-| `validate` | `demo-validate-v1` | `validate-issue` | `issue-validator` |
+| `root` | `root-v1` | `coordinate-issue` | `issue-coordinator` |
+| `validate` | `validate-v1` | `validate-issue` | `issue-validator` |
 
 The definition is recursive and immutable. Runtime `WorkGraphTask/v1` bodies
 carry only identity, definition pins, top-level `rootIssueId`, and resolved

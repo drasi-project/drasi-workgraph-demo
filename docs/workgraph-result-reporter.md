@@ -1,6 +1,6 @@
 # WorkGraph v1 reporter
 
-`.github/mcp/workgraph-reporter.mjs` is the Demo's narrow MCP boundary for
+`.github/mcp/workgraph-reporter.mjs` is the testbed's narrow MCP boundary for
 reading the admitted Root Issue and submitting task Results. It exposes exactly
 two tools:
 
@@ -23,7 +23,7 @@ Both tools receive an opaque `taskLocator` from the Reaction execution context:
 {
   "repositoryOwner": "drasi-project",
   "repositoryName": "drasi-workgraph-demo",
-  "repositoryNodeId": "R_demo",
+  "repositoryNodeId": "R_workgraph_testbed",
   "issueNumber": 101,
   "issueNodeId": "I_child_task",
   "parentIssueNumber": 100,
@@ -45,7 +45,7 @@ Task and from the Root Task to the Root Issue.
 The Root Task must:
 
 - carry the same top-level `rootIssueId` and workflow run as the validator;
-- use task definition `demo-root-v1`;
+- use task definition `root-v1`;
 - contain only `proofMode` and `rootIssue` in `resolvedInputs`;
 - bind the Root Issue's repository, Issue identity, admission generation, and
   content digest;

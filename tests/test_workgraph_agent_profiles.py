@@ -11,11 +11,11 @@ AGENTS_CONFIG = ROOT / ".github" / "workgraph" / "agents.yaml"
 DOCS = [
     ROOT / "README.md",
     ROOT / "docs" / "workgraph-result-reporter.md",
-    ROOT / "docs" / "workgraph-v1-definition-demo.md",
+    ROOT / "docs" / "workgraph-v1-definition.md",
 ]
 
 EXPECTED_TOOLS = {
-    "demo-orchestrator": ["workgraph/submit_task_result"],
+    "issue-coordinator": ["workgraph/submit_task_result"],
     "issue-validator": [
         "workgraph/get_root_issue",
         "workgraph/submit_task_result",
@@ -100,7 +100,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
             entries,
             [
                 ("issue-validator", "1", "PT30M"),
-                ("demo-orchestrator", "1", "PT15M"),
+                ("issue-coordinator", "1", "PT15M"),
             ],
         )
 

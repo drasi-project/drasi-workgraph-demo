@@ -3,6 +3,6 @@ agents:
   - agentId: issue-validator
     slots: 1
     leaseDuration: PT30M
-  - agentId: demo-orchestrator
+  - agentId: issue-coordinator
     slots: 1
     leaseDuration: PT15M

@@ -48,7 +48,7 @@ unchanged to both narrow tools.
 Call `workgraph/get_root_issue` once with exactly the unchanged
 `taskLocator` and `taskId`. The reader independently verifies that this task's
 immediate native parent is the launcher-authored, open, canonical
-`demo-root-v1` WorkGraph task in the same run and definition; that the root is
+`root-v1` WorkGraph task in the same run and definition; that the root is
 itself a native child of the ordinary Root Issue; and that its resolved inputs
 contain only `proofMode: isolated` and one exact `rootIssue` object. That object
 carries repository owner/name/node ID, Issue number/node ID, `admissionId`, and

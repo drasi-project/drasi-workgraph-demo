@@ -13,11 +13,11 @@ const OWNER = "drasi-project";
 const REPO = "drasi-workgraph-demo";
 const REPOSITORY_URL = `${API}/repos/${OWNER}/${REPO}`;
 const TASK_TYPE_NAME = "WorkGraphTask";
-const WORKFLOW_DEFINITION_ID = "demo-issue-lifecycle";
+const WORKFLOW_DEFINITION_ID = "issue-lifecycle";
 const WORKFLOW_DEFINITION_VERSION = "v1";
 const WORKFLOW_DEFINITION_DIGEST = `sha256:${"a".repeat(64)}`;
-const ROOT_TASK_DEFINITION_ID = "demo-root-v1";
-const VALIDATOR_TASK_DEFINITION_ID = "demo-validate-v1";
+const ROOT_TASK_DEFINITION_ID = "root-v1";
+const VALIDATOR_TASK_DEFINITION_ID = "validate-v1";
 const TASK_DISPATCH_MARKER = "WorkGraphTaskDispatch/v1";
 const TASK_RESULT_MARKER = "WorkGraphTaskResult/v1";
 const LEASE_VALIDATION_PATH = "/github/workgraph-v1/lease/validate";
@@ -932,7 +932,7 @@ function resultContext(context, input, config, expectedBody) {
   );
   const expectedExecutor =
     context.task.taskDefinitionId === ROOT_TASK_DEFINITION_ID
-      ? "demo-orchestrator"
+      ? "issue-coordinator"
       : "issue-validator";
   if (config.executorId !== expectedExecutor) {
     throw new WorkGraphReporterError(

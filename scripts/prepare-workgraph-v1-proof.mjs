@@ -23,9 +23,9 @@ const INPUTS_PATH = resolve(
   WORKGRAPH_ROOT,
   "fixtures/v1/live-proof-inputs.json",
 );
-const DEFINITION_BYTES = 846;
+const DEFINITION_BYTES = 831;
 const DEFINITION_SHA256 =
-  "1cd5b13c8017395dabbf25eb75465034cd54b6545be7d9fe889def1909aa66c7";
+  "68918d0137ec173cbcd24b8c32792874f15c3f92abf95424f98012977566d85b";
 const QUERY_COUNT = 17;
 
 function exact(value, keys, label) {

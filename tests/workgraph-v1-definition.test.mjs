@@ -66,17 +66,17 @@ function taskDefinitions(root) {
 
 test("the v1 workflow definition remains byte exact", async () => {
   const body = await read(DEFINITION_PATH);
-  assert.equal(Buffer.byteLength(body), 846);
+  assert.equal(Buffer.byteLength(body), 831);
   assert.equal(
     createHash("sha256").update(body, "utf8").digest("hex"),
-    "1cd5b13c8017395dabbf25eb75465034cd54b6545be7d9fe889def1909aa66c7",
+    "68918d0137ec173cbcd24b8c32792874f15c3f92abf95424f98012977566d85b",
   );
   const definition = parseWorkflowDefinition(body);
   assert.equal(formatWorkflowDefinition(definition), body);
   assert.equal(definition.version, "v1");
   assert.deepEqual(
     taskDefinitions(definition.root).map(({ taskDefinitionId }) => taskDefinitionId),
-    ["demo-root-v1", "demo-validate-v1"],
+    ["root-v1", "validate-v1"],
   );
 });
 
@@ -198,7 +198,7 @@ test("runtime tasks require top-level Root Issue identity and exact definition p
   const definition = parseWorkflowDefinition(await read(DEFINITION_PATH));
   const body = proof.expectedRootTask.body;
   const root = parseRuntimeTask(body);
-  assert.equal(root.rootIssueId, "I_demo_root_issue");
+  assert.equal(root.rootIssueId, "I_workgraph_root_issue");
   assert.equal(formatRuntimeTask(root), body);
   assert.deepEqual(validateRootRuntimeTask(definition, root), root);
 
@@ -255,17 +255,17 @@ test("offline proof derives the Root Task from Root Issue admission", async () =
   const proof = await buildWorkGraphV1Proof();
   assert.deepEqual(proof.expectedAdmissionQuery, {
     queryId: "wg-issues-waiting-for-admission",
-    rootIssueId: "I_demo_root_issue",
+    rootIssueId: "I_workgraph_root_issue",
     admissionId:
-      "wga-8e18eb61298b072660c33ae67887cf28a1ca1f69739197b82f6fc4b4a06a1911",
+      "wga-c011d85d24550c7469b5264f2c1ab1237a96469ea4a51f7c27f6b6762ea1ab31",
   });
   assert.equal(
     proof.expectedRootTask.value.taskId,
-    "wgt-43e0da998942f4c58f26545c23c9606aba8d393ee8b63e142bffe4297c0e",
+    "wgt-34c7e7f57d7382cd2fe4d3848d5a3242287150e55420d9cae04a9557daa1",
   );
   assert.equal(
     proof.expectedRootTask.value.workflowRunId,
-    "workgraph-v1:run:sha256:75cd99d4a1f67448bec1db7032b5ef81482111aae1100a31828fcb36fc77f3f4",
+    "workgraph-v1:run:sha256:7e382f874d15c6c60d8b4a15c365d0e85c2b5a65453924831442291cce73d510",
   );
   assert.equal(
     proof.expectedRootTask.value.resolvedInputs.rootIssue.issueNodeId,

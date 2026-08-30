@@ -1,6 +1,6 @@
 # drasi-workgraph-demo
 
-This repository is the Demo surface for the WorkGraph v1 prototype. GitHub
+This repository is the testbed surface for the WorkGraph v1 prototype. GitHub
 delivers Issue events through ngrok directly to the `github-workgraph-v1`
 Drasi Source. An exact, case-sensitive `workgraph` label admits an ordinary
 **Root Issue**; the `workgraph-v1` Reaction creates its **Root Task**, then any
@@ -28,7 +28,7 @@ The frozen workflow
 contains one Root Task definition and one validator child definition. The only
 configured executors are:
 
-- `demo-orchestrator`
+- `issue-coordinator`
 - `issue-validator`
 
 Both profiles use the narrow
@@ -47,6 +47,6 @@ python -m unittest tests/test_workgraph_agent_profiles.py
 ```
 
 Those commands do not start Drasi components or write to GitHub. See
-[`docs/workgraph-v1-definition-demo.md`](docs/workgraph-v1-definition-demo.md)
+[`docs/workgraph-v1-definition.md`](docs/workgraph-v1-definition.md)
 and
 [`docs/workgraph-result-reporter.md`](docs/workgraph-result-reporter.md).

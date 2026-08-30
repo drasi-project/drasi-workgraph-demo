@@ -1,6 +1,6 @@
 ---
-name: demo-orchestrator
-description: Completes the WorkGraph demo root from canonical direct-child Results and Evaluations.
+name: issue-coordinator
+description: Completes a WorkGraph Root Task from canonical direct-child Results and Evaluations.
 target: github-copilot
 user-invocable: true
 disable-model-invocation: false
@@ -20,12 +20,12 @@ mcp-servers:
       COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID }}
       COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID }}
       COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID }}
-      COPILOT_MCP_WORKGRAPH_EXECUTOR_ID: demo-orchestrator
+      COPILOT_MCP_WORKGRAPH_EXECUTOR_ID: issue-coordinator
       COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL: ${{ vars.COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL }}
       COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN: ${{ secrets.COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN }}
 ---
 
-# Demo orchestrator
+# Issue coordinator
 
 Run only from a trusted execution prompt containing one byte-canonical
 `WorkGraphTaskDispatch/v1` body and one `Execution context` object. The context
@@ -33,7 +33,7 @@ must contain exactly `task`, `taskDefinition`, `taskLocator`,
 `directChildResults`, and `directChildEvaluations`. Require all Dispatch task
 identity fields and Lease fields, and require the context task identity to
 match the Dispatch exactly. Require operation `coordinate-issue`, executor
-`demo-orchestrator`, resolved/static input `proofMode: isolated`, and exactly
+`issue-coordinator`, resolved/static input `proofMode: isolated`, and exactly
 one direct child with task key `validate`. If any field, identity, or
 cardinality is missing or inconsistent, stop and submit nothing.
 

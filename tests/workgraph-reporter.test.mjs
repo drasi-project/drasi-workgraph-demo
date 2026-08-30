@@ -29,7 +29,7 @@ const TYPE_ID = "IT_workgraph";
 const LAUNCHER_ID = 101;
 const ASSIGNMENT_ID = 102;
 const RESULT_ID = 103;
-const REPOSITORY_NODE_ID = "R_demo";
+const REPOSITORY_NODE_ID = "R_workgraph_testbed";
 const ROOT_ISSUE_ID = "I_root_issue";
 const ROOT_ISSUE_NUMBER = 42;
 const ROOT_TASK_NUMBER = 100;
@@ -50,22 +50,22 @@ function fixture() {
     REPOSITORY_NODE_ID,
     ROOT_ISSUE_ID,
     ADMISSION_ID,
-    "demo-issue-lifecycle",
+    "issue-lifecycle",
     "v1",
     DEFINITION_DIGEST,
   );
   const rootTaskId = deriveWorkGraphRootTaskId(
     workflowRunId,
-    "demo-root-v1",
+    "root-v1",
   );
   const rootTask = {
     taskId: rootTaskId,
     rootIssueId: ROOT_ISSUE_ID,
     workflowRunId,
-    workflowDefinitionId: "demo-issue-lifecycle",
+    workflowDefinitionId: "issue-lifecycle",
     workflowDefinitionVersion: "v1",
     workflowDefinitionDigest: DEFINITION_DIGEST,
-    taskDefinitionId: "demo-root-v1",
+    taskDefinitionId: "root-v1",
     resolvedInputs: {
       proofMode: "isolated",
       rootIssue: {
@@ -80,13 +80,13 @@ function fixture() {
     },
   };
   const childTask = {
-    taskId: "demo-validate-task",
+    taskId: "validation-task",
     rootIssueId: ROOT_ISSUE_ID,
     workflowRunId,
-    workflowDefinitionId: "demo-issue-lifecycle",
+    workflowDefinitionId: "issue-lifecycle",
     workflowDefinitionVersion: "v1",
     workflowDefinitionDigest: DEFINITION_DIGEST,
-    taskDefinitionId: "demo-validate-v1",
+    taskDefinitionId: "validate-v1",
     resolvedInputs: { validationProfile: "new-issue-default" },
   };
   const identity = (task) => ({
@@ -113,7 +113,7 @@ function fixture() {
     workflowRunId,
     rootTask,
     childTask,
-    rootDispatch: dispatch(rootTask, "demo-orchestrator"),
+    rootDispatch: dispatch(rootTask, "issue-coordinator"),
     childDispatch: dispatch(childTask, "issue-validator"),
   };
 }
@@ -707,7 +707,7 @@ test("edited Dispatch comments are rejected before lease validation", async () =
 
 test("the Root Task reports through the same v1 Result contract", async () => {
   await withFakeRuntime(
-    { executorId: "demo-orchestrator" },
+    { executorId: "issue-coordinator" },
     async ({ data, state }) => {
     const result = await callTool(
       "submit_task_result",
@@ -715,7 +715,7 @@ test("the Root Task reports through the same v1 Result contract", async () => {
     );
     assert.equal(result.reconciled, false);
     assert.equal(state.writes[0].number, ROOT_TASK_NUMBER);
-    assert.equal(state.leaseRequests[0].value.executorId, "demo-orchestrator");
+    assert.equal(state.leaseRequests[0].value.executorId, "issue-coordinator");
     },
   );
 });
