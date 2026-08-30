@@ -10,11 +10,12 @@ WORKFLOW = ROOT / ".github" / "workgraph" / "workflows" / "issue-lifecycle.yaml"
 DEFINITION = ROOT / ".github" / "mcp" / "workgraph-v1-definition.mjs"
 
 EXPECTED_TOOLS = {
-    "issue-worker": [
+    "issue-validator": [
         "workgraph/get_root_issue",
         "workgraph/submit_task_result",
     ],
-    "issue-validator": [
+    "issue-coordinator": ["workgraph/submit_task_result"],
+    "issue-worker": [
         "workgraph/get_root_issue",
         "workgraph/submit_task_result",
     ],
@@ -54,6 +55,13 @@ class WorkGraphProfilesTest(unittest.TestCase):
                 tools = re.findall(r"(?m)^  - (\S+)$", frontmatter)
                 self.assertEqual(tools, EXPECTED_TOOLS[name])
                 self.assertNotIn("github/issue_write", frontmatter)
+        for name in ("issue-validator", "issue-coordinator"):
+            with self.subTest(runtime_profile=name):
+                self.assertIn("mcp-servers:", self.agents[name])
+                self.assertIn(
+                    ".github/mcp/workgraph-reporter.mjs",
+                    self.agents[name],
+                )
 
     def test_agent_capacity_registers_every_profile_once(self):
         entries = re.findall(
@@ -83,7 +91,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
                 )
 
     def test_workflow_reuses_profiles_and_declares_both_overrides(self):
-        for profile in EXPECTED_TOOLS:
+        for profile in set(EXPECTED_TOOLS) - {"issue-coordinator"}:
             self.assertIn(profile, self.workflow)
         self.assertRegex(
             self.workflow,
@@ -101,8 +109,11 @@ class WorkGraphProfilesTest(unittest.TestCase):
             self.workflow,
             r"(?m)^      orchestrator: validation-stage-coordinator$",
         )
-        self.assertEqual(self.workflow.count("agent: issue-worker"), 6)
-        self.assertEqual(self.workflow.count("agent: issue-validator"), 4)
+        self.assertNotIn("agent:", self.workflow)
+        self.assertEqual(self.workflow.count("worker: issue-worker"), 6)
+        self.assertEqual(self.workflow.count("worker: issue-validator"), 4)
+        self.assertIn("maxReworkAttempts: 3", self.workflow)
+        self.assertNotRegex(self.workflow, r"(?m)^\s+maxRework:")
 
     def test_contract_surfaces_use_only_clean_v1_terms(self):
         production = "\n".join(

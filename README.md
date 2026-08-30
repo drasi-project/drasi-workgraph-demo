@@ -26,9 +26,9 @@ Root Issue
 Rich generic authoring lives in
 [`issue-lifecycle.yaml`](.github/workgraph/workflows/issue-lifecycle.yaml).
 It defines intake, normalization, accepted business-outcome branching, a
-qualified Root Issue comment wait loop, triage, rejection, recursive
-three-child validation, and finalization. Defaults and task/stage overrides
-select workers, Result evaluators, and workflow coordinators.
+standalone Root Issue comment wait loop, triage, rejection, recursive
+three-child validation, and finalization. Lowercase step IDs, worker inputs,
+defaults, and task/stage overrides follow the compiler's v1 YAML schema.
 
 The existing
 [`issue-lifecycle-v1.body`](.github/workgraph/workflows/issue-lifecycle-v1.body)
@@ -40,7 +40,10 @@ is tracked in
 
 Evaluator and coordinator profiles are lifecycle roles. They write canonical
 Evaluate and Route artifacts on an existing task; they are not nested tasks.
-The reporter's existing live GitHub write surface is unchanged in this wave.
+The existing `issue-validator` MCP profile and `issue-coordinator` executor
+remain registered so that the published body is executable. The new profiles
+coexist until Wave 2 can switch the runtime atomically. The reporter's existing
+live GitHub write surface is unchanged in this wave.
 
 The offline proof fixture pins all 17 `wg-*` Drasi queries and derives the Root
 Task from a Root Issue admission:

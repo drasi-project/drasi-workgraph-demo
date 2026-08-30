@@ -3,83 +3,228 @@
   "workflowDefinitionId": "issue-lifecycle",
   "version": "v1",
   "trigger": "workgraph",
-  "initial": "A",
+  "initialStepId": "a",
   "defaults": {
     "evaluator": "result-evaluator",
     "orchestrator": "workflow-coordinator",
-    "maxRework": 3,
-    "rework": {
-      "task": "same",
-      "assignment": "same",
-      "attempt": "fresh"
-    }
+    "maxReworkAttempts": 3
   },
   "steps": {
-    "A": {
-      "name": "intake",
-      "agent": "issue-worker",
-      "next": "B"
-    },
-    "B": {
-      "name": "normalize",
-      "agent": "issue-worker",
-      "next": "C"
-    },
-    "C": {
-      "name": "validate",
-      "agent": "issue-validator",
-      "evaluator": "issue-validation-evaluator",
-      "acceptedOutcomes": {
-        "needs-info": "D",
-        "continue": "E",
-        "reject": "F"
+    "a": {
+      "stepId": "a",
+      "type": "task",
+      "task": {
+        "taskDefinitionId": "a",
+        "operation": "intake-issue",
+        "worker": "issue-worker",
+        "inputs": {},
+        "evaluator": "result-evaluator",
+        "orchestrator": "workflow-coordinator",
+        "maxReworkAttempts": 3
       }
     },
-    "D": {
-      "name": "request-info",
-      "agent": "issue-info-requester",
-      "wait": {
-        "event": "root-issue-comment",
-        "rootIssue": true,
-        "authorType": "non-agent-human",
-        "target": "C"
+    "b": {
+      "stepId": "b",
+      "type": "task",
+      "task": {
+        "taskDefinitionId": "b",
+        "operation": "normalize-issue",
+        "worker": "issue-worker",
+        "inputs": {},
+        "evaluator": "result-evaluator",
+        "orchestrator": "workflow-coordinator",
+        "maxReworkAttempts": 3
       }
     },
-    "E": {
-      "name": "triage",
-      "agent": "issue-worker",
-      "next": "G"
+    "c": {
+      "stepId": "c",
+      "type": "task",
+      "task": {
+        "taskDefinitionId": "c",
+        "operation": "validate-issue",
+        "worker": "issue-validator",
+        "inputs": {
+          "profile": "new-issue-default"
+        },
+        "evaluator": "issue-validation-evaluator",
+        "orchestrator": "workflow-coordinator",
+        "maxReworkAttempts": 3
+      }
     },
-    "F": {
-      "name": "record-rejection",
-      "agent": "issue-worker",
-      "next": "ignored"
+    "d": {
+      "stepId": "d",
+      "type": "task",
+      "task": {
+        "taskDefinitionId": "d",
+        "operation": "request-information",
+        "worker": "issue-info-requester",
+        "inputs": {
+          "source": "c"
+        },
+        "evaluator": "result-evaluator",
+        "orchestrator": "workflow-coordinator",
+        "maxReworkAttempts": 3
+      }
     },
-    "G": {
-      "name": "parallel-validation",
-      "agent": "issue-worker",
-      "orchestrator": "validation-stage-coordinator",
-      "maxRework": 2,
-      "children": [
-        "G-title",
-        "G-body",
-        "G-reproduction"
-      ],
-      "join": {
-        "mode": "all",
-        "require": "accepted",
-        "coordinator": "after-children"
-      },
-      "next": "H"
+    "human": {
+      "stepId": "human",
+      "type": "wait",
+      "event": "root-issue-commented"
     },
-    "H": {
-      "name": "finalize",
-      "agent": "issue-worker",
-      "next": "completed"
+    "e": {
+      "stepId": "e",
+      "type": "task",
+      "task": {
+        "taskDefinitionId": "e",
+        "operation": "triage-issue",
+        "worker": "issue-worker",
+        "inputs": {},
+        "evaluator": "result-evaluator",
+        "orchestrator": "workflow-coordinator",
+        "maxReworkAttempts": 3
+      }
+    },
+    "f": {
+      "stepId": "f",
+      "type": "task",
+      "task": {
+        "taskDefinitionId": "f",
+        "operation": "record-rejection",
+        "worker": "issue-worker",
+        "inputs": {},
+        "evaluator": "result-evaluator",
+        "orchestrator": "workflow-coordinator",
+        "maxReworkAttempts": 3
+      }
+    },
+    "g": {
+      "stepId": "g",
+      "type": "task",
+      "task": {
+        "taskDefinitionId": "g",
+        "operation": "coordinate-validation",
+        "worker": "issue-worker",
+        "inputs": {},
+        "evaluator": "result-evaluator",
+        "orchestrator": "validation-stage-coordinator",
+        "maxReworkAttempts": 2,
+        "children": {
+          "join": "all",
+          "tasks": {
+            "title": {
+              "operation": "validate-title",
+              "worker": "issue-validator",
+              "inputs": {
+                "field": "title"
+              },
+              "evaluator": "result-evaluator",
+              "orchestrator": "validation-stage-coordinator",
+              "maxReworkAttempts": 2
+            },
+            "body": {
+              "operation": "validate-body",
+              "worker": "issue-validator",
+              "inputs": {
+                "field": "body"
+              },
+              "evaluator": "result-evaluator",
+              "orchestrator": "validation-stage-coordinator",
+              "maxReworkAttempts": 2
+            },
+            "reproduction": {
+              "operation": "validate-reproduction",
+              "worker": "issue-validator",
+              "inputs": {
+                "section": "reproduction"
+              },
+              "evaluator": "result-evaluator",
+              "orchestrator": "validation-stage-coordinator",
+              "maxReworkAttempts": 2
+            }
+          }
+        }
+      }
+    },
+    "h": {
+      "stepId": "h",
+      "type": "task",
+      "task": {
+        "taskDefinitionId": "h",
+        "operation": "finalize-issue",
+        "worker": "issue-worker",
+        "inputs": {},
+        "evaluator": "result-evaluator",
+        "orchestrator": "workflow-coordinator",
+        "maxReworkAttempts": 3
+      }
+    },
+    "completed": {
+      "stepId": "completed",
+      "type": "terminal",
+      "outcome": "completed"
+    },
+    "error": {
+      "stepId": "error",
+      "type": "terminal",
+      "outcome": "error"
+    },
+    "ignored": {
+      "stepId": "ignored",
+      "type": "terminal",
+      "outcome": "ignored"
     }
   },
-  "terminals": {
-    "ignored": "ignored",
-    "completed": "completed"
-  }
+  "transitions": [
+    {
+      "sourceStepId": "a",
+      "targetStepId": "b"
+    },
+    {
+      "sourceStepId": "b",
+      "targetStepId": "c"
+    },
+    {
+      "sourceStepId": "c",
+      "outcome": "needs-info",
+      "targetStepId": "d"
+    },
+    {
+      "sourceStepId": "c",
+      "outcome": "continue",
+      "targetStepId": "e"
+    },
+    {
+      "sourceStepId": "c",
+      "outcome": "reject",
+      "targetStepId": "f"
+    },
+    {
+      "sourceStepId": "d",
+      "outcome": "requested",
+      "targetStepId": "human"
+    },
+    {
+      "sourceStepId": "human",
+      "outcome": "root-issue-commented",
+      "targetStepId": "c"
+    },
+    {
+      "sourceStepId": "e",
+      "targetStepId": "g"
+    },
+    {
+      "sourceStepId": "f",
+      "outcome": "ignored",
+      "targetStepId": "ignored"
+    },
+    {
+      "sourceStepId": "g",
+      "targetStepId": "h"
+    },
+    {
+      "sourceStepId": "h",
+      "outcome": "completed",
+      "targetStepId": "completed"
+    }
+  ]
 }

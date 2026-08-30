@@ -4,19 +4,22 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
-  DEFAULT_MAX_REWORK,
+  DEFAULT_MAX_REWORK_ATTEMPTS,
   MAX_TASK_DEFINITION_CHILDREN,
+  compileIssueWorkflowLogical,
   formatTaskEvaluation,
   formatTaskRoute,
   formatRuntimeTask,
   formatWorkflowDefinition,
   nextReworkAttempt,
+  normalizeCompiledWorkflowDefinition,
   normalizeIssueWorkflow,
   parseTaskEvaluation,
   parseTaskRoute,
   parseRuntimeTask,
   parseWorkflowDefinition,
   validateRootRuntimeTask,
+  validateTaskRouteAgainstDefinition,
 } from "../.github/mcp/workgraph-v1-definition.mjs";
 import { buildWorkGraphV1Proof } from "../scripts/prepare-workgraph-v1-proof.mjs";
 
@@ -285,93 +288,87 @@ test("offline proof derives the Root Task from Root Issue admission", async () =
 });
 
 function richWorkflow() {
-  const task = (name, operation, agent, next) => ({
-    name,
-    type: "task",
-    operation,
-    agent,
-    next,
-  });
+  const task = (operation, worker, transition, inputs = {}) => {
+    const value = { type: "task", operation, worker, inputs };
+    if (typeof transition === "string") value.next = transition;
+    else value.outcomes = transition;
+    return value;
+  };
   return {
     apiVersion: "workgraph.drasi.io/v1",
     kind: "IssueWorkflow",
     metadata: { id: "issue-lifecycle" },
     spec: {
       trigger: "workgraph",
-      initial: "A",
+      initial: "a",
       defaults: {
         evaluator: "result-evaluator",
         orchestrator: "workflow-coordinator",
-        maxRework: 3,
-        rework: { task: "same", assignment: "same", attempt: "fresh" },
+        maxReworkAttempts: 3,
       },
       steps: {
-        A: task("intake", "intake-issue", "issue-worker", "B"),
-        B: task("normalize", "normalize-issue", "issue-worker", "C"),
-        C: {
-          name: "validate",
+        a: task("intake-issue", "issue-worker", "b"),
+        b: task("normalize-issue", "issue-worker", "c"),
+        c: {
           type: "task",
           operation: "validate-issue",
-          agent: "issue-validator",
+          worker: "issue-validator",
+          inputs: { profile: "new-issue-default" },
           evaluator: "issue-validation-evaluator",
-          outcomes: [
-            { outcome: "needs-info", verdict: "accepted", target: "D" },
-            { outcome: "continue", verdict: "accepted", target: "E" },
-            { outcome: "reject", verdict: "accepted", target: "F" },
-          ],
+          outcomes: { "needs-info": "d", continue: "e", reject: "f" },
         },
-        D: task("request-info", "request-information", "issue-info-requester", {
-          waitFor: "root-issue-comment",
-          where: { rootIssue: true, authorType: "non-agent-human" },
-          target: "C",
-        }),
-        E: task("triage", "triage-issue", "issue-worker", "G"),
-        F: task(
-          "record-rejection",
+        d: task(
+          "request-information",
+          "issue-info-requester",
+          { requested: "human" },
+          { source: "c" },
+        ),
+        human: {
+          type: "wait",
+          event: "root-issue-commented",
+          next: "c",
+        },
+        e: task("triage-issue", "issue-worker", "g"),
+        f: task(
           "record-rejection",
           "issue-worker",
-          "ignored",
+          { ignored: "ignored" },
         ),
-        G: {
+        g: {
           ...task(
-            "parallel-validation",
             "coordinate-validation",
             "issue-worker",
-            "H",
+            "h",
           ),
           orchestrator: "validation-stage-coordinator",
-          maxRework: 2,
-          children: [
-            {
-              id: "G-title",
-              name: "validate-title",
-              operation: "validate-title",
-              agent: "issue-validator",
+          maxReworkAttempts: 2,
+          children: {
+            join: "all",
+            tasks: {
+              title: {
+                operation: "validate-title",
+                worker: "issue-validator",
+                inputs: { field: "title" },
+              },
+              body: {
+                operation: "validate-body",
+                worker: "issue-validator",
+                inputs: { field: "body" },
+              },
+              reproduction: {
+                operation: "validate-reproduction",
+                worker: "issue-validator",
+                inputs: { section: "reproduction" },
+              },
             },
-            {
-              id: "G-body",
-              name: "validate-body",
-              operation: "validate-body",
-              agent: "issue-validator",
-            },
-            {
-              id: "G-reproduction",
-              name: "validate-reproduction",
-              operation: "validate-reproduction",
-              agent: "issue-validator",
-            },
-          ],
-          join: {
-            mode: "all",
-            require: "accepted",
-            coordinator: "after-children",
           },
         },
-        H: task("finalize", "finalize-issue", "issue-worker", "completed"),
-      },
-      terminals: {
-        ignored: { status: "ignored" },
-        completed: { status: "completed" },
+        h: task("finalize-issue", "issue-worker", {
+          completed: "completed",
+        }),
+        completed: { type: "terminal", outcome: "completed" },
+        error: { type: "terminal", outcome: "error" },
+        ignored: { type: "terminal", outcome: "ignored" },
       },
     },
   };
@@ -384,58 +381,52 @@ test("rich v1 authoring preserves the branch, wait loop, recursion, and override
   ]);
   assert.match(yaml, /^apiVersion: workgraph\.drasi\.io\/v1$/m);
   assert.match(yaml, /^  trigger: workgraph$/m);
+  assert.match(yaml, /^  initial: a$/m);
+  assert.match(yaml, /^    maxReworkAttempts: 3$/m);
+  assert.doesNotMatch(yaml, /\bagent:|\bmaxRework:|waitFor:|^\s+[A-H]:/m);
   assert.doesNotMatch(yaml, /status:\s*new/i);
-  assert.equal(expected.marker, "WorkGraphWorkflowDefinition/v1");
-  assert.equal(expected.workflowDefinitionId, "issue-lifecycle");
-  assert.equal(expected.version, "v1");
-  assert.deepEqual(Object.keys(expected.steps), [
-    "A",
-    "B",
-    "C",
-    "D",
-    "E",
-    "F",
-    "G",
-    "H",
-  ]);
-  assert.equal(expected.steps.A.next, "B");
-  assert.equal(expected.steps.B.next, "C");
-  assert.deepEqual(expected.steps.C.acceptedOutcomes, {
-    "needs-info": "D",
-    continue: "E",
-    reject: "F",
-  });
-  assert.deepEqual(expected.steps.D.wait, {
-    event: "root-issue-comment",
-    rootIssue: true,
-    authorType: "non-agent-human",
-    target: "C",
-  });
-  assert.deepEqual(expected.steps.G.children, [
-    "G-title",
-    "G-body",
-    "G-reproduction",
-  ]);
-  assert.deepEqual(expected.steps.G.join, {
-    mode: "all",
-    require: "accepted",
-    coordinator: "after-children",
-  });
-  assert.equal(expected.steps.E.next, "G");
-  assert.equal(expected.steps.F.next, "ignored");
-  assert.equal(expected.steps.G.next, "H");
-  assert.equal(expected.steps.H.next, "completed");
-  assert.equal(expected.defaults.maxRework, DEFAULT_MAX_REWORK);
-  assert.equal(expected.steps.C.evaluator, "issue-validation-evaluator");
+  assert.deepEqual(compileIssueWorkflowLogical(richWorkflow()), expected);
+  assert.deepEqual(normalizeCompiledWorkflowDefinition(expected), expected);
   assert.equal(
-    expected.steps.G.orchestrator,
-    "validation-stage-coordinator",
+    expected.defaults.maxReworkAttempts,
+    DEFAULT_MAX_REWORK_ATTEMPTS,
   );
-  assert.equal(expected.steps.G.maxRework, 2);
-  assert.deepEqual(expected.terminals, {
-    ignored: "ignored",
-    completed: "completed",
-  });
+  assert.deepEqual(
+    Object.keys(expected.steps.g.task.children.tasks),
+    ["title", "body", "reproduction"],
+  );
+  assert.deepEqual(
+    Object.values(expected.steps)
+      .filter(({ type }) => type === "terminal")
+      .map(({ outcome }) => outcome),
+    ["completed", "error", "ignored"],
+  );
+  assert.ok(
+    expected.transitions.some(
+      ({ sourceStepId, outcome, targetStepId }) =>
+        sourceStepId === "human" &&
+        outcome === "root-issue-commented" &&
+        targetStepId === "c",
+    ),
+  );
+
+  const wrongWaitOutcome = clone(expected);
+  wrongWaitOutcome.transitions.find(
+    ({ sourceStepId }) => sourceStepId === "human",
+  ).outcome = "commented";
+  assert.throws(
+    () => normalizeCompiledWorkflowDefinition(wrongWaitOutcome),
+    /preserve the wait event/,
+  );
+
+  const wrongTerminalOutcome = clone(expected);
+  wrongTerminalOutcome.transitions.find(
+    ({ targetStepId }) => targetStepId === "completed",
+  ).outcome = "done";
+  assert.throws(
+    () => normalizeCompiledWorkflowDefinition(wrongTerminalOutcome),
+    /preserve the terminal outcome/,
+  );
 });
 
 test("high-level IssueWorkflow shape is strict and resolves all graph references", () => {
@@ -446,26 +437,107 @@ test("high-level IssueWorkflow shape is strict and resolves all graph references
   wrongTrigger.spec.trigger = "new";
   assert.throws(() => normalizeIssueWorkflow(wrongTrigger), /must be workgraph/);
 
-  const unqualifiedWait = clone(workflow);
-  unqualifiedWait.spec.steps.D.next.where.authorType = "agent";
+  const inlineWait = clone(workflow);
+  delete inlineWait.spec.steps.d.outcomes;
+  inlineWait.spec.steps.d.next = {
+    event: "root-issue-commented",
+    next: "c",
+  };
   assert.throws(
-    () => normalizeIssueWorkflow(unqualifiedWait),
-    /non-agent-human Root Issue comment/,
+    () => normalizeIssueWorkflow(inlineWait),
+    /lowercase step ID/,
   );
 
   const missingTarget = clone(workflow);
-  missingTarget.spec.steps.E.next = "Z";
+  missingTarget.spec.steps.e.next = "missing";
   assert.throws(
     () => normalizeIssueWorkflow(missingTarget),
     /declared workflow step/,
   );
 
-  const rejectedBusinessOutcome = clone(workflow);
-  rejectedBusinessOutcome.spec.steps.C.outcomes[0].verdict = "rejected";
+  const outcomeList = clone(workflow);
+  outcomeList.spec.steps.c.outcomes = [
+    { outcome: "continue", target: "e" },
+  ];
   assert.throws(
-    () => normalizeIssueWorkflow(rejectedBusinessOutcome),
-    /accepted for a business outcome/,
+    () => normalizeIssueWorkflow(outcomeList),
+    /non-empty map/,
   );
+
+  const bothTransitions = clone(workflow);
+  bothTransitions.spec.steps.c.next = "e";
+  assert.throws(
+    () => normalizeIssueWorkflow(bothTransitions),
+    /exactly one of next or outcomes/,
+  );
+
+  const unsafeRework = clone(workflow);
+  unsafeRework.spec.steps.g.maxReworkAttempts = Number.MAX_SAFE_INTEGER + 1;
+  assert.throws(
+    () => normalizeIssueWorkflow(unsafeRework),
+    /safe integer/,
+  );
+});
+
+test("recursive child namespaces and overrides are independent at every depth", () => {
+  const workflow = richWorkflow();
+  workflow.spec.steps.g.children.tasks.title = {
+    ...workflow.spec.steps.g.children.tasks.title,
+    evaluator: "issue-validation-evaluator",
+    orchestrator: "validation-stage-coordinator",
+    maxReworkAttempts: 1,
+    children: {
+      join: "all",
+      tasks: {
+        a: {
+          operation: "validate-title-format",
+          worker: "issue-validator",
+          inputs: { format: "plain-text" },
+          maxReworkAttempts: 0,
+        },
+      },
+    },
+  };
+  const compiled = compileIssueWorkflowLogical(workflow);
+  const title = compiled.steps.g.task.children.tasks.title;
+  assert.equal(title.evaluator, "issue-validation-evaluator");
+  assert.equal(title.maxReworkAttempts, 1);
+  assert.equal(title.children.tasks.a.maxReworkAttempts, 0);
+  assert.equal(title.children.tasks.a.orchestrator, "validation-stage-coordinator");
+  assert.ok(compiled.steps.a);
+});
+
+test("graph validation rejects unreachable work and cycles without waits", () => {
+  const unreachable = richWorkflow();
+  unreachable.spec.steps.orphan = {
+    type: "task",
+    operation: "orphan",
+    worker: "issue-worker",
+    inputs: {},
+    next: "completed",
+  };
+  assert.throws(
+    () => normalizeIssueWorkflow(unreachable),
+    /unreachable steps: orphan/,
+  );
+
+  const noTerminal = richWorkflow();
+  noTerminal.spec.steps.c.outcomes = { continue: "e" };
+  delete noTerminal.spec.steps.h.outcomes;
+  noTerminal.spec.steps.h.next = "e";
+  assert.throws(
+    () => normalizeIssueWorkflow(noTerminal),
+    /cycle without a wait|reach at least one terminal/,
+  );
+
+  const unconditionalCycle = richWorkflow();
+  unconditionalCycle.spec.steps.e.next = "a";
+  assert.throws(
+    () => normalizeIssueWorkflow(unconditionalCycle),
+    /cycle without a wait/,
+  );
+
+  assert.doesNotThrow(() => normalizeIssueWorkflow(richWorkflow()));
 });
 
 function evaluation(verdict = "accepted") {
@@ -473,7 +545,7 @@ function evaluation(verdict = "accepted") {
     evaluationId: "evaluation-1",
     rootIssueId: "I_root_issue",
     workflowRunId: "run-1",
-    taskId: "task-C",
+    taskId: "task-c",
     resultId: "result-1",
     resultDigest: `sha256:${"a".repeat(64)}`,
     evaluatorId: "issue-validation-evaluator",
@@ -488,7 +560,7 @@ function route(action, verdict = "accepted") {
     routeId: `route-${action}`,
     rootIssueId: "I_root_issue",
     workflowRunId: "run-1",
-    taskId: "task-C",
+    taskId: "task-c",
     resultId: "result-1",
     evaluationId: "evaluation-1",
     evaluationVerdict: verdict,
@@ -498,7 +570,8 @@ function route(action, verdict = "accepted") {
   };
   if (action === "advance") {
     value.outcome = "continue";
-    value.target = "E";
+    value.targetStepId = "e";
+    value.targetTaskDefinitionId = "e";
   }
   return value;
 }
@@ -524,9 +597,29 @@ test("Evaluate artifacts have exact direct bindings and accepted or rejected ver
       }),
     /properties must be exactly/,
   );
+  assert.throws(
+    () => formatTaskEvaluation({ ...evaluation(), taskId: "task_C" }),
+    /taskId/,
+  );
+  assert.throws(
+    () =>
+      formatTaskEvaluation({
+        ...evaluation(),
+        feedback: "x".repeat(64 * 1024),
+      }),
+    /exceeds 65536 bytes/,
+  );
+  const reversed = Object.fromEntries(
+    Object.entries(evaluation()).reverse(),
+  );
+  assert.equal(
+    formatTaskEvaluation(reversed),
+    formatTaskEvaluation(evaluation()),
+  );
 });
 
 test("Route matrix, advance pair, exclusions, and bounded same-task rework are strict", () => {
+  const definition = compileIssueWorkflowLogical(richWorkflow());
   for (const [action, verdict] of [
     ["advance", "accepted"],
     ["complete", "accepted"],
@@ -539,6 +632,10 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
     const value = route(action, verdict);
     assert.deepEqual(parseTaskRoute(formatTaskRoute(value)), value);
   }
+  assert.deepEqual(
+    validateTaskRouteAgainstDefinition(route("advance"), definition),
+    route("advance"),
+  );
   assert.throws(
     () => formatTaskRoute(route("rework", "accepted")),
     /invalid for verdict accepted/,
@@ -548,7 +645,7 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
     /invalid for verdict rejected/,
   );
   const missingTarget = route("advance");
-  delete missingTarget.target;
+  delete missingTarget.targetStepId;
   assert.throws(
     () => formatTaskRoute(missingTarget),
     /properties must be exactly/,
@@ -557,9 +654,73 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
     () => formatTaskRoute({ ...route("complete"), outcome: "continue" }),
     /properties must be exactly/,
   );
+  const terminalRoute = {
+    ...route("advance"),
+    outcome: "completed",
+    targetStepId: "completed",
+  };
+  delete terminalRoute.targetTaskDefinitionId;
+  assert.deepEqual(
+    parseTaskRoute(formatTaskRoute(terminalRoute)),
+    {
+      routeId: "route-advance",
+      rootIssueId: "I_root_issue",
+      workflowRunId: "run-1",
+      taskId: "task-c",
+      resultId: "result-1",
+      evaluationId: "evaluation-1",
+      evaluationVerdict: "accepted",
+      orchestratorId: "workflow-coordinator",
+      action: "advance",
+      outcome: "completed",
+      targetStepId: "completed",
+      attempt: 0,
+    },
+  );
+  assert.deepEqual(
+    validateTaskRouteAgainstDefinition(terminalRoute, definition),
+    terminalRoute,
+  );
+  const waitRoute = {
+    ...route("advance"),
+    outcome: "requested",
+    targetStepId: "human",
+  };
+  delete waitRoute.targetTaskDefinitionId;
+  assert.deepEqual(
+    validateTaskRouteAgainstDefinition(waitRoute, definition),
+    waitRoute,
+  );
+  assert.throws(
+    () =>
+      validateTaskRouteAgainstDefinition(
+        {
+          ...route("advance"),
+          targetStepId: "human",
+          targetTaskDefinitionId: "human",
+          outcome: "requested",
+        },
+        definition,
+      ),
+    /forbidden for wait and terminal/,
+  );
+  assert.throws(
+    () =>
+      formatTaskRoute({
+        ...route("advance"),
+        targetTaskDefinitionId: "different-task",
+      }),
+    /matching step and task definition IDs/,
+  );
+  assert.throws(
+    () => formatTaskRoute({ ...route("advance"), attempt: 2 ** 53 }),
+    /safe integer/,
+  );
+  const reversed = Object.fromEntries(Object.entries(route("advance")).reverse());
+  assert.equal(formatTaskRoute(reversed), formatTaskRoute(route("advance")));
 
   const first = {
-    taskId: "task-G-title",
+    taskId: "task-g-title",
     assignmentId: "assignment-1",
     attempt: 0,
   };

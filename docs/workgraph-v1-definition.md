@@ -2,7 +2,8 @@
 
 `.github/workgraph/workflows/issue-lifecycle.yaml` is the strict generic
 authoring source. It uses `workgraph.drasi.io/v1`, `IssueWorkflow`, and the
-exact `workgraph` trigger. The logical graph is:
+exact `workgraph` trigger. The diagram labels A-H correspond to lowercase step
+IDs `a`-`h`; `human` is the standalone wait step. The logical graph is:
 
 ```text
 A intake → B normalize → C validate
@@ -12,20 +13,28 @@ A intake → B normalize → C validate
                          └─ reject → F record-rejection → ignored
 ```
 
-G has exactly the title, body, and reproduction validation children. Its
-`join: all` requires every child Evaluation to be accepted before the
-stage-specific coordinator runs. H advances to the `completed` terminal.
+Step `g` has exactly the title, body, and reproduction validation children in
+`children: { join: all, tasks: ... }`. Child tasks recursively support inputs
+and evaluator, orchestrator, rework-count, and children overrides. Child IDs
+are local to their parent and never become top-level transition targets.
 
-The defaults are `result-evaluator`, `workflow-coordinator`, and three maximum
-reworks. Rework keeps the same task and assignment and creates a fresh attempt.
-C overrides the evaluator. G overrides the orchestrator and maximum with two.
+The defaults fields are `evaluator`, `orchestrator`, and
+`maxReworkAttempts` (three). Rework keeps the same task and assignment and
+creates a fresh bounded attempt. Step `c` overrides the evaluator. Step `g`
+overrides the orchestrator and maximum with two. Every task has `worker` and
+`inputs` and exactly one `next` or outcomes map. Waits and the completed,
+error, and ignored terminals are standalone steps.
 
 The Rust compiler is authoritative for the final canonical
 `WorkGraphWorkflowDefinition/v1` body. JavaScript does not generate a second
 final body for the rich graph. The expected high-level result is
 `.github/workgraph/fixtures/v1/issue-lifecycle.expected.json`, which is retained
-for later compiler reconciliation. The existing `issue-lifecycle-v1.body`
-remains only the frozen admission-proof input.
+for later compiler reconciliation. It contains all resolved task definitions,
+recursive children, waits, terminals, and graph transitions. The distinct
+`normalizeCompiledWorkflowDefinition` validates that complete graph, including
+reachability and wait-mediated cycles. The existing root-shaped
+`parseWorkflowDefinition` remains only for the published
+`issue-lifecycle-v1.body` admission-proof input until Wave 2.
 
 ## Evaluate and Route
 
@@ -35,12 +44,14 @@ remains only the frozen admission-proof input.
 Evaluations require actionable feedback.
 
 `WorkGraphTaskRoute/v1` directly records the Root Issue, run, task, Result, and
-Evaluation IDs, plus `evaluationVerdict`, `orchestratorId`, and `action`.
-It also records the zero-based `attempt`.
-Accepted Results may advance or complete; rejected Results may rework.
-`error` and `ignore` are universal exclusions. Advance alone carries both a
-business `outcome` and target. A later reporter wave must verify that the
-recorded Result, Evaluation, and verdict map to one another before writing.
+Evaluation IDs, plus `evaluationVerdict`, `orchestratorId`, `action`, and a
+bounded zero-based `attempt`. Accepted Results may advance or complete;
+rejected Results may rework. `error` and `ignore` are universal exclusions.
+Advance alone carries `outcome` and `targetStepId`; it also carries
+`targetTaskDefinitionId` exactly when the compiled target step is a task.
+Outcome edges retain their outcome when they target a wait or terminal. A
+later reporter wave must verify the recorded Result/Evaluation mapping and
+compiled transition before writing.
 
 ## Admission-first proof
 

@@ -1,10 +1,13 @@
 version: 1
 agents:
+  - agentId: issue-validator
+    slots: 1
+    leaseDuration: PT30M
+  - agentId: issue-coordinator
+    slots: 1
+    leaseDuration: PT15M
   - agentId: issue-worker
     slots: 2
-    leaseDuration: PT30M
-  - agentId: issue-validator
-    slots: 3
     leaseDuration: PT30M
   - agentId: result-evaluator
     slots: 1

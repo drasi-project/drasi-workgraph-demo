@@ -5,100 +5,99 @@ metadata:
 
 spec:
   trigger: workgraph
-  initial: A
+  initial: a
   defaults:
     evaluator: result-evaluator
     orchestrator: workflow-coordinator
-    maxRework: 3
-    rework:
-      task: same
-      assignment: same
-      attempt: fresh
+    maxReworkAttempts: 3
   steps:
-    A:
-      name: intake
+    a:
       type: task
       operation: intake-issue
-      agent: issue-worker
-      next: B
-    B:
-      name: normalize
+      worker: issue-worker
+      inputs: {}
+      next: b
+    b:
       type: task
       operation: normalize-issue
-      agent: issue-worker
-      next: C
-    C:
-      name: validate
+      worker: issue-worker
+      inputs: {}
+      next: c
+    c:
       type: task
       operation: validate-issue
-      agent: issue-validator
+      worker: issue-validator
+      inputs:
+        profile: new-issue-default
       evaluator: issue-validation-evaluator
       outcomes:
-        - outcome: needs-info
-          verdict: accepted
-          target: D
-        - outcome: continue
-          verdict: accepted
-          target: E
-        - outcome: reject
-          verdict: accepted
-          target: F
-    D:
-      name: request-info
+        needs-info: d
+        continue: e
+        reject: f
+    d:
       type: task
       operation: request-information
-      agent: issue-info-requester
-      next:
-        waitFor: root-issue-comment
-        where:
-          rootIssue: true
-          authorType: non-agent-human
-        target: C
-    E:
-      name: triage
+      worker: issue-info-requester
+      inputs:
+        source: c
+      outcomes:
+        requested: human
+    human:
+      type: wait
+      event: root-issue-commented
+      next: c
+    e:
       type: task
       operation: triage-issue
-      agent: issue-worker
-      next: G
-    F:
-      name: record-rejection
+      worker: issue-worker
+      inputs: {}
+      next: g
+    f:
       type: task
       operation: record-rejection
-      agent: issue-worker
-      next: ignored
-    G:
-      name: parallel-validation
+      worker: issue-worker
+      inputs: {}
+      outcomes:
+        ignored: ignored
+    g:
       type: task
       operation: coordinate-validation
-      agent: issue-worker
+      worker: issue-worker
+      inputs: {}
       orchestrator: validation-stage-coordinator
-      maxRework: 2
+      maxReworkAttempts: 2
       children:
-        - id: G-title
-          name: validate-title
-          operation: validate-title
-          agent: issue-validator
-        - id: G-body
-          name: validate-body
-          operation: validate-body
-          agent: issue-validator
-        - id: G-reproduction
-          name: validate-reproduction
-          operation: validate-reproduction
-          agent: issue-validator
-      join:
-        mode: all
-        require: accepted
-        coordinator: after-children
-      next: H
-    H:
-      name: finalize
+        join: all
+        tasks:
+          title:
+            operation: validate-title
+            worker: issue-validator
+            inputs:
+              field: title
+          body:
+            operation: validate-body
+            worker: issue-validator
+            inputs:
+              field: body
+          reproduction:
+            operation: validate-reproduction
+            worker: issue-validator
+            inputs:
+              section: reproduction
+      next: h
+    h:
       type: task
       operation: finalize-issue
-      agent: issue-worker
-      next: completed
-  terminals:
-    ignored:
-      status: ignored
+      worker: issue-worker
+      inputs: {}
+      outcomes:
+        completed: completed
     completed:
-      status: completed
+      type: terminal
+      outcome: completed
+    error:
+      type: terminal
+      outcome: error
+    ignored:
+      type: terminal
+      outcome: ignored
