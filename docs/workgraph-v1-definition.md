@@ -1,18 +1,46 @@
 # WorkGraph v1 definition
 
-The reference workflow is frozen in
-`.github/workgraph/workflows/issue-lifecycle-v1.body` under the
-`WorkGraphWorkflowDefinition/v1` marker. It defines:
+`.github/workgraph/workflows/issue-lifecycle.yaml` is the strict generic
+authoring source. It uses `workgraph.drasi.io/v1`, `IssueWorkflow`, and the
+exact `workgraph` trigger. The logical graph is:
 
-| Task key | Definition ID | Operation | Executor |
-|---|---|---|---|
-| `root` | `root-v1` | `coordinate-issue` | `issue-coordinator` |
-| `validate` | `validate-v1` | `validate-issue` | `issue-validator` |
+```text
+A intake → B normalize → C validate
+                         ├─ needs-info → D request-info
+                         │                 └─ qualifying Root Issue comment → C
+                         ├─ continue → E triage → G recursive validation → H finalize
+                         └─ reject → F record-rejection → ignored
+```
 
-The definition is recursive and immutable. Runtime `WorkGraphTask/v1` bodies
-carry only identity, definition pins, top-level `rootIssueId`, and resolved
-inputs. Operations, routing, static inputs, and children remain on the
-definition.
+G has exactly the title, body, and reproduction validation children. Its
+`join: all` requires every child Evaluation to be accepted before the
+stage-specific coordinator runs. H advances to the `completed` terminal.
+
+The defaults are `result-evaluator`, `workflow-coordinator`, and three maximum
+reworks. Rework keeps the same task and assignment and creates a fresh attempt.
+C overrides the evaluator. G overrides the orchestrator and maximum with two.
+
+The Rust compiler is authoritative for the final canonical
+`WorkGraphWorkflowDefinition/v1` body. JavaScript does not generate a second
+final body for the rich graph. The expected high-level result is
+`.github/workgraph/fixtures/v1/issue-lifecycle.expected.json`, which is retained
+for later compiler reconciliation. The existing `issue-lifecycle-v1.body`
+remains only the frozen admission-proof input.
+
+## Evaluate and Route
+
+`WorkGraphTaskEvaluate/v1` contains exactly `evaluationId`, `rootIssueId`,
+`workflowRunId`, `taskId`, `resultId`, `resultDigest`, `evaluatorId`, `verdict`,
+`summary`, and `feedback`. Verdict is `accepted` or `rejected`; rejected
+Evaluations require actionable feedback.
+
+`WorkGraphTaskRoute/v1` directly records the Root Issue, run, task, Result, and
+Evaluation IDs, plus `evaluationVerdict`, `orchestratorId`, and `action`.
+It also records the zero-based `attempt`.
+Accepted Results may advance or complete; rejected Results may rework.
+`error` and `ignore` are universal exclusions. Advance alone carries both a
+business `outcome` and target. A later reporter wave must verify that the
+recorded Result, Evaluation, and verdict map to one another before writing.
 
 ## Admission-first proof
 

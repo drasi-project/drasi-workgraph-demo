@@ -2,6 +2,10 @@ import { isDeepStrictEqual, TextEncoder } from "node:util";
 
 export const WORKFLOW_DEFINITION_MARKER = "WorkGraphWorkflowDefinition/v1";
 export const RUNTIME_TASK_MARKER = "WorkGraphTask/v1";
+export const TASK_EVALUATION_MARKER = "WorkGraphTaskEvaluate/v1";
+export const TASK_ROUTE_MARKER = "WorkGraphTaskRoute/v1";
+export const WORKFLOW_AUTHORING_API_VERSION = "workgraph.drasi.io/v1";
+export const DEFAULT_MAX_REWORK = 3;
 export const MAX_TASK_DEFINITION_CHILDREN = 16;
 export const MAX_TASK_DEFINITION_DEPTH = 4;
 export const MAX_WORKGRAPH_BODY_BYTES = 64 * 1024;
@@ -15,6 +19,7 @@ const RESERVED_MARKERS = [
   "WorkGraphTaskDispatch/v1",
   "WorkGraphTaskResult/v1",
   "WorkGraphTaskEvaluate/v1",
+  "WorkGraphTaskRoute/v1",
 ];
 const DEFINITION_KEYS = [
   "workflowDefinitionId",
@@ -414,4 +419,510 @@ export function validateRootRuntimeTask(definition, task) {
     }
   }
   return normalizedTask;
+}
+
+const WORKFLOW_KEYS = ["apiVersion", "kind", "metadata", "spec"];
+const WORKFLOW_METADATA_KEYS = ["id"];
+const WORKFLOW_SPEC_KEYS = [
+  "trigger",
+  "initial",
+  "defaults",
+  "steps",
+  "terminals",
+];
+const WORKFLOW_DEFAULT_KEYS = [
+  "evaluator",
+  "orchestrator",
+  "maxRework",
+  "rework",
+];
+const REWORK_KEYS = ["task", "assignment", "attempt"];
+const STEP_KEYS = [
+  "name",
+  "type",
+  "operation",
+  "agent",
+  "next",
+  "evaluator",
+  "orchestrator",
+  "maxRework",
+  "outcomes",
+  "children",
+  "join",
+];
+const CHILD_KEYS = ["id", "name", "operation", "agent"];
+const OUTCOME_KEYS = ["outcome", "verdict", "target"];
+const WAIT_KEYS = ["waitFor", "where", "target"];
+const WAIT_WHERE_KEYS = ["rootIssue", "authorType"];
+const JOIN_KEYS = ["mode", "require", "coordinator"];
+const TERMINAL_KEYS = ["status"];
+const EVALUATION_KEYS = [
+  "evaluationId",
+  "rootIssueId",
+  "workflowRunId",
+  "taskId",
+  "resultId",
+  "resultDigest",
+  "evaluatorId",
+  "verdict",
+  "summary",
+  "feedback",
+];
+const ROUTE_BASE_KEYS = [
+  "routeId",
+  "rootIssueId",
+  "workflowRunId",
+  "taskId",
+  "resultId",
+  "evaluationId",
+  "evaluationVerdict",
+  "orchestratorId",
+  "action",
+  "attempt",
+];
+
+function exactAllowedKeys(value, required, allowed, context) {
+  if (!object(value)) {
+    throw new WorkGraphDefinitionError(`${context} must be an object`);
+  }
+  const keys = Object.keys(value);
+  const missing = required.filter((key) => !keys.includes(key));
+  const unknown = keys.filter((key) => !allowed.includes(key));
+  if (missing.length > 0 || unknown.length > 0) {
+    throw new WorkGraphDefinitionError(
+      `${context} has invalid properties (missing: ${missing.join(", ") || "none"}; unknown: ${unknown.join(", ") || "none"})`,
+    );
+  }
+}
+
+function stepId(value, context) {
+  if (typeof value !== "string" || !/^[A-Z](?:-[a-z][a-z0-9-]*)?$/.test(value)) {
+    throw new WorkGraphDefinitionError(
+      `${context} must be an uppercase step ID with an optional semantic suffix`,
+    );
+  }
+}
+
+function nonEmptyText(value, context) {
+  if (
+    typeof value !== "string" ||
+    value.trim() === "" ||
+    !ordinaryText(value)
+  ) {
+    throw new WorkGraphDefinitionError(
+      `${context} must be non-empty ordinary text`,
+    );
+  }
+}
+
+function directId(value, context) {
+  workflowRunIdentifier(value, context);
+}
+
+function normalizeWait(value, context, stepIds) {
+  exactKeys(value, WAIT_KEYS, context);
+  if (value.waitFor !== "root-issue-comment") {
+    throw new WorkGraphDefinitionError(
+      `${context}.waitFor must be root-issue-comment`,
+    );
+  }
+  exactKeys(value.where, WAIT_WHERE_KEYS, `${context}.where`);
+  if (
+    value.where.rootIssue !== true ||
+    value.where.authorType !== "non-agent-human"
+  ) {
+    throw new WorkGraphDefinitionError(
+      `${context} must qualify a non-agent-human Root Issue comment`,
+    );
+  }
+  stepId(value.target, `${context}.target`);
+  stepIds.references.push([value.target, `${context}.target`]);
+  return {
+    waitFor: value.waitFor,
+    where: {
+      rootIssue: true,
+      authorType: value.where.authorType,
+    },
+    target: value.target,
+  };
+}
+
+function normalizeWorkflowStep(id, value, stepIds) {
+  stepId(id, `workflow step '${id}'`);
+  exactAllowedKeys(
+    value,
+    ["name", "type", "operation", "agent"],
+    STEP_KEYS,
+    `workflow step '${id}'`,
+  );
+  if (value.type !== "task") {
+    throw new WorkGraphDefinitionError(`workflow step '${id}'.type must be task`);
+  }
+  identifier(value.name, `workflow step '${id}'.name`);
+  identifier(value.operation, `workflow step '${id}'.operation`);
+  identifier(value.agent, `workflow step '${id}'.agent`);
+
+  const normalized = {
+    name: value.name,
+    type: value.type,
+    operation: value.operation,
+    agent: value.agent,
+  };
+  if (!("next" in value) && !("outcomes" in value)) {
+    throw new WorkGraphDefinitionError(
+      `workflow step '${id}' requires next or outcomes`,
+    );
+  }
+  if ("next" in value && "outcomes" in value) {
+    throw new WorkGraphDefinitionError(
+      `workflow step '${id}' cannot declare both next and outcomes`,
+    );
+  }
+  if (typeof value.next === "string") {
+    if (!stepIds.terminals.has(value.next)) {
+      stepId(value.next, `workflow step '${id}'.next`);
+      stepIds.references.push([value.next, `workflow step '${id}'.next`]);
+    }
+    normalized.next = value.next;
+  } else if ("next" in value) {
+    normalized.next = normalizeWait(
+      value.next,
+      `workflow step '${id}'.next`,
+      stepIds,
+    );
+  }
+
+  for (const role of ["evaluator", "orchestrator"]) {
+    if (role in value) {
+      identifier(value[role], `workflow step '${id}'.${role}`);
+      normalized[role] = value[role];
+    }
+  }
+  if ("maxRework" in value) {
+    if (!Number.isInteger(value.maxRework) || value.maxRework < 0) {
+      throw new WorkGraphDefinitionError(
+        `workflow step '${id}'.maxRework must be a non-negative integer`,
+      );
+    }
+    normalized.maxRework = value.maxRework;
+  }
+
+  if ("outcomes" in value) {
+    if (!Array.isArray(value.outcomes) || value.outcomes.length < 1) {
+      throw new WorkGraphDefinitionError(
+        `workflow step '${id}'.outcomes must be a non-empty array`,
+      );
+    }
+    const outcomes = new Set();
+    normalized.outcomes = value.outcomes.map((outcome, index) => {
+      const context = `workflow step '${id}'.outcomes[${index}]`;
+      exactKeys(outcome, OUTCOME_KEYS, context);
+      identifier(outcome.outcome, `${context}.outcome`);
+      if (outcome.verdict !== "accepted") {
+        throw new WorkGraphDefinitionError(
+          `${context}.verdict must be accepted for a business outcome`,
+        );
+      }
+      if (outcomes.has(outcome.outcome)) {
+        throw new WorkGraphDefinitionError(
+          `workflow step '${id}' repeats outcome '${outcome.outcome}'`,
+        );
+      }
+      outcomes.add(outcome.outcome);
+      stepId(outcome.target, `${context}.target`);
+      stepIds.references.push([outcome.target, `${context}.target`]);
+      return {
+        outcome: outcome.outcome,
+        verdict: outcome.verdict,
+        target: outcome.target,
+      };
+    });
+  }
+
+  if ("children" in value) {
+    if (!Array.isArray(value.children) || value.children.length < 1) {
+      throw new WorkGraphDefinitionError(
+        `workflow step '${id}'.children must be a non-empty array`,
+      );
+    }
+    const childIds = new Set();
+    normalized.children = value.children.map((child, index) => {
+      const context = `workflow step '${id}'.children[${index}]`;
+      exactKeys(child, CHILD_KEYS, context);
+      stepId(child.id, `${context}.id`);
+      if (childIds.has(child.id) || stepIds.ids.has(child.id)) {
+        throw new WorkGraphDefinitionError(
+          `workflow repeats step ID '${child.id}'`,
+        );
+      }
+      childIds.add(child.id);
+      stepIds.ids.add(child.id);
+      identifier(child.name, `${context}.name`);
+      identifier(child.operation, `${context}.operation`);
+      identifier(child.agent, `${context}.agent`);
+      return { ...child };
+    });
+    if (!("join" in value)) {
+      throw new WorkGraphDefinitionError(
+        `workflow step '${id}' with children requires join`,
+      );
+    }
+    exactKeys(value.join, JOIN_KEYS, `workflow step '${id}'.join`);
+    if (
+      value.join.mode !== "all" ||
+      value.join.require !== "accepted" ||
+      value.join.coordinator !== "after-children"
+    ) {
+      throw new WorkGraphDefinitionError(
+        `workflow step '${id}'.join must require all children accepted before its coordinator`,
+      );
+    }
+    normalized.join = { ...value.join };
+  } else if ("join" in value) {
+    throw new WorkGraphDefinitionError(
+      `workflow step '${id}' cannot join without children`,
+    );
+  }
+  return normalized;
+}
+
+export function normalizeIssueWorkflow(workflow) {
+  exactKeys(workflow, WORKFLOW_KEYS, "issue workflow");
+  if (workflow.apiVersion !== WORKFLOW_AUTHORING_API_VERSION) {
+    throw new WorkGraphDefinitionError(
+      `issue workflow apiVersion must be ${WORKFLOW_AUTHORING_API_VERSION}`,
+    );
+  }
+  if (workflow.kind !== "IssueWorkflow") {
+    throw new WorkGraphDefinitionError("issue workflow kind must be IssueWorkflow");
+  }
+  exactKeys(workflow.metadata, WORKFLOW_METADATA_KEYS, "issue workflow metadata");
+  identifier(workflow.metadata.id, "issue workflow metadata.id");
+  exactKeys(workflow.spec, WORKFLOW_SPEC_KEYS, "issue workflow spec");
+  if (workflow.spec.trigger !== "workgraph") {
+    throw new WorkGraphDefinitionError(
+      "issue workflow spec.trigger must be workgraph",
+    );
+  }
+  exactKeys(workflow.spec.defaults, WORKFLOW_DEFAULT_KEYS, "workflow defaults");
+  identifier(workflow.spec.defaults.evaluator, "workflow defaults.evaluator");
+  identifier(
+    workflow.spec.defaults.orchestrator,
+    "workflow defaults.orchestrator",
+  );
+  if (
+    !Number.isInteger(workflow.spec.defaults.maxRework) ||
+    workflow.spec.defaults.maxRework !== DEFAULT_MAX_REWORK
+  ) {
+    throw new WorkGraphDefinitionError(
+      `workflow defaults.maxRework must be ${DEFAULT_MAX_REWORK}`,
+    );
+  }
+  exactKeys(workflow.spec.defaults.rework, REWORK_KEYS, "workflow defaults.rework");
+  if (
+    workflow.spec.defaults.rework.task !== "same" ||
+    workflow.spec.defaults.rework.assignment !== "same" ||
+    workflow.spec.defaults.rework.attempt !== "fresh"
+  ) {
+    throw new WorkGraphDefinitionError(
+      "rework must keep the same task and assignment and create a fresh attempt",
+    );
+  }
+  if (!object(workflow.spec.steps) || !object(workflow.spec.terminals)) {
+    throw new WorkGraphDefinitionError(
+      "issue workflow steps and terminals must be objects",
+    );
+  }
+
+  const terminalEntries = Object.entries(workflow.spec.terminals);
+  const terminals = new Set(terminalEntries.map(([id]) => id));
+  if (
+    !isDeepStrictEqual([...terminals].sort(), ["completed", "ignored"])
+  ) {
+    throw new WorkGraphDefinitionError(
+      "issue workflow terminals must be exactly completed and ignored",
+    );
+  }
+  const normalizedTerminals = {};
+  for (const [id, terminal] of terminalEntries) {
+    identifier(id, `workflow terminal '${id}'`);
+    exactKeys(terminal, TERMINAL_KEYS, `workflow terminal '${id}'`);
+    if (terminal.status !== id) {
+      throw new WorkGraphDefinitionError(
+        `workflow terminal '${id}'.status must equal its ID`,
+      );
+    }
+    normalizedTerminals[id] = { status: terminal.status };
+  }
+
+  const entries = Object.entries(workflow.spec.steps);
+  const ids = new Set(entries.map(([id]) => id));
+  if (!ids.has(workflow.spec.initial)) {
+    throw new WorkGraphDefinitionError(
+      "issue workflow initial must reference a declared step",
+    );
+  }
+  const tracking = { ids: new Set(ids), terminals, references: [] };
+  const normalizedSteps = Object.fromEntries(
+    entries.map(([id, step]) => [
+      id,
+      normalizeWorkflowStep(id, step, tracking),
+    ]),
+  );
+  for (const [target, context] of tracking.references) {
+    if (!tracking.ids.has(target)) {
+      throw new WorkGraphDefinitionError(
+        `${context} must reference a declared workflow step`,
+      );
+    }
+  }
+  return {
+    apiVersion: workflow.apiVersion,
+    kind: workflow.kind,
+    metadata: { id: workflow.metadata.id },
+    spec: {
+      trigger: workflow.spec.trigger,
+      initial: workflow.spec.initial,
+      defaults: {
+        evaluator: workflow.spec.defaults.evaluator,
+        orchestrator: workflow.spec.defaults.orchestrator,
+        maxRework: workflow.spec.defaults.maxRework,
+        rework: { ...workflow.spec.defaults.rework },
+      },
+      steps: normalizedSteps,
+      terminals: normalizedTerminals,
+    },
+  };
+}
+
+export function normalizeTaskEvaluation(value) {
+  exactKeys(value, EVALUATION_KEYS, "task evaluation");
+  for (const field of [
+    "evaluationId",
+    "rootIssueId",
+    "workflowRunId",
+    "taskId",
+    "resultId",
+  ]) {
+    directId(value[field], `task evaluation ${field}`);
+  }
+  digest(value.resultDigest, "task evaluation resultDigest");
+  identifier(value.evaluatorId, "task evaluation evaluatorId");
+  if (!["accepted", "rejected"].includes(value.verdict)) {
+    throw new WorkGraphDefinitionError(
+      "task evaluation verdict must be accepted or rejected",
+    );
+  }
+  nonEmptyText(value.summary, "task evaluation summary");
+  if (typeof value.feedback !== "string" || !ordinaryText(value.feedback)) {
+    throw new WorkGraphDefinitionError(
+      "task evaluation feedback must be ordinary text",
+    );
+  }
+  if (value.verdict === "rejected" && value.feedback.trim() === "") {
+    throw new WorkGraphDefinitionError(
+      "a rejected task evaluation requires feedback",
+    );
+  }
+  return { ...value };
+}
+
+export function formatTaskEvaluation(value) {
+  const normalized = normalizeTaskEvaluation(value);
+  return `${TASK_EVALUATION_MARKER}\n\n\`\`\`json\n${prettyJson(normalized)}\n\`\`\`\n`;
+}
+
+export function parseTaskEvaluation(body) {
+  return parseCanonicalBody(
+    body,
+    TASK_EVALUATION_MARKER,
+    formatTaskEvaluation,
+  );
+}
+
+export function normalizeTaskRoute(value) {
+  if (!object(value)) {
+    throw new WorkGraphDefinitionError("task route must be an object");
+  }
+  const expectedKeys =
+    value.action === "advance"
+      ? [...ROUTE_BASE_KEYS, "outcome", "target"]
+      : ROUTE_BASE_KEYS;
+  exactKeys(value, expectedKeys, "task route");
+  for (const field of [
+    "routeId",
+    "rootIssueId",
+    "workflowRunId",
+    "taskId",
+    "resultId",
+    "evaluationId",
+  ]) {
+    directId(value[field], `task route ${field}`);
+  }
+  if (!["accepted", "rejected"].includes(value.evaluationVerdict)) {
+    throw new WorkGraphDefinitionError(
+      "task route evaluationVerdict must be accepted or rejected",
+    );
+  }
+  identifier(value.orchestratorId, "task route orchestratorId");
+  const actions = ["advance", "rework", "complete", "error", "ignore"];
+  if (!actions.includes(value.action)) {
+    throw new WorkGraphDefinitionError(
+      `task route action must be ${actions.join(", ")}`,
+    );
+  }
+  if (
+    (value.evaluationVerdict === "accepted" && value.action === "rework") ||
+    (value.evaluationVerdict === "rejected" &&
+      ["advance", "complete"].includes(value.action))
+  ) {
+    throw new WorkGraphDefinitionError(
+      `task route action ${value.action} is invalid for verdict ${value.evaluationVerdict}`,
+    );
+  }
+  if (!Number.isInteger(value.attempt) || value.attempt < 0) {
+    throw new WorkGraphDefinitionError(
+      "task route attempt must be a non-negative integer",
+    );
+  }
+  if (value.action === "advance") {
+    identifier(value.outcome, "task route outcome");
+    stepId(value.target, "task route target");
+  }
+  return { ...value };
+}
+
+export function formatTaskRoute(value) {
+  const normalized = normalizeTaskRoute(value);
+  return `${TASK_ROUTE_MARKER}\n\n\`\`\`json\n${prettyJson(normalized)}\n\`\`\`\n`;
+}
+
+export function parseTaskRoute(body) {
+  return parseCanonicalBody(body, TASK_ROUTE_MARKER, formatTaskRoute);
+}
+
+export function nextReworkAttempt(current, maxRework = DEFAULT_MAX_REWORK) {
+  exactKeys(current, ["taskId", "assignmentId", "attempt"], "rework attempt");
+  directId(current.taskId, "rework attempt taskId");
+  directId(current.assignmentId, "rework attempt assignmentId");
+  if (
+    !Number.isInteger(current.attempt) ||
+    current.attempt < 0 ||
+    !Number.isInteger(maxRework) ||
+    maxRework < 0
+  ) {
+    throw new WorkGraphDefinitionError(
+      "rework attempt and maximum must be non-negative integers",
+    );
+  }
+  if (current.attempt >= maxRework) {
+    throw new WorkGraphDefinitionError(
+      `rework exceeds maximum of ${maxRework} attempts`,
+    );
+  }
+  return {
+    taskId: current.taskId,
+    assignmentId: current.assignmentId,
+    attempt: current.attempt + 1,
+  };
 }

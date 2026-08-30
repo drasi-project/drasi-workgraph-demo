@@ -4,9 +4,16 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
+  DEFAULT_MAX_REWORK,
   MAX_TASK_DEFINITION_CHILDREN,
+  formatTaskEvaluation,
+  formatTaskRoute,
   formatRuntimeTask,
   formatWorkflowDefinition,
+  nextReworkAttempt,
+  normalizeIssueWorkflow,
+  parseTaskEvaluation,
+  parseTaskRoute,
   parseRuntimeTask,
   parseWorkflowDefinition,
   validateRootRuntimeTask,
@@ -15,6 +22,9 @@ import { buildWorkGraphV1Proof } from "../scripts/prepare-workgraph-v1-proof.mjs
 
 const DEFINITION_PATH = ".github/workgraph/workflows/issue-lifecycle-v1.body";
 const INPUTS_PATH = ".github/workgraph/fixtures/v1/live-proof-inputs.json";
+const AUTHORING_PATH = ".github/workgraph/workflows/issue-lifecycle.yaml";
+const EXPECTED_PATH =
+  ".github/workgraph/fixtures/v1/issue-lifecycle.expected.json";
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 const clone = (value) => structuredClone(value);
 
@@ -272,4 +282,296 @@ test("offline proof derives the Root Task from Root Issue admission", async () =
     proof.expectedRootTask.value.rootIssueId,
   );
   assert.equal(proof.expectedRootTask.firstLifecycleState, "FORK");
+});
+
+function richWorkflow() {
+  const task = (name, operation, agent, next) => ({
+    name,
+    type: "task",
+    operation,
+    agent,
+    next,
+  });
+  return {
+    apiVersion: "workgraph.drasi.io/v1",
+    kind: "IssueWorkflow",
+    metadata: { id: "issue-lifecycle" },
+    spec: {
+      trigger: "workgraph",
+      initial: "A",
+      defaults: {
+        evaluator: "result-evaluator",
+        orchestrator: "workflow-coordinator",
+        maxRework: 3,
+        rework: { task: "same", assignment: "same", attempt: "fresh" },
+      },
+      steps: {
+        A: task("intake", "intake-issue", "issue-worker", "B"),
+        B: task("normalize", "normalize-issue", "issue-worker", "C"),
+        C: {
+          name: "validate",
+          type: "task",
+          operation: "validate-issue",
+          agent: "issue-validator",
+          evaluator: "issue-validation-evaluator",
+          outcomes: [
+            { outcome: "needs-info", verdict: "accepted", target: "D" },
+            { outcome: "continue", verdict: "accepted", target: "E" },
+            { outcome: "reject", verdict: "accepted", target: "F" },
+          ],
+        },
+        D: task("request-info", "request-information", "issue-info-requester", {
+          waitFor: "root-issue-comment",
+          where: { rootIssue: true, authorType: "non-agent-human" },
+          target: "C",
+        }),
+        E: task("triage", "triage-issue", "issue-worker", "G"),
+        F: task(
+          "record-rejection",
+          "record-rejection",
+          "issue-worker",
+          "ignored",
+        ),
+        G: {
+          ...task(
+            "parallel-validation",
+            "coordinate-validation",
+            "issue-worker",
+            "H",
+          ),
+          orchestrator: "validation-stage-coordinator",
+          maxRework: 2,
+          children: [
+            {
+              id: "G-title",
+              name: "validate-title",
+              operation: "validate-title",
+              agent: "issue-validator",
+            },
+            {
+              id: "G-body",
+              name: "validate-body",
+              operation: "validate-body",
+              agent: "issue-validator",
+            },
+            {
+              id: "G-reproduction",
+              name: "validate-reproduction",
+              operation: "validate-reproduction",
+              agent: "issue-validator",
+            },
+          ],
+          join: {
+            mode: "all",
+            require: "accepted",
+            coordinator: "after-children",
+          },
+        },
+        H: task("finalize", "finalize-issue", "issue-worker", "completed"),
+      },
+      terminals: {
+        ignored: { status: "ignored" },
+        completed: { status: "completed" },
+      },
+    },
+  };
+}
+
+test("rich v1 authoring preserves the branch, wait loop, recursion, and overrides", async () => {
+  const [yaml, expected] = await Promise.all([
+    read(AUTHORING_PATH),
+    read(EXPECTED_PATH).then(JSON.parse),
+  ]);
+  assert.match(yaml, /^apiVersion: workgraph\.drasi\.io\/v1$/m);
+  assert.match(yaml, /^  trigger: workgraph$/m);
+  assert.doesNotMatch(yaml, /status:\s*new/i);
+  assert.equal(expected.marker, "WorkGraphWorkflowDefinition/v1");
+  assert.equal(expected.workflowDefinitionId, "issue-lifecycle");
+  assert.equal(expected.version, "v1");
+  assert.deepEqual(Object.keys(expected.steps), [
+    "A",
+    "B",
+    "C",
+    "D",
+    "E",
+    "F",
+    "G",
+    "H",
+  ]);
+  assert.equal(expected.steps.A.next, "B");
+  assert.equal(expected.steps.B.next, "C");
+  assert.deepEqual(expected.steps.C.acceptedOutcomes, {
+    "needs-info": "D",
+    continue: "E",
+    reject: "F",
+  });
+  assert.deepEqual(expected.steps.D.wait, {
+    event: "root-issue-comment",
+    rootIssue: true,
+    authorType: "non-agent-human",
+    target: "C",
+  });
+  assert.deepEqual(expected.steps.G.children, [
+    "G-title",
+    "G-body",
+    "G-reproduction",
+  ]);
+  assert.deepEqual(expected.steps.G.join, {
+    mode: "all",
+    require: "accepted",
+    coordinator: "after-children",
+  });
+  assert.equal(expected.steps.E.next, "G");
+  assert.equal(expected.steps.F.next, "ignored");
+  assert.equal(expected.steps.G.next, "H");
+  assert.equal(expected.steps.H.next, "completed");
+  assert.equal(expected.defaults.maxRework, DEFAULT_MAX_REWORK);
+  assert.equal(expected.steps.C.evaluator, "issue-validation-evaluator");
+  assert.equal(
+    expected.steps.G.orchestrator,
+    "validation-stage-coordinator",
+  );
+  assert.equal(expected.steps.G.maxRework, 2);
+  assert.deepEqual(expected.terminals, {
+    ignored: "ignored",
+    completed: "completed",
+  });
+});
+
+test("high-level IssueWorkflow shape is strict and resolves all graph references", () => {
+  const workflow = richWorkflow();
+  assert.deepEqual(normalizeIssueWorkflow(workflow), workflow);
+
+  const wrongTrigger = clone(workflow);
+  wrongTrigger.spec.trigger = "new";
+  assert.throws(() => normalizeIssueWorkflow(wrongTrigger), /must be workgraph/);
+
+  const unqualifiedWait = clone(workflow);
+  unqualifiedWait.spec.steps.D.next.where.authorType = "agent";
+  assert.throws(
+    () => normalizeIssueWorkflow(unqualifiedWait),
+    /non-agent-human Root Issue comment/,
+  );
+
+  const missingTarget = clone(workflow);
+  missingTarget.spec.steps.E.next = "Z";
+  assert.throws(
+    () => normalizeIssueWorkflow(missingTarget),
+    /declared workflow step/,
+  );
+
+  const rejectedBusinessOutcome = clone(workflow);
+  rejectedBusinessOutcome.spec.steps.C.outcomes[0].verdict = "rejected";
+  assert.throws(
+    () => normalizeIssueWorkflow(rejectedBusinessOutcome),
+    /accepted for a business outcome/,
+  );
+});
+
+function evaluation(verdict = "accepted") {
+  return {
+    evaluationId: "evaluation-1",
+    rootIssueId: "I_root_issue",
+    workflowRunId: "run-1",
+    taskId: "task-C",
+    resultId: "result-1",
+    resultDigest: `sha256:${"a".repeat(64)}`,
+    evaluatorId: "issue-validation-evaluator",
+    verdict,
+    summary: "The Result satisfies the evaluation contract.",
+    feedback: verdict === "rejected" ? "Correct the Result and try again." : "",
+  };
+}
+
+function route(action, verdict = "accepted") {
+  const value = {
+    routeId: `route-${action}`,
+    rootIssueId: "I_root_issue",
+    workflowRunId: "run-1",
+    taskId: "task-C",
+    resultId: "result-1",
+    evaluationId: "evaluation-1",
+    evaluationVerdict: verdict,
+    orchestratorId: "workflow-coordinator",
+    action,
+    attempt: 0,
+  };
+  if (action === "advance") {
+    value.outcome = "continue";
+    value.target = "E";
+  }
+  return value;
+}
+
+test("Evaluate artifacts have exact direct bindings and accepted or rejected verdicts", () => {
+  for (const verdict of ["accepted", "rejected"]) {
+    const value = evaluation(verdict);
+    assert.deepEqual(parseTaskEvaluation(formatTaskEvaluation(value)), value);
+  }
+  assert.throws(
+    () => formatTaskEvaluation({ ...evaluation(), verdict: "continue" }),
+    /accepted or rejected/,
+  );
+  assert.throws(
+    () => formatTaskEvaluation({ ...evaluation("rejected"), feedback: "" }),
+    /requires feedback/,
+  );
+  assert.throws(
+    () =>
+      formatTaskEvaluation({
+        ...evaluation(),
+        result: { resultId: "result-1" },
+      }),
+    /properties must be exactly/,
+  );
+});
+
+test("Route matrix, advance pair, exclusions, and bounded same-task rework are strict", () => {
+  for (const [action, verdict] of [
+    ["advance", "accepted"],
+    ["complete", "accepted"],
+    ["rework", "rejected"],
+    ["error", "accepted"],
+    ["error", "rejected"],
+    ["ignore", "accepted"],
+    ["ignore", "rejected"],
+  ]) {
+    const value = route(action, verdict);
+    assert.deepEqual(parseTaskRoute(formatTaskRoute(value)), value);
+  }
+  assert.throws(
+    () => formatTaskRoute(route("rework", "accepted")),
+    /invalid for verdict accepted/,
+  );
+  assert.throws(
+    () => formatTaskRoute(route("complete", "rejected")),
+    /invalid for verdict rejected/,
+  );
+  const missingTarget = route("advance");
+  delete missingTarget.target;
+  assert.throws(
+    () => formatTaskRoute(missingTarget),
+    /properties must be exactly/,
+  );
+  assert.throws(
+    () => formatTaskRoute({ ...route("complete"), outcome: "continue" }),
+    /properties must be exactly/,
+  );
+
+  const first = {
+    taskId: "task-G-title",
+    assignmentId: "assignment-1",
+    attempt: 0,
+  };
+  const second = nextReworkAttempt(first);
+  assert.deepEqual(second, { ...first, attempt: 1 });
+  assert.deepEqual(nextReworkAttempt(second), { ...first, attempt: 2 });
+  assert.deepEqual(nextReworkAttempt({ ...first, attempt: 2 }), {
+    ...first,
+    attempt: 3,
+  });
+  assert.throws(
+    () => nextReworkAttempt({ ...first, attempt: 3 }),
+    /maximum of 3/,
+  );
 });

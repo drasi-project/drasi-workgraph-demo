@@ -1,0 +1,85 @@
+{
+  "marker": "WorkGraphWorkflowDefinition/v1",
+  "workflowDefinitionId": "issue-lifecycle",
+  "version": "v1",
+  "trigger": "workgraph",
+  "initial": "A",
+  "defaults": {
+    "evaluator": "result-evaluator",
+    "orchestrator": "workflow-coordinator",
+    "maxRework": 3,
+    "rework": {
+      "task": "same",
+      "assignment": "same",
+      "attempt": "fresh"
+    }
+  },
+  "steps": {
+    "A": {
+      "name": "intake",
+      "agent": "issue-worker",
+      "next": "B"
+    },
+    "B": {
+      "name": "normalize",
+      "agent": "issue-worker",
+      "next": "C"
+    },
+    "C": {
+      "name": "validate",
+      "agent": "issue-validator",
+      "evaluator": "issue-validation-evaluator",
+      "acceptedOutcomes": {
+        "needs-info": "D",
+        "continue": "E",
+        "reject": "F"
+      }
+    },
+    "D": {
+      "name": "request-info",
+      "agent": "issue-info-requester",
+      "wait": {
+        "event": "root-issue-comment",
+        "rootIssue": true,
+        "authorType": "non-agent-human",
+        "target": "C"
+      }
+    },
+    "E": {
+      "name": "triage",
+      "agent": "issue-worker",
+      "next": "G"
+    },
+    "F": {
+      "name": "record-rejection",
+      "agent": "issue-worker",
+      "next": "ignored"
+    },
+    "G": {
+      "name": "parallel-validation",
+      "agent": "issue-worker",
+      "orchestrator": "validation-stage-coordinator",
+      "maxRework": 2,
+      "children": [
+        "G-title",
+        "G-body",
+        "G-reproduction"
+      ],
+      "join": {
+        "mode": "all",
+        "require": "accepted",
+        "coordinator": "after-children"
+      },
+      "next": "H"
+    },
+    "H": {
+      "name": "finalize",
+      "agent": "issue-worker",
+      "next": "completed"
+    }
+  },
+  "terminals": {
+    "ignored": "ignored",
+    "completed": "completed"
+  }
+}
