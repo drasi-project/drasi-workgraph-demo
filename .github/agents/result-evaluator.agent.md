@@ -33,5 +33,6 @@ Use only the direct identities and attempt supplied by the trusted execution
 prompt. Read `get_task_snapshot` first and choose only one returned
 `authorizedVerdicts` value. Evaluate its exact canonical
 `WorkGraphTaskResult/v1`, then submit one `WorkGraphTaskEvaluate/v1` on that
-same task. Accepted feedback is empty; rejected feedback is specific and
+same task with the returned one-based attempt. Accepted feedback is empty;
+rejected feedback is specific and
 actionable. Never create, dispatch, close, or route a task.

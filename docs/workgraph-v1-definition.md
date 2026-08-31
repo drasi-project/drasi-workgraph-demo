@@ -39,13 +39,14 @@ reachability and wait-mediated cycles. The existing root-shaped
 ## Evaluate and Route
 
 `WorkGraphTaskEvaluate/v1` contains exactly `evaluationId`, `rootIssueId`,
-`workflowRunId`, `taskId`, `resultId`, `resultDigest`, `evaluatorId`, `verdict`,
-`summary`, and `feedback`. Verdict is `accepted` or `rejected`; rejected
-Evaluations require actionable feedback.
+`workflowRunId`, `taskId`, `resultId`, `resultDigest`, `evaluatorId`, the
+one-based `attempt`, `verdict`, `summary`, and `feedback`. Verdict is `accepted`
+or `rejected`; rejected Evaluations require actionable feedback.
 
 `WorkGraphTaskRoute/v1` directly records the Root Issue, run, task, Result, and
-Evaluation IDs, plus `evaluationVerdict`, `orchestratorId`, `action`, and a
-bounded zero-based `attempt`. Accepted Results may advance or complete;
+Evaluation IDs, plus `evaluationVerdict`, `orchestratorId`, `action`, and the
+same one-based `attempt`. Its `reworkCount` is `attempt - 1`. Accepted Results
+may advance or complete;
 rejected Results may rework. `error` and `ignore` are universal exclusions.
 Advance alone carries `transitionKind` (`next` or `outcome`),
 `targetStepId`, and `targetStepKind`. `outcome` is present only for an outcome
@@ -56,7 +57,9 @@ validation binds every route to its source step and task-definition ID. The
 source execution policy supplies the required orchestrator and rework limit,
 and the source transition supplies the only valid advance edge. Recursive
 `executionPolicies` must exactly cover every task definition and each worker
-must match its task's routing executor.
+must match its task's routing executor. Recursive child tasks use their own
+effective policy but have no top-level transition: accepted children may
+complete, error, or ignore; rejected children may rework, error, or ignore.
 
 Evaluate summary and feedback are lifecycle text rather than static data-map
 text, so protocol marker names are allowed. They remain well-formed LF text,

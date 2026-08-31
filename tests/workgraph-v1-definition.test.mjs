@@ -632,6 +632,7 @@ function evaluation(verdict = "accepted") {
     resultId: "result-1",
     resultDigest: `sha256:${"a".repeat(64)}`,
     evaluatorId: "issue-validation-evaluator",
+    attempt: 1,
     verdict,
     summary: "The Result satisfies the evaluation contract.",
     feedback: verdict === "rejected" ? "Correct the Result and try again." : "",
@@ -649,7 +650,7 @@ function route(action, verdict = "accepted") {
     evaluationVerdict: verdict,
     orchestratorId: "workflow-coordinator",
     action,
-    attempt: 0,
+    attempt: 1,
   };
   if (action === "advance") {
     value.transitionKind = "outcome";
@@ -694,6 +695,10 @@ test("Evaluate artifacts have exact direct bindings and accepted or rejected ver
   assert.throws(
     () => formatTaskEvaluation({ ...evaluation(), taskId: "task_C" }),
     /taskId/,
+  );
+  assert.throws(
+    () => formatTaskEvaluation({ ...evaluation(), attempt: 0 }),
+    /1 through 17/,
   );
   assert.throws(
     () =>
@@ -789,7 +794,7 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
       transitionKind: "next",
       targetStepId: "completed",
       targetStepKind: "terminal",
-      attempt: 0,
+      attempt: 1,
     },
   );
   assert.deepEqual(
@@ -878,9 +883,28 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
       ),
     /orchestratorId must match the source task policy/,
   );
+  const childId =
+    definition.steps.g.taskDefinition.children[0].taskDefinitionId;
+  assert.deepEqual(
+    validateTaskRouteAgainstDefinition(
+      route("complete"),
+      definition,
+      { sourceStepId: "g", taskDefinitionId: childId },
+    ),
+    route("complete"),
+  );
   assert.throws(
-    () => formatTaskRoute({ ...route("advance"), attempt: 17 }),
-    /0 through 16/,
+    () =>
+      validateTaskRouteAgainstDefinition(
+        route("advance"),
+        definition,
+        { sourceStepId: "g", taskDefinitionId: childId },
+      ),
+    /recursive child task routes cannot advance/,
+  );
+  assert.throws(
+    () => formatTaskRoute({ ...route("advance"), attempt: 18 }),
+    /1 through 17/,
   );
   const reversed = Object.fromEntries(Object.entries(route("advance")).reverse());
   assert.equal(formatTaskRoute(reversed), formatTaskRoute(route("advance")));
@@ -888,17 +912,17 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
   const first = {
     taskId: "task-g-title",
     assignmentId: "assignment-1",
-    attempt: 0,
+    attempt: 1,
   };
   const second = nextReworkAttempt(first);
-  assert.deepEqual(second, { ...first, attempt: 1 });
-  assert.deepEqual(nextReworkAttempt(second), { ...first, attempt: 2 });
-  assert.deepEqual(nextReworkAttempt({ ...first, attempt: 2 }), {
+  assert.deepEqual(second, { ...first, attempt: 2 });
+  assert.deepEqual(nextReworkAttempt(second), { ...first, attempt: 3 });
+  assert.deepEqual(nextReworkAttempt({ ...first, attempt: 3 }), {
     ...first,
-    attempt: 3,
+    attempt: 4,
   });
   assert.throws(
-    () => nextReworkAttempt({ ...first, attempt: 3 }),
+    () => nextReworkAttempt({ ...first, attempt: 4 }),
     /maximum of 3/,
   );
 });

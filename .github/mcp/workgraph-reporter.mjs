@@ -323,11 +323,37 @@ export function deriveWorkGraphTaskResultId(taskId, dispatchId, leaseId) {
 function normalizeTaskResult(value) {
   exact(
     value,
-    ["resultId", "taskId", "dispatchId", "leaseId", "outcome", "output"],
+    [
+      "resultId",
+      "rootIssueId",
+      "workflowRunId",
+      "taskId",
+      "dispatchId",
+      "leaseId",
+      "attempt",
+      "outcome",
+      "output",
+    ],
     "Result",
   );
-  for (const key of ["resultId", "taskId", "dispatchId", "leaseId"]) {
+  for (const key of [
+    "resultId",
+    "rootIssueId",
+    "workflowRunId",
+    "taskId",
+    "dispatchId",
+    "leaseId",
+  ]) {
     opaque(value[key], `Result.${key}`);
+  }
+  if (
+    !Number.isSafeInteger(value.attempt) ||
+    value.attempt < 1 ||
+    value.attempt > 17
+  ) {
+    throw new WorkGraphReporterError(
+      "Result.attempt must be an integer from 1 through 17",
+    );
   }
   if (!["succeeded", "failed", "cancelled"].includes(value.outcome)) {
     throw new WorkGraphReporterError(
@@ -342,9 +368,12 @@ function normalizeTaskResult(value) {
   }
   return {
     resultId: value.resultId,
+    rootIssueId: value.rootIssueId,
+    workflowRunId: value.workflowRunId,
     taskId: value.taskId,
     dispatchId: value.dispatchId,
     leaseId: value.leaseId,
+    attempt: value.attempt,
     outcome: value.outcome,
     output: canonicalJsonValue(value.output),
   };
@@ -516,6 +545,7 @@ export function validateLeaseValidationUrl(value) {
     ) {
       throw new Error();
     }
+
   } catch {
     throw new WorkGraphReporterError(
       `lease validation URL must use ${LEASE_VALIDATION_PATH}`,
@@ -801,10 +831,31 @@ function ordinaryRootIssue(issue, number, nodeId, config) {
   return { ...issue, body: issue.body ?? "" };
 }
 
-function validateRootAdmission(rootTask, rootIssue, repositoryNodeId) {
-  validateTaskContract(rootTask, "Root Task");
-  if (rootTask.taskDefinitionId !== ROOT_TASK_DEFINITION_ID) {
+function validateRootAdmission(
+  rootTask,
+  rootIssue,
+  repositoryNodeId,
+  {
+    taskDefinitionId = ROOT_TASK_DEFINITION_ID,
+    staticInputs = { proofMode: "isolated" },
+    validateContract = true,
+  } = {},
+) {
+  if (validateContract) validateTaskContract(rootTask, "Root Task");
+  if (rootTask.taskDefinitionId !== taskDefinitionId) {
     throw new WorkGraphReporterError("task ancestry does not reach the v1 Root Task");
+  }
+  exact(
+    rootTask.resolvedInputs,
+    [...Object.keys(staticInputs), "rootIssue"],
+    "Root Task resolvedInputs",
+  );
+  for (const [key, value] of Object.entries(staticInputs)) {
+    if (!isDeepStrictEqual(rootTask.resolvedInputs[key], value)) {
+      throw new WorkGraphReporterError(
+        `Root Task resolvedInputs.${key} does not match the compiled definition`,
+      );
+    }
   }
   const input = rootTask.resolvedInputs.rootIssue;
   exact(
@@ -1026,6 +1077,9 @@ function resultContext(context, input, config, expectedBody) {
       "task has a malformed, foreign, or duplicate WorkGraphTaskDispatch/v1",
     );
   }
+  dispatches.sort((left, right) =>
+    commentOrder(left.comment, right.comment),
+  );
   const matchingDispatches = dispatches.filter(
     ({ payload }) =>
       payload.dispatchId === input.dispatchId &&
@@ -1038,6 +1092,28 @@ function resultContext(context, input, config, expectedBody) {
     );
   }
   const dispatch = matchingDispatches[0].payload;
+  if (dispatch !== dispatches.at(-1).payload) {
+    throw new WorkGraphReporterError(
+      "Dispatch and Lease are not the current selected attempt",
+    );
+  }
+  const attempt = dispatches.filter(
+    ({ payload }) =>
+      payload.lease.assignmentId === dispatch.lease.assignmentId,
+  ).length;
+  const dispatchAttempts = new Map();
+  for (let index = 0; index < dispatches.length; index += 1) {
+    const candidate = dispatches[index].payload;
+    dispatchAttempts.set(
+      candidate.dispatchId,
+      dispatches
+        .slice(0, index + 1)
+        .filter(
+          ({ payload }) =>
+            payload.lease.assignmentId === candidate.lease.assignmentId,
+        ).length,
+    );
+  }
 
   const results = markedComments(
     context.comments,
@@ -1049,7 +1125,10 @@ function resultContext(context, input, config, expectedBody) {
       ({ comment, payload }) =>
         !payload ||
         comment.user?.id !== config.resultId ||
+        payload.rootIssueId !== context.task.rootIssueId ||
+        payload.workflowRunId !== context.task.workflowRunId ||
         payload.taskId !== context.task.taskId ||
+        payload.attempt !== dispatchAttempts.get(payload.dispatchId) ||
         !dispatches.some(
           ({ payload: candidate }) =>
             candidate.dispatchId === payload.dispatchId &&
@@ -1072,13 +1151,14 @@ function resultContext(context, input, config, expectedBody) {
   if (matchingResults.length > 0) {
     if (
       matchingResults.length !== 1 ||
-      matchingResults[0].comment.body !== expectedBody
+      (expectedBody !== null &&
+        matchingResults[0].comment.body !== expectedBody)
     ) {
       throw new WorkGraphReporterError(
         "task has a malformed, foreign, duplicate, or conflicting Result",
       );
     }
-    return { dispatch, existing: matchingResults[0].comment };
+    return { dispatch, attempt, existing: matchingResults[0].comment };
   }
   if (
     context.issue.state !== "open" ||
@@ -1088,7 +1168,7 @@ function resultContext(context, input, config, expectedBody) {
       "a new Result requires open task and Root Task Issues",
     );
   }
-  return { dispatch, existing: null };
+  return { dispatch, attempt, existing: null };
 }
 
 function timestamp(value, label) {
@@ -1219,10 +1299,23 @@ function compiledSource(taskDefinitionId) {
     );
   }
   const [sourceStepId, source] = matches[0];
+  let parentTaskDefinitionId = null;
+  const findParent = (task, parentId = null) => {
+    if (task.taskDefinitionId === taskDefinitionId) {
+      parentTaskDefinitionId = parentId;
+      return true;
+    }
+    return task.children.some((child) =>
+      findParent(child, task.taskDefinitionId),
+    );
+  };
+  findParent(source.taskDefinition);
   return {
     sourceStepId,
     source,
     policy: source.executionPolicies[taskDefinitionId],
+    isStepRoot: source.taskDefinition.taskDefinitionId === taskDefinitionId,
+    parentTaskDefinitionId,
   };
 }
 
@@ -1254,11 +1347,11 @@ function validateLifecycleContextInput(input, extraKeys = []) {
   }
   if (
     !Number.isSafeInteger(input.attempt) ||
-    input.attempt < 0 ||
-    input.attempt > 16
+    input.attempt < 1 ||
+    input.attempt > 17
   ) {
     throw new WorkGraphReporterError(
-      "arguments.attempt must be an integer from 0 through 16",
+      "arguments.attempt must be an integer from 1 through 17",
     );
   }
   return locator;
@@ -1287,7 +1380,13 @@ function validateProtocolComment(entry, actorId, marker) {
   return entry;
 }
 
-async function loadLifecycleAncestry(locator, input, github, config) {
+async function loadLifecycleAncestry(
+  locator,
+  input,
+  github,
+  config,
+  requireOpen = true,
+) {
   const [identity, repository, issue, parentLink, comments] = await Promise.all([
     github.identity(),
     github.repository(),
@@ -1303,7 +1402,7 @@ async function loadLifecycleAncestry(locator, input, github, config) {
   verifyRepository(repository, locator.repositoryNodeId);
   const task = taskIssue(issue, locator, config, "Task");
   const compiled = validateLifecycleTask(task, "Task");
-  if (issue.state !== "open") {
+  if (requireOpen && issue.state !== "open") {
     throw new WorkGraphReporterError("lifecycle reporting requires an open Task");
   }
   if (
@@ -1326,6 +1425,7 @@ async function loadLifecycleAncestry(locator, input, github, config) {
   let ancestorLink = parentLink;
   let rootTask = null;
   let rootTaskIssue = null;
+  let immediateParentTask = null;
   for (let depth = 0; depth <= 5; depth += 1) {
     linkedIssue(
       ancestorIssue,
@@ -1334,7 +1434,7 @@ async function loadLifecycleAncestry(locator, input, github, config) {
       "task ancestor",
     );
     if (ancestorIssue.type?.name !== TASK_TYPE_NAME) break;
-    if (ancestorIssue.state !== "open") {
+    if (requireOpen && ancestorIssue.state !== "open") {
       throw new WorkGraphReporterError(
         "lifecycle reporting requires an open Root Task ancestry",
       );
@@ -1349,6 +1449,7 @@ async function loadLifecycleAncestry(locator, input, github, config) {
       "Task ancestor",
     );
     validateLifecycleTask(ancestor, "Task ancestor");
+    if (depth === 0) immediateParentTask = ancestor;
     if (
       ancestor.rootIssueId !== task.rootIssueId ||
       ancestor.workflowRunId !== task.workflowRunId ||
@@ -1385,7 +1486,6 @@ async function loadLifecycleAncestry(locator, input, github, config) {
     !rootTaskIssue ||
     ancestorIssue?.node_id !== task.rootIssueId ||
     ancestorIssue?.repository_url !== REPOSITORY_URL ||
-    ancestorIssue?.state !== "open" ||
     ancestorIssue?.pull_request ||
     ancestorIssue?.type?.name === TASK_TYPE_NAME
   ) {
@@ -1400,6 +1500,31 @@ async function loadLifecycleAncestry(locator, input, github, config) {
   ) {
     throw new WorkGraphReporterError("Root Task direct identities do not match");
   }
+  if (
+    !compiled.isStepRoot &&
+    immediateParentTask?.taskDefinitionId !==
+      compiled.parentTaskDefinitionId
+  ) {
+    throw new WorkGraphReporterError(
+      "recursive task native parent does not match its compiled parent",
+    );
+  }
+  const rootIssue = ordinaryRootIssue(
+    ancestorIssue,
+    ancestorIssue.number,
+    ancestorIssue.node_id,
+    config,
+  );
+  const admission = validateRootAdmission(
+    rootTask,
+    rootIssue,
+    locator.repositoryNodeId,
+    {
+      taskDefinitionId: COMPILED_WORKFLOW.root.taskDefinitionId,
+      staticInputs: COMPILED_WORKFLOW.root.staticInputs,
+      validateContract: false,
+    },
+  );
   if (
     config.role === "evaluator" &&
     config.lifecycleAgentId !== compiled.policy.evaluatorId
@@ -1416,7 +1541,16 @@ async function loadLifecycleAncestry(locator, input, github, config) {
       "configured orchestrator does not match the effective compiled policy",
     );
   }
-  return { issue, task, comments, rootTask, rootTaskIssue, ...compiled };
+  return {
+    issue,
+    task,
+    comments,
+    rootTask,
+    rootTaskIssue,
+    rootIssue,
+    admission,
+    ...compiled,
+  };
 }
 
 function lifecycleArtifacts(context, input, config) {
@@ -1459,8 +1593,8 @@ function lifecycleArtifacts(context, input, config) {
     dispatches.filter(
       ({ payload }) =>
         payload.lease.assignmentId === currentDispatch.lease.assignmentId,
-    ).length - 1;
-  if (attempt > context.policy.maxReworkAttempts) {
+    ).length;
+  if (attempt > context.policy.maxReworkAttempts + 1) {
     throw new WorkGraphReporterError(
       "current attempt exceeds the effective compiled rework policy",
     );
@@ -1468,6 +1602,19 @@ function lifecycleArtifacts(context, input, config) {
   if (input.attempt !== attempt) {
     throw new WorkGraphReporterError(
       "attempt does not match the current same-task assignment attempt",
+    );
+  }
+  const dispatchAttempts = new Map();
+  for (let index = 0; index < dispatches.length; index += 1) {
+    const dispatch = dispatches[index].payload;
+    dispatchAttempts.set(
+      dispatch.dispatchId,
+      dispatches
+        .slice(0, index + 1)
+        .filter(
+          ({ payload }) =>
+            payload.lease.assignmentId === dispatch.lease.assignmentId,
+        ).length,
     );
   }
 
@@ -1481,7 +1628,10 @@ function lifecycleArtifacts(context, input, config) {
   if (
     results.some(
       ({ payload }) =>
+        payload.rootIssueId !== context.task.rootIssueId ||
+        payload.workflowRunId !== context.task.workflowRunId ||
         payload.taskId !== context.task.taskId ||
+        payload.attempt !== dispatchAttempts.get(payload.dispatchId) ||
         !dispatches.some(
           ({ payload: dispatch }) =>
             dispatch.dispatchId === payload.dispatchId &&
@@ -1540,6 +1690,8 @@ function lifecycleArtifacts(context, input, config) {
         payload.taskId !== context.task.taskId ||
         payload.evaluatorId !== context.policy.evaluatorId ||
         !referenced ||
+        payload.attempt !==
+          dispatchAttempts.get(referenced?.payload.dispatchId) ||
         payload.resultDigest !== resultBodyDigest(referenced.comment.body)
       );
     }) ||
@@ -1576,6 +1728,7 @@ function lifecycleArtifacts(context, input, config) {
         payload.taskId !== context.task.taskId ||
         payload.resultId !== evaluation.resultId ||
         payload.evaluationVerdict !== evaluation.verdict ||
+        payload.attempt !== evaluation.attempt ||
         payload.orchestratorId !== context.policy.orchestratorId
       ) {
         return true;
@@ -1609,14 +1762,27 @@ function lifecycleArtifacts(context, input, config) {
     attempt,
     result,
     resultDigest,
+    reworkCount: attempt - 1,
     currentEvaluation,
     currentRoute,
   };
 }
 
-async function readLifecycleContext(input, github, config, extraKeys = []) {
+async function readLifecycleContext(
+  input,
+  github,
+  config,
+  extraKeys = [],
+  requireOpen = true,
+) {
   const locator = validateLifecycleContextInput(input, extraKeys);
-  const context = await loadLifecycleAncestry(locator, input, github, config);
+  const context = await loadLifecycleAncestry(
+    locator,
+    input,
+    github,
+    config,
+    requireOpen,
+  );
   return {
     locator,
     context,
@@ -1625,6 +1791,7 @@ async function readLifecycleContext(input, github, config, extraKeys = []) {
 }
 
 function transitionChoices(context) {
+  if (!context.isStepRoot) return [];
   const transition = context.source.transition;
   if (transition.type === "next") {
     return [routeTarget("next", null, transition.targetStepId)];
@@ -1661,6 +1828,7 @@ function lifecycleSnapshot(context, artifacts, config) {
     result: artifacts.result.payload,
     resultDigest: artifacts.resultDigest,
     attempt: artifacts.attempt,
+    reworkCount: artifacts.reworkCount,
     maxReworkAttempts: context.policy.maxReworkAttempts,
   };
   if (config.role === "evaluator") {
@@ -1679,9 +1847,14 @@ function lifecycleSnapshot(context, artifacts, config) {
   const verdict = artifacts.currentEvaluation.payload.verdict;
   const actions =
     verdict === "accepted"
-      ? ["advance", "complete", "error", "ignore"]
+      ? [
+          ...(context.isStepRoot ? ["advance"] : []),
+          "complete",
+          "error",
+          "ignore",
+        ]
       : [
-          ...(artifacts.attempt < context.policy.maxReworkAttempts
+          ...(artifacts.reworkCount < context.policy.maxReworkAttempts
             ? ["rework"]
             : []),
           "error",
@@ -1707,8 +1880,30 @@ async function getTaskSnapshot(input, github, config) {
   return lifecycleSnapshot(context, artifacts, config);
 }
 
+export function deriveWorkGraphArtifactClaimId(
+  artifactKind,
+  taskId,
+  subjectId,
+) {
+  if (!["evaluation", "route"].includes(artifactKind)) {
+    throw new WorkGraphReporterError(
+      "artifactKind must be evaluation or route",
+    );
+  }
+  opaque(taskId, "artifact claim taskId");
+  opaque(subjectId, "artifact claim subjectId");
+  return `workgraph-v1:claim:sha256:${framedSha256([
+    artifactKind,
+    taskId,
+    subjectId,
+  ])}`;
+}
+
+const lifecycleClaims = new Map();
+
 async function reconcileLifecycleComment({
-  read,
+  readAny,
+  readOpen,
   existing,
   body,
   github,
@@ -1716,8 +1911,16 @@ async function reconcileLifecycleComment({
   actorId,
   id,
   kind,
+  artifactKind,
+  taskId,
+  subjectId,
 }) {
-  const initial = await read();
+  const claimId = deriveWorkGraphArtifactClaimId(
+    artifactKind,
+    taskId,
+    subjectId,
+  );
+  const initial = await readAny();
   const found = existing(initial);
   if (found) {
     if (found.comment.body !== body) {
@@ -1729,9 +1932,10 @@ async function reconcileLifecycleComment({
       commentNodeId: found.comment.node_id,
       [`${id}Id`]: found.payload[`${id}Id`],
       reconciled: true,
+      claimId,
     };
   }
-  const before = await read();
+  const before = await readAny();
   const raced = existing(before);
   if (raced) {
     if (raced.comment.body !== body) {
@@ -1743,34 +1947,74 @@ async function reconcileLifecycleComment({
       commentNodeId: raced.comment.node_id,
       [`${id}Id`]: raced.payload[`${id}Id`],
       reconciled: true,
+      claimId,
     };
   }
-  const posted = verifiedComment(
-    await github.postComment(number, body),
-    body,
-    actorId,
-    kind,
-  );
-  const after = await read();
-  const reconciled = existing(after);
-  if (
-    !reconciled ||
-    reconciled.comment.id !== posted.id ||
-    reconciled.comment.node_id !== posted.node_id
-  ) {
-    throw new WorkGraphReporterError(`${kind} creation did not reconcile`);
+  const writable = await readOpen();
+  const appeared = existing(writable);
+  if (appeared) {
+    if (appeared.comment.body !== body) {
+      throw new WorkGraphReporterError(
+        `task has a conflicting canonical ${kind}`,
+      );
+    }
+    return {
+      commentNodeId: appeared.comment.node_id,
+      [`${id}Id`]: appeared.payload[`${id}Id`],
+      reconciled: true,
+      claimId,
+    };
   }
-  return {
-    commentNodeId: posted.node_id,
-    [`${id}Id`]: reconciled.payload[`${id}Id`],
-    reconciled: false,
-  };
+  const pending = lifecycleClaims.get(claimId);
+  if (pending) {
+    if (pending.body !== body) {
+      throw new WorkGraphReporterError(
+        `artifact claim is already held for a conflicting ${kind}`,
+      );
+    }
+    const claimed = await pending.promise;
+    return { ...claimed, reconciled: true };
+  }
+  const promise = (async () => {
+    const posted = verifiedComment(
+      await github.postComment(number, body),
+      body,
+      actorId,
+      kind,
+    );
+    const after = await readAny();
+    const reconciled = existing(after);
+    if (
+      !reconciled ||
+      reconciled.comment.id !== posted.id ||
+      reconciled.comment.node_id !== posted.node_id
+    ) {
+      throw new WorkGraphReporterError(`${kind} creation did not reconcile`);
+    }
+    return {
+      commentNodeId: posted.node_id,
+      [`${id}Id`]: reconciled.payload[`${id}Id`],
+      reconciled: false,
+      claimId,
+    };
+  })();
+  lifecycleClaims.set(claimId, { body, promise });
+  try {
+    return await promise;
+  } finally {
+    if (lifecycleClaims.get(claimId)?.promise === promise) {
+      lifecycleClaims.delete(claimId);
+    }
+  }
 }
 
 async function submitTaskEvaluation(input, github, config) {
   const extra = ["evaluationId", "verdict", "summary", "feedback"];
-  const read = () => readLifecycleContext(input, github, config, extra);
-  const initial = await read();
+  const readAny = () =>
+    readLifecycleContext(input, github, config, extra, false);
+  const readOpen = () =>
+    readLifecycleContext(input, github, config, extra, true);
+  const initial = await readAny();
   if (
     initial.artifacts.currentEvaluation &&
     initial.artifacts.currentEvaluation.payload.evaluationId !==
@@ -1788,13 +2032,15 @@ async function submitTaskEvaluation(input, github, config) {
     resultId: input.resultId,
     resultDigest: initial.artifacts.resultDigest,
     evaluatorId: initial.context.policy.evaluatorId,
+    attempt: initial.artifacts.attempt,
     verdict: input.verdict,
     summary: input.summary,
     feedback: input.feedback,
   };
   const body = formatTaskEvaluation(evaluation);
   const outcome = await reconcileLifecycleComment({
-    read,
+    readAny,
+    readOpen,
     existing: ({ artifacts }) => artifacts.currentEvaluation,
     body,
     github,
@@ -1802,6 +2048,9 @@ async function submitTaskEvaluation(input, github, config) {
     actorId: config.evaluationId,
     id: "evaluation",
     kind: "Evaluation",
+    artifactKind: "evaluation",
+    taskId: evaluation.taskId,
+    subjectId: evaluation.resultId,
   });
   return { ...outcome, resultDigest: initial.artifacts.resultDigest };
 }
@@ -1848,8 +2097,11 @@ async function submitTaskRoute(input, github, config) {
         ]
       : [];
   const extra = ["evaluationId", "routeId", "action", ...transitionKeys];
-  const read = () => readLifecycleContext(input, github, config, extra);
-  const initial = await read();
+  const readAny = () =>
+    readLifecycleContext(input, github, config, extra, false);
+  const readOpen = () =>
+    readLifecycleContext(input, github, config, extra, true);
+  const initial = await readAny();
   const evaluation = initial.artifacts.currentEvaluation?.payload;
   if (!evaluation || evaluation.evaluationId !== input.evaluationId) {
     throw new WorkGraphReporterError(
@@ -1899,7 +2151,8 @@ async function submitTaskRoute(input, github, config) {
   }
   const body = formatTaskRoute(route);
   const outcome = await reconcileLifecycleComment({
-    read,
+    readAny,
+    readOpen,
     existing: ({ artifacts }) => artifacts.currentRoute,
     body,
     github,
@@ -1907,6 +2160,9 @@ async function submitTaskRoute(input, github, config) {
     actorId: config.routeId,
     id: "route",
     kind: "Route",
+    artifactKind: "route",
+    taskId: route.taskId,
+    subjectId: route.evaluationId,
   });
   return {
     ...outcome,
@@ -1980,15 +2236,31 @@ async function submitTaskResult(input, github, config) {
       "arguments.outcome must be succeeded or failed",
     );
   }
+  const initialContext = await loadTaskContext(
+    locator,
+    input.taskId,
+    github,
+    config,
+    true,
+  );
+  const selected = resultContext(
+    initialContext,
+    input,
+    config,
+    null,
+  );
   const result = {
     resultId: deriveWorkGraphTaskResultId(
       input.taskId,
       input.dispatchId,
       input.leaseId,
     ),
+    rootIssueId: initialContext.task.rootIssueId,
+    workflowRunId: initialContext.task.workflowRunId,
     taskId: input.taskId,
     dispatchId: input.dispatchId,
     leaseId: input.leaseId,
+    attempt: selected.attempt,
     outcome: input.outcome,
     output: canonicalJsonValue(input.output),
   };
@@ -2074,7 +2346,7 @@ const lifecycleContextProperties = {
   dispatchId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
   leaseId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
   resultId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
-  attempt: { type: "integer", minimum: 0, maximum: 16 },
+  attempt: { type: "integer", minimum: 1, maximum: 17 },
 };
 
 export const tools = [

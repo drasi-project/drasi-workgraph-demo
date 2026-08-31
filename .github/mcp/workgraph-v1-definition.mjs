@@ -471,6 +471,7 @@ const EVALUATION_KEYS = [
   "resultId",
   "resultDigest",
   "evaluatorId",
+  "attempt",
   "verdict",
   "summary",
   "feedback",
@@ -526,6 +527,14 @@ function boundedCount(value, context) {
   if (!Number.isSafeInteger(value) || value < 0 || value > 16) {
     throw new WorkGraphDefinitionError(
       `${context} must be a safe integer from 0 through 16`,
+    );
+  }
+}
+
+function executionAttempt(value, context) {
+  if (!Number.isSafeInteger(value) || value < 1 || value > 17) {
+    throw new WorkGraphDefinitionError(
+      `${context} must be a safe integer from 1 through 17`,
     );
   }
 }
@@ -1166,6 +1175,7 @@ export function normalizeTaskEvaluation(value) {
   identifier(value.taskId, "task evaluation taskId");
   digest(value.resultDigest, "task evaluation resultDigest");
   identifier(value.evaluatorId, "task evaluation evaluatorId");
+  executionAttempt(value.attempt, "task evaluation attempt");
   if (!["accepted", "rejected"].includes(value.verdict)) {
     throw new WorkGraphDefinitionError(
       "task evaluation verdict must be accepted or rejected",
@@ -1205,6 +1215,7 @@ export function normalizeTaskEvaluation(value) {
     resultId: value.resultId,
     resultDigest: value.resultDigest,
     evaluatorId: value.evaluatorId,
+    attempt: value.attempt,
     verdict: value.verdict,
     summary: value.summary,
     feedback: value.feedback,
@@ -1269,7 +1280,7 @@ export function normalizeTaskRoute(value) {
       `task route action ${value.action} is invalid for verdict ${value.evaluationVerdict}`,
     );
   }
-  boundedCount(value.attempt, "task route attempt");
+  executionAttempt(value.attempt, "task route attempt");
   if (value.action === "advance") {
     if (!["next", "outcome"].includes(value.transitionKind)) {
       throw new WorkGraphDefinitionError(
@@ -1361,15 +1372,17 @@ export function validateTaskRouteAgainstDefinition(
     "task route source taskDefinitionId",
   );
   const source = workflow.steps[sourceContext.sourceStepId];
-  if (
-    source?.type !== "task" ||
-    source.taskDefinition.taskDefinitionId !== sourceContext.taskDefinitionId
-  ) {
+  if (source?.type !== "task") {
     throw new WorkGraphDefinitionError(
       "task route source context must identify the routed compiled task step",
     );
   }
   const policy = source.executionPolicies[sourceContext.taskDefinitionId];
+  if (!policy) {
+    throw new WorkGraphDefinitionError(
+      "task route source context must identify a task in the compiled source step",
+    );
+  }
   if (route.orchestratorId !== policy.orchestratorId) {
     throw new WorkGraphDefinitionError(
       "task route orchestratorId must match the source task policy",
@@ -1377,13 +1390,20 @@ export function validateTaskRouteAgainstDefinition(
   }
   if (
     route.action === "rework" &&
-    route.attempt > policy.maxReworkAttempts
+    route.attempt - 1 >= policy.maxReworkAttempts
   ) {
     throw new WorkGraphDefinitionError(
       "rework task route attempt exceeds the source task policy",
     );
   }
   if (route.action !== "advance") return route;
+  if (
+    source.taskDefinition.taskDefinitionId !== sourceContext.taskDefinitionId
+  ) {
+    throw new WorkGraphDefinitionError(
+      "recursive child task routes cannot advance a top-level workflow transition",
+    );
+  }
   const target = workflow.steps[route.targetStepId];
   if (!target) {
     throw new WorkGraphDefinitionError(
@@ -1430,9 +1450,9 @@ export function nextReworkAttempt(
   exactKeys(current, ["taskId", "assignmentId", "attempt"], "rework attempt");
   directId(current.taskId, "rework attempt taskId");
   directId(current.assignmentId, "rework attempt assignmentId");
-  boundedCount(current.attempt, "rework attempt");
+  executionAttempt(current.attempt, "rework attempt");
   boundedCount(maxReworkAttempts, "rework maximum");
-  if (current.attempt >= maxReworkAttempts) {
+  if (current.attempt - 1 >= maxReworkAttempts) {
     throw new WorkGraphDefinitionError(
       `rework exceeds maximum of ${maxReworkAttempts} attempts`,
     );

@@ -23,7 +23,9 @@ task's source step and effective evaluator, orchestrator, and rework maximum
 from that compiled definition. They require the latest immutable Dispatch and
 its exact canonical Result, derive the Result body digest, and verify direct
 Root Issue, run, task, Result, and Evaluation identities. Accepted Evaluations
-have empty feedback; rejected Evaluations require actionable feedback.
+have empty feedback; rejected Evaluations require actionable feedback. The
+Evaluation and Route carry the same one-based attempt; `reworkCount` is
+`attempt - 1`.
 
 The Route writer accepts only the verdict/action matrix and exact compiled
 edge returned by the snapshot. Advance carries the transition kind and target
@@ -32,6 +34,15 @@ only for task targets. Rework returns the same task and assignment with the
 next bounded attempt and the Evaluation feedback. No lifecycle tool mutates the
 Root Issue, creates or closes a task, or performs any effect beyond its one
 canonical comment.
+
+Evaluation and Route writes use a deterministic artifact claim identity.
+Identical concurrent calls in one reporter process share the write and
+reconcile its immutable comment; conflicting claims fail closed. Exact existing
+artifacts reconcile before task openness checks. New comments require open task
+ancestry immediately before the write, while post-write reconciliation
+tolerates a task closure race.
+The ordinary Root Issue must always remain open and retain its admission label
+and content digest.
 
 ## Task locator
 
@@ -117,8 +128,11 @@ The Source atomically reserves the active Lease for `claimId`; a competing claim
 fails closed. Its response must repeat those six fields and provide a valid,
 unexpired `acquiredAt`/`expiresAt` interval.
 
-The caller never supplies `resultId`. The reporter derives it from the
-length-framed UTF-8 values of `taskId`, `dispatchId`, and `leaseId`:
+The caller never supplies `resultId`, `rootIssueId`, `workflowRunId`, or
+`attempt`. The reporter derives the direct identities from the verified task
+and the one-based attempt from the selected Dispatch history. `resultId` is
+derived from the length-framed UTF-8 values of `taskId`, `dispatchId`, and
+`leaseId`:
 
 ```text
 workgraph-v1:result:sha256:<64 lowercase hex>
@@ -132,9 +146,12 @@ WorkGraphTaskResult/v1
 ```json
 {
   "resultId": "workgraph-v1:result:sha256:...",
+  "rootIssueId": "root-issue-id",
+  "workflowRunId": "workflow-run-id",
   "taskId": "task-id",
   "dispatchId": "dispatch-id",
   "leaseId": "lease-id",
+  "attempt": 1,
   "outcome": "succeeded",
   "output": {}
 }
@@ -158,9 +175,6 @@ add:
 - `COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID`
 - `COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID`
 - `COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID`
-- `COPILOT_MCP_WORKGRAPH_EXECUTOR_ID`
-- `COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL`
-- `COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN`
 - `COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID`
 - `COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID`
 - exactly one of `COPILOT_MCP_WORKGRAPH_EVALUATOR_ID` or

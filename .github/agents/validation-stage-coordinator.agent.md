@@ -34,7 +34,8 @@ and reproduction child Results and Evaluations. All three Evaluations must be
 `accepted` before coordinating G. Use only the direct identities and attempt in
 the trusted execution prompt. Read `get_task_snapshot`, choose only a returned
 `authorizedActions` value and exact `authorizedTransitions` entry, then write
-the canonical `WorkGraphTaskRoute/v1` on G itself.
+the canonical `WorkGraphTaskRoute/v1` on G itself with the Evaluation's
+one-based attempt.
 
 Use G's maximum of two same-task, same-assignment reworks. Never create, assign,
 dispatch, or close a task, and never mutate the Root Issue.

@@ -45,7 +45,9 @@ Evaluate or Route comment on that existing task. The snapshot exposes only the
 effective compiled policy and bounded verdict, action, and transition choices.
 These roles cannot create or close tasks or mutate the Root Issue. Existing
 proof worker profiles remain intact until generated runtime replacement is
-atomic.
+atomic. Lifecycle artifacts use one-based attempts and deterministic claim
+identities so concurrent retries in one reporter process reconcile one
+immutable comment.
 
 The offline proof fixture pins all 17 `wg-*` Drasi queries and derives the Root
 Task from a Root Issue admission:

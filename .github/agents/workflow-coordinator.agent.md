@@ -34,7 +34,7 @@ Read `get_task_snapshot`; choose only from its `authorizedActions` and, for
 advance, its exact `authorizedTransitions`. Submit one
 `WorkGraphTaskRoute/v1` on that task. The reporter verifies the Result,
 Evaluation, verdict, effective policy, compiled edge, and target kind. Rework
-uses the same task and assignment with the returned next attempt and Evaluation
-feedback.
+uses the same task and assignment; `reworkCount` is the current one-based
+attempt minus one, and the next attempt receives the Evaluation feedback.
 
 Never create, assign, dispatch, or close a task, and never mutate the Root Issue.
