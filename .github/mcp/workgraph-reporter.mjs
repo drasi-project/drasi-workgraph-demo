@@ -1,12 +1,23 @@
 #!/usr/bin/env node
 
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import process from "node:process";
 import readline from "node:readline";
 import { isDeepStrictEqual, TextEncoder } from "node:util";
 import { fileURLToPath } from "node:url";
 
-import { parseRuntimeTask } from "./workgraph-v1-definition.mjs";
+import {
+  TASK_EVALUATION_MARKER,
+  TASK_ROUTE_MARKER,
+  formatTaskEvaluation,
+  formatTaskRoute,
+  normalizeCompiledWorkflowDefinition,
+  parseRuntimeTask,
+  parseTaskEvaluation,
+  parseTaskRoute,
+  validateTaskRouteAgainstDefinition,
+} from "./workgraph-v1-definition.mjs";
 
 const API = "https://api.github.com";
 const OWNER = "drasi-project";
@@ -31,6 +42,22 @@ const TASK_IDENTITY_KEYS = [
   "workflowDefinitionDigest",
   "taskDefinitionId",
 ];
+const COMPILED_FIXTURE = JSON.parse(
+  readFileSync(
+    new URL("../workgraph/fixtures/v1/issue-lifecycle.expected.json", import.meta.url),
+    "utf8",
+  ),
+);
+const COMPILED_WORKFLOW = normalizeCompiledWorkflowDefinition(
+  COMPILED_FIXTURE.workgraphDefinition,
+);
+if (
+  COMPILED_FIXTURE.definitionDigest !== COMPILED_WORKFLOW.digest ||
+  COMPILED_WORKFLOW.workflowDefinitionId !== "issue-lifecycle" ||
+  COMPILED_WORKFLOW.version !== "v1"
+) {
+  throw new Error("pinned compiled WorkGraph fixture is inconsistent");
+}
 
 export class WorkGraphReporterError extends Error {}
 
@@ -498,7 +525,16 @@ export function validateLeaseValidationUrl(value) {
 }
 
 function configuration(toolName) {
-  if (!["get_root_issue", "submit_task_result"].includes(toolName)) {
+  const lifecycleTools = [
+    "get_task_snapshot",
+    "submit_task_evaluation",
+    "submit_task_route",
+  ];
+  if (
+    !["get_root_issue", "submit_task_result", ...lifecycleTools].includes(
+      toolName,
+    )
+  ) {
     throw new WorkGraphReporterError(`unknown tool ${toolName}`);
   }
   const taskTypeId = env("COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID");
@@ -523,6 +559,37 @@ function configuration(toolName) {
       leaseValidationUrl: validateLeaseValidationUrl(
         env("COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL"),
       ),
+    };
+  }
+  if (lifecycleTools.includes(toolName)) {
+    const evaluatorId = process.env.COPILOT_MCP_WORKGRAPH_EVALUATOR_ID ?? "";
+    const orchestratorId =
+      process.env.COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_ID ?? "";
+    if ((evaluatorId === "") === (orchestratorId === "")) {
+      throw new WorkGraphReporterError(
+        "exactly one evaluator or orchestrator profile identity is required",
+      );
+    }
+    const role = evaluatorId ? "evaluator" : "orchestrator";
+    if (
+      (toolName === "submit_task_evaluation" && role !== "evaluator") ||
+      (toolName === "submit_task_route" && role !== "orchestrator")
+    ) {
+      throw new WorkGraphReporterError(
+        `${toolName} is not available to the configured lifecycle role`,
+      );
+    }
+    return {
+      ...config,
+      role,
+      lifecycleAgentId: evaluatorId || orchestratorId,
+      assignmentId: envUserId(
+        "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
+      ),
+      evaluationId: envUserId(
+        "COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID",
+      ),
+      routeId: envUserId("COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID"),
     };
   }
   return config;
@@ -615,7 +682,7 @@ class GitHub {
   }
 }
 
-function verifyReporterIdentity(identity, expectedId) {
+function verifyReporterIdentity(identity, expectedId, label = "Result reporter") {
   if (
     !object(identity) ||
     identity.id !== expectedId ||
@@ -623,7 +690,7 @@ function verifyReporterIdentity(identity, expectedId) {
     identity.login.length === 0
   ) {
     throw new WorkGraphReporterError(
-      "token identity does not match the configured Result reporter",
+      `token identity does not match the configured ${label}`,
     );
   }
 }
@@ -1104,7 +1171,12 @@ async function validateActiveLease(dispatch, claimId, config) {
   }
 }
 
-function verifiedComment(comment, expectedBody, expectedActorId) {
+function verifiedComment(
+  comment,
+  expectedBody,
+  expectedActorId,
+  label = "Result",
+) {
   if (
     !object(comment) ||
     !Number.isSafeInteger(comment.id) ||
@@ -1115,10 +1187,739 @@ function verifiedComment(comment, expectedBody, expectedActorId) {
     comment.user?.id !== expectedActorId
   ) {
     throw new WorkGraphReporterError(
-      "GitHub did not return the expected Result comment",
+      `GitHub did not return the expected ${label} comment`,
     );
   }
   return comment;
+}
+
+const LIFECYCLE_CONTEXT_KEYS = [
+  "taskLocator",
+  "rootIssueId",
+  "workflowRunId",
+  "taskId",
+  "dispatchId",
+  "leaseId",
+  "resultId",
+  "attempt",
+];
+
+function sameTaskIdentity(left, right) {
+  return TASK_IDENTITY_KEYS.every((key) => left[key] === right[key]);
+}
+
+function compiledSource(taskDefinitionId) {
+  const matches = Object.entries(COMPILED_WORKFLOW.steps).filter(
+    ([, step]) =>
+      step.type === "task" && taskDefinitionId in step.executionPolicies,
+  );
+  if (matches.length !== 1) {
+    throw new WorkGraphReporterError(
+      "taskDefinitionId does not identify one pinned compiled source step",
+    );
+  }
+  const [sourceStepId, source] = matches[0];
+  return {
+    sourceStepId,
+    source,
+    policy: source.executionPolicies[taskDefinitionId],
+  };
+}
+
+function validateLifecycleTask(task, label) {
+  if (
+    task.workflowDefinitionId !== COMPILED_WORKFLOW.workflowDefinitionId ||
+    task.workflowDefinitionVersion !== COMPILED_WORKFLOW.version ||
+    task.workflowDefinitionDigest !== COMPILED_WORKFLOW.digest
+  ) {
+    throw new WorkGraphReporterError(
+      `${label} does not belong to the pinned compiled workflow`,
+    );
+  }
+  return compiledSource(task.taskDefinitionId);
+}
+
+function validateLifecycleContextInput(input, extraKeys = []) {
+  exact(input, [...LIFECYCLE_CONTEXT_KEYS, ...extraKeys], "arguments");
+  const locator = validateTaskLocator(input.taskLocator);
+  for (const key of [
+    "rootIssueId",
+    "workflowRunId",
+    "taskId",
+    "dispatchId",
+    "leaseId",
+    "resultId",
+  ]) {
+    opaque(input[key], `arguments.${key}`);
+  }
+  if (
+    !Number.isSafeInteger(input.attempt) ||
+    input.attempt < 0 ||
+    input.attempt > 16
+  ) {
+    throw new WorkGraphReporterError(
+      "arguments.attempt must be an integer from 0 through 16",
+    );
+  }
+  return locator;
+}
+
+function commentOrder(left, right) {
+  const byTime = Date.parse(left.created_at) - Date.parse(right.created_at);
+  return byTime || left.id - right.id;
+}
+
+function validateProtocolComment(entry, actorId, marker) {
+  const { comment, payload } = entry;
+  if (
+    !payload ||
+    comment.user?.id !== actorId ||
+    !Number.isSafeInteger(comment.id) ||
+    comment.id <= 0 ||
+    typeof comment.node_id !== "string" ||
+    comment.node_id.length === 0
+  ) {
+    throw new WorkGraphReporterError(
+      `task has a malformed or foreign ${marker}`,
+    );
+  }
+  timestamp(comment.created_at, `${marker} created_at`);
+  return entry;
+}
+
+async function loadLifecycleAncestry(locator, input, github, config) {
+  const [identity, repository, issue, parentLink, comments] = await Promise.all([
+    github.identity(),
+    github.repository(),
+    github.issue(locator.issueNumber),
+    github.parent(locator.issueNumber),
+    github.comments(locator.issueNumber),
+  ]);
+  verifyReporterIdentity(
+    identity,
+    config.role === "evaluator" ? config.evaluationId : config.routeId,
+    `${config.role} reporter`,
+  );
+  verifyRepository(repository, locator.repositoryNodeId);
+  const task = taskIssue(issue, locator, config, "Task");
+  const compiled = validateLifecycleTask(task, "Task");
+  if (issue.state !== "open") {
+    throw new WorkGraphReporterError("lifecycle reporting requires an open Task");
+  }
+  if (
+    task.rootIssueId !== input.rootIssueId ||
+    task.workflowRunId !== input.workflowRunId ||
+    task.taskId !== input.taskId
+  ) {
+    throw new WorkGraphReporterError(
+      "rootIssueId, workflowRunId, and taskId must directly match the Task",
+    );
+  }
+  linkedIssue(
+    parentLink,
+    locator.parentIssueNumber,
+    locator.parentIssueNodeId,
+    "task native parent",
+  );
+
+  let ancestorIssue = await github.issue(locator.parentIssueNumber);
+  let ancestorLink = parentLink;
+  let rootTask = null;
+  let rootTaskIssue = null;
+  for (let depth = 0; depth <= 5; depth += 1) {
+    linkedIssue(
+      ancestorIssue,
+      ancestorLink.number,
+      ancestorLink.node_id,
+      "task ancestor",
+    );
+    if (ancestorIssue.type?.name !== TASK_TYPE_NAME) break;
+    if (ancestorIssue.state !== "open") {
+      throw new WorkGraphReporterError(
+        "lifecycle reporting requires an open Root Task ancestry",
+      );
+    }
+    const ancestor = taskIssue(
+      ancestorIssue,
+      {
+        issueNumber: ancestorIssue.number,
+        issueNodeId: ancestorIssue.node_id,
+      },
+      config,
+      "Task ancestor",
+    );
+    validateLifecycleTask(ancestor, "Task ancestor");
+    if (
+      ancestor.rootIssueId !== task.rootIssueId ||
+      ancestor.workflowRunId !== task.workflowRunId ||
+      ancestor.workflowDefinitionId !== task.workflowDefinitionId ||
+      ancestor.workflowDefinitionVersion !== task.workflowDefinitionVersion ||
+      ancestor.workflowDefinitionDigest !== task.workflowDefinitionDigest
+    ) {
+      throw new WorkGraphReporterError(
+        "Task ancestor direct identities do not match the routed Task",
+      );
+    }
+    if (
+      ancestor.taskDefinitionId ===
+      COMPILED_WORKFLOW.root.taskDefinitionId
+    ) {
+      rootTask = ancestor;
+      rootTaskIssue = ancestorIssue;
+      ancestorLink = await github.parent(ancestorIssue.number);
+      ancestorIssue = await github.issue(ancestorLink.number);
+      break;
+    }
+    ancestorLink = await github.parent(ancestorIssue.number);
+    ancestorIssue = await github.issue(ancestorLink.number);
+  }
+  if (
+    task.taskDefinitionId === COMPILED_WORKFLOW.root.taskDefinitionId
+  ) {
+    rootTask = task;
+    rootTaskIssue = issue;
+    ancestorIssue = await github.issue(parentLink.number);
+  }
+  if (
+    !rootTask ||
+    !rootTaskIssue ||
+    ancestorIssue?.node_id !== task.rootIssueId ||
+    ancestorIssue?.repository_url !== REPOSITORY_URL ||
+    ancestorIssue?.state !== "open" ||
+    ancestorIssue?.pull_request ||
+    ancestorIssue?.type?.name === TASK_TYPE_NAME
+  ) {
+    throw new WorkGraphReporterError(
+      "Task ancestry does not reach its open ordinary Root Issue",
+    );
+  }
+  if (
+    rootTask.taskDefinitionId !== COMPILED_WORKFLOW.root.taskDefinitionId ||
+    rootTask.rootIssueId !== input.rootIssueId ||
+    rootTask.workflowRunId !== input.workflowRunId
+  ) {
+    throw new WorkGraphReporterError("Root Task direct identities do not match");
+  }
+  if (
+    config.role === "evaluator" &&
+    config.lifecycleAgentId !== compiled.policy.evaluatorId
+  ) {
+    throw new WorkGraphReporterError(
+      "configured evaluator does not match the effective compiled policy",
+    );
+  }
+  if (
+    config.role === "orchestrator" &&
+    config.lifecycleAgentId !== compiled.policy.orchestratorId
+  ) {
+    throw new WorkGraphReporterError(
+      "configured orchestrator does not match the effective compiled policy",
+    );
+  }
+  return { issue, task, comments, rootTask, rootTaskIssue, ...compiled };
+}
+
+function lifecycleArtifacts(context, input, config) {
+  const dispatches = markedComments(
+    context.comments,
+    TASK_DISPATCH_MARKER,
+    parseTaskDispatch,
+  ).map((entry) =>
+    validateProtocolComment(entry, config.assignmentId, TASK_DISPATCH_MARKER),
+  );
+  if (
+    dispatches.length === 0 ||
+    dispatches.some(
+      ({ payload }) =>
+        !sameTaskIdentity(payload.task, context.task) ||
+        payload.lease.executorId !== context.policy.workerId,
+    ) ||
+    new Set(dispatches.map(({ payload }) => payload.dispatchId)).size !==
+      dispatches.length ||
+    new Set(dispatches.map(({ payload }) => payload.lease.leaseId)).size !==
+      dispatches.length
+  ) {
+    throw new WorkGraphReporterError(
+      "task has a malformed, foreign, or duplicate Dispatch",
+    );
+  }
+  dispatches.sort((left, right) =>
+    commentOrder(left.comment, right.comment),
+  );
+  const currentDispatch = dispatches.at(-1).payload;
+  if (
+    currentDispatch.dispatchId !== input.dispatchId ||
+    currentDispatch.lease.leaseId !== input.leaseId
+  ) {
+    throw new WorkGraphReporterError(
+      "Dispatch and Lease are stale or not the current selected attempt",
+    );
+  }
+  const attempt =
+    dispatches.filter(
+      ({ payload }) =>
+        payload.lease.assignmentId === currentDispatch.lease.assignmentId,
+    ).length - 1;
+  if (attempt > context.policy.maxReworkAttempts) {
+    throw new WorkGraphReporterError(
+      "current attempt exceeds the effective compiled rework policy",
+    );
+  }
+  if (input.attempt !== attempt) {
+    throw new WorkGraphReporterError(
+      "attempt does not match the current same-task assignment attempt",
+    );
+  }
+
+  const results = markedComments(
+    context.comments,
+    TASK_RESULT_MARKER,
+    parseTaskResult,
+  ).map((entry) =>
+    validateProtocolComment(entry, config.resultId, TASK_RESULT_MARKER),
+  );
+  if (
+    results.some(
+      ({ payload }) =>
+        payload.taskId !== context.task.taskId ||
+        !dispatches.some(
+          ({ payload: dispatch }) =>
+            dispatch.dispatchId === payload.dispatchId &&
+            dispatch.lease.leaseId === payload.leaseId,
+        ),
+    ) ||
+    new Set(results.map(({ payload }) => payload.resultId)).size !==
+      results.length ||
+    new Set(
+      results.map(
+        ({ payload }) =>
+          `${payload.taskId}\0${payload.dispatchId}\0${payload.leaseId}`,
+      ),
+    ).size !== results.length
+  ) {
+    throw new WorkGraphReporterError(
+      "task has a malformed, foreign, duplicate, or conflicting Result",
+    );
+  }
+  const currentResults = results.filter(
+    ({ payload }) =>
+      payload.dispatchId === currentDispatch.dispatchId &&
+      payload.leaseId === currentDispatch.lease.leaseId,
+  );
+  if (
+    currentResults.length !== 1 ||
+    currentResults[0].payload.resultId !== input.resultId
+  ) {
+    throw new WorkGraphReporterError(
+      "Result is missing, stale, duplicate, or not bound to the current attempt",
+    );
+  }
+  const result = currentResults[0];
+  const resultDigest = resultBodyDigest(result.comment.body);
+
+  const evaluations = markedComments(
+    context.comments,
+    TASK_EVALUATION_MARKER,
+    parseTaskEvaluation,
+  ).map((entry) =>
+    validateProtocolComment(
+      entry,
+      config.evaluationId,
+      TASK_EVALUATION_MARKER,
+    ),
+  );
+  const evaluationResults = new Map(
+    results.map((entry) => [entry.payload.resultId, entry]),
+  );
+  if (
+    evaluations.some(({ payload }) => {
+      const referenced = evaluationResults.get(payload.resultId);
+      return (
+        payload.rootIssueId !== context.task.rootIssueId ||
+        payload.workflowRunId !== context.task.workflowRunId ||
+        payload.taskId !== context.task.taskId ||
+        payload.evaluatorId !== context.policy.evaluatorId ||
+        !referenced ||
+        payload.resultDigest !== resultBodyDigest(referenced.comment.body)
+      );
+    }) ||
+    new Set(evaluations.map(({ payload }) => payload.evaluationId)).size !==
+      evaluations.length ||
+    new Set(evaluations.map(({ payload }) => payload.resultId)).size !==
+      evaluations.length
+  ) {
+    throw new WorkGraphReporterError(
+      "task has a malformed, foreign, duplicate, or conflicting Evaluation",
+    );
+  }
+  const currentEvaluation =
+    evaluations.find(({ payload }) => payload.resultId === input.resultId) ??
+    null;
+
+  const routes = markedComments(
+    context.comments,
+    TASK_ROUTE_MARKER,
+    parseTaskRoute,
+  ).map((entry) =>
+    validateProtocolComment(entry, config.routeId, TASK_ROUTE_MARKER),
+  );
+  const evaluationById = new Map(
+    evaluations.map((entry) => [entry.payload.evaluationId, entry.payload]),
+  );
+  if (
+    routes.some(({ payload }) => {
+      const evaluation = evaluationById.get(payload.evaluationId);
+      if (
+        !evaluation ||
+        payload.rootIssueId !== context.task.rootIssueId ||
+        payload.workflowRunId !== context.task.workflowRunId ||
+        payload.taskId !== context.task.taskId ||
+        payload.resultId !== evaluation.resultId ||
+        payload.evaluationVerdict !== evaluation.verdict ||
+        payload.orchestratorId !== context.policy.orchestratorId
+      ) {
+        return true;
+      }
+      try {
+        validateTaskRouteAgainstDefinition(payload, COMPILED_WORKFLOW, {
+          sourceStepId: context.sourceStepId,
+          taskDefinitionId: context.task.taskDefinitionId,
+        });
+      } catch {
+        return true;
+      }
+      return false;
+    }) ||
+    new Set(routes.map(({ payload }) => payload.routeId)).size !== routes.length ||
+    new Set(routes.map(({ payload }) => payload.evaluationId)).size !==
+      routes.length
+  ) {
+    throw new WorkGraphReporterError(
+      "task has a malformed, foreign, duplicate, or conflicting Route",
+    );
+  }
+  const currentRoute = currentEvaluation
+    ? (routes.find(
+        ({ payload }) =>
+          payload.evaluationId === currentEvaluation.payload.evaluationId,
+      ) ?? null)
+    : null;
+  return {
+    currentDispatch,
+    attempt,
+    result,
+    resultDigest,
+    currentEvaluation,
+    currentRoute,
+  };
+}
+
+async function readLifecycleContext(input, github, config, extraKeys = []) {
+  const locator = validateLifecycleContextInput(input, extraKeys);
+  const context = await loadLifecycleAncestry(locator, input, github, config);
+  return {
+    locator,
+    context,
+    artifacts: lifecycleArtifacts(context, input, config),
+  };
+}
+
+function transitionChoices(context) {
+  const transition = context.source.transition;
+  if (transition.type === "next") {
+    return [routeTarget("next", null, transition.targetStepId)];
+  }
+  return Object.entries(transition.targets).map(([outcome, targetStepId]) =>
+    routeTarget("outcome", outcome, targetStepId),
+  );
+}
+
+function routeTarget(transitionKind, outcome, targetStepId) {
+  const target = COMPILED_WORKFLOW.steps[targetStepId];
+  const choice = {
+    transitionKind,
+    targetStepId,
+    targetStepKind: target.type,
+  };
+  if (outcome !== null) choice.outcome = outcome;
+  if (target.type === "task") {
+    choice.targetTaskDefinitionId = target.taskDefinition.taskDefinitionId;
+  }
+  return choice;
+}
+
+function lifecycleSnapshot(context, artifacts, config) {
+  const common = {
+    rootIssueId: context.task.rootIssueId,
+    workflowRunId: context.task.workflowRunId,
+    taskId: context.task.taskId,
+    taskDefinitionId: context.task.taskDefinitionId,
+    sourceStepId: context.sourceStepId,
+    dispatchId: artifacts.currentDispatch.dispatchId,
+    leaseId: artifacts.currentDispatch.lease.leaseId,
+    assignmentId: artifacts.currentDispatch.lease.assignmentId,
+    result: artifacts.result.payload,
+    resultDigest: artifacts.resultDigest,
+    attempt: artifacts.attempt,
+    maxReworkAttempts: context.policy.maxReworkAttempts,
+  };
+  if (config.role === "evaluator") {
+    return {
+      ...common,
+      evaluatorId: context.policy.evaluatorId,
+      authorizedVerdicts: ["accepted", "rejected"],
+      existingEvaluation: artifacts.currentEvaluation?.payload ?? null,
+    };
+  }
+  if (!artifacts.currentEvaluation) {
+    throw new WorkGraphReporterError(
+      "the current Result has no canonical Evaluation",
+    );
+  }
+  const verdict = artifacts.currentEvaluation.payload.verdict;
+  const actions =
+    verdict === "accepted"
+      ? ["advance", "complete", "error", "ignore"]
+      : [
+          ...(artifacts.attempt < context.policy.maxReworkAttempts
+            ? ["rework"]
+            : []),
+          "error",
+          "ignore",
+        ];
+  return {
+    ...common,
+    evaluation: artifacts.currentEvaluation.payload,
+    orchestratorId: context.policy.orchestratorId,
+    authorizedActions: actions,
+    authorizedTransitions:
+      verdict === "accepted" ? transitionChoices(context) : [],
+    existingRoute: artifacts.currentRoute?.payload ?? null,
+  };
+}
+
+async function getTaskSnapshot(input, github, config) {
+  const { context, artifacts } = await readLifecycleContext(
+    input,
+    github,
+    config,
+  );
+  return lifecycleSnapshot(context, artifacts, config);
+}
+
+async function reconcileLifecycleComment({
+  read,
+  existing,
+  body,
+  github,
+  issueNumber: number,
+  actorId,
+  id,
+  kind,
+}) {
+  const initial = await read();
+  const found = existing(initial);
+  if (found) {
+    if (found.comment.body !== body) {
+      throw new WorkGraphReporterError(
+        `task has a conflicting canonical ${kind}`,
+      );
+    }
+    return {
+      commentNodeId: found.comment.node_id,
+      [`${id}Id`]: found.payload[`${id}Id`],
+      reconciled: true,
+    };
+  }
+  const before = await read();
+  const raced = existing(before);
+  if (raced) {
+    if (raced.comment.body !== body) {
+      throw new WorkGraphReporterError(
+        `task has a conflicting canonical ${kind}`,
+      );
+    }
+    return {
+      commentNodeId: raced.comment.node_id,
+      [`${id}Id`]: raced.payload[`${id}Id`],
+      reconciled: true,
+    };
+  }
+  const posted = verifiedComment(
+    await github.postComment(number, body),
+    body,
+    actorId,
+    kind,
+  );
+  const after = await read();
+  const reconciled = existing(after);
+  if (
+    !reconciled ||
+    reconciled.comment.id !== posted.id ||
+    reconciled.comment.node_id !== posted.node_id
+  ) {
+    throw new WorkGraphReporterError(`${kind} creation did not reconcile`);
+  }
+  return {
+    commentNodeId: posted.node_id,
+    [`${id}Id`]: reconciled.payload[`${id}Id`],
+    reconciled: false,
+  };
+}
+
+async function submitTaskEvaluation(input, github, config) {
+  const extra = ["evaluationId", "verdict", "summary", "feedback"];
+  const read = () => readLifecycleContext(input, github, config, extra);
+  const initial = await read();
+  if (
+    initial.artifacts.currentEvaluation &&
+    initial.artifacts.currentEvaluation.payload.evaluationId !==
+      input.evaluationId
+  ) {
+    throw new WorkGraphReporterError(
+      "the current Result already has a conflicting Evaluation or Route",
+    );
+  }
+  const evaluation = {
+    evaluationId: opaque(input.evaluationId, "arguments.evaluationId"),
+    rootIssueId: input.rootIssueId,
+    workflowRunId: input.workflowRunId,
+    taskId: input.taskId,
+    resultId: input.resultId,
+    resultDigest: initial.artifacts.resultDigest,
+    evaluatorId: initial.context.policy.evaluatorId,
+    verdict: input.verdict,
+    summary: input.summary,
+    feedback: input.feedback,
+  };
+  const body = formatTaskEvaluation(evaluation);
+  const outcome = await reconcileLifecycleComment({
+    read,
+    existing: ({ artifacts }) => artifacts.currentEvaluation,
+    body,
+    github,
+    issueNumber: initial.locator.issueNumber,
+    actorId: config.evaluationId,
+    id: "evaluation",
+    kind: "Evaluation",
+  });
+  return { ...outcome, resultDigest: initial.artifacts.resultDigest };
+}
+
+function routeFromInput(input, context, evaluation) {
+  const route = {
+    routeId: opaque(input.routeId, "arguments.routeId"),
+    rootIssueId: input.rootIssueId,
+    workflowRunId: input.workflowRunId,
+    taskId: input.taskId,
+    resultId: input.resultId,
+    evaluationId: input.evaluationId,
+    evaluationVerdict: evaluation.verdict,
+    orchestratorId: context.policy.orchestratorId,
+    action: input.action,
+  };
+  for (const key of [
+    "transitionKind",
+    "targetStepId",
+    "targetStepKind",
+    "outcome",
+    "targetTaskDefinitionId",
+  ]) {
+    if (key in input) route[key] = input[key];
+  }
+  route.attempt = input.attempt;
+  return route;
+}
+
+async function submitTaskRoute(input, github, config) {
+  if (!object(input) || typeof input.action !== "string") {
+    throw new WorkGraphReporterError("arguments.action is required");
+  }
+  const transitionKeys =
+    input.action === "advance"
+      ? [
+          "transitionKind",
+          "targetStepId",
+          "targetStepKind",
+          ...("outcome" in input ? ["outcome"] : []),
+          ...("targetTaskDefinitionId" in input
+            ? ["targetTaskDefinitionId"]
+            : []),
+        ]
+      : [];
+  const extra = ["evaluationId", "routeId", "action", ...transitionKeys];
+  const read = () => readLifecycleContext(input, github, config, extra);
+  const initial = await read();
+  const evaluation = initial.artifacts.currentEvaluation?.payload;
+  if (!evaluation || evaluation.evaluationId !== input.evaluationId) {
+    throw new WorkGraphReporterError(
+      "Evaluation is stale or not the current Result Evaluation",
+    );
+  }
+  if (
+    initial.artifacts.currentRoute &&
+    initial.artifacts.currentRoute.payload.routeId !== input.routeId
+  ) {
+    throw new WorkGraphReporterError(
+      "the current Evaluation already has a conflicting Route",
+    );
+  }
+  const route = routeFromInput(input, initial.context, evaluation);
+  validateTaskRouteAgainstDefinition(route, COMPILED_WORKFLOW, {
+    sourceStepId: initial.context.sourceStepId,
+    taskDefinitionId: initial.context.task.taskDefinitionId,
+  });
+  const snapshot = lifecycleSnapshot(
+    initial.context,
+    initial.artifacts,
+    config,
+  );
+  if (!snapshot.authorizedActions.includes(route.action)) {
+    throw new WorkGraphReporterError(
+      "Route action is not authorized for the current verdict and attempt",
+    );
+  }
+  if (
+    route.action === "advance" &&
+    !snapshot.authorizedTransitions.some((choice) =>
+      isDeepStrictEqual(choice, {
+        transitionKind: route.transitionKind,
+        ...("outcome" in route ? { outcome: route.outcome } : {}),
+        targetStepId: route.targetStepId,
+        targetStepKind: route.targetStepKind,
+        ...("targetTaskDefinitionId" in route
+          ? { targetTaskDefinitionId: route.targetTaskDefinitionId }
+          : {}),
+      }),
+    )
+  ) {
+    throw new WorkGraphReporterError(
+      "Route transition is not one of the bounded compiled choices",
+    );
+  }
+  const body = formatTaskRoute(route);
+  const outcome = await reconcileLifecycleComment({
+    read,
+    existing: ({ artifacts }) => artifacts.currentRoute,
+    body,
+    github,
+    issueNumber: initial.locator.issueNumber,
+    actorId: config.routeId,
+    id: "route",
+    kind: "Route",
+  });
+  return {
+    ...outcome,
+    rework:
+      route.action === "rework"
+        ? {
+            taskId: input.taskId,
+            assignmentId: initial.artifacts.currentDispatch.lease.assignmentId,
+            attempt: route.attempt + 1,
+            feedback: evaluation.feedback,
+          }
+        : null,
+  };
 }
 
 async function getRootIssue(input, github, config) {
@@ -1265,6 +2066,17 @@ const locatorSchema = schema({
   parentIssueNodeId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
 });
 
+const lifecycleContextProperties = {
+  taskLocator: locatorSchema,
+  rootIssueId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
+  workflowRunId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
+  taskId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
+  dispatchId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
+  leaseId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
+  resultId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
+  attempt: { type: "integer", minimum: 0, maximum: 16 },
+};
+
 export const tools = [
   {
     name: "get_root_issue",
@@ -1288,12 +2100,79 @@ export const tools = [
       output: {},
     }),
   },
+  {
+    name: "get_task_snapshot",
+    description:
+      "Read the exact current Dispatch, Result, policy, and bounded evaluator or orchestrator choices for one open WorkGraphTask.",
+    inputSchema: schema(lifecycleContextProperties),
+  },
+  {
+    name: "submit_task_evaluation",
+    description:
+      "Create or reconcile one canonical WorkGraphTaskEvaluate/v1 for the exact current Result.",
+    inputSchema: schema({
+      ...lifecycleContextProperties,
+      evaluationId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
+      verdict: { type: "string", enum: ["accepted", "rejected"] },
+      summary: { type: "string", minLength: 1, maxLength: 4096 },
+      feedback: { type: "string", maxLength: 16384 },
+    }),
+  },
+  {
+    name: "submit_task_route",
+    description:
+      "Create or reconcile one canonical WorkGraphTaskRoute/v1 from the current Evaluation and a bounded compiled choice.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        ...lifecycleContextProperties,
+        evaluationId: {
+          type: "string",
+          minLength: 1,
+          maxLength: MAX_ID_BYTES,
+        },
+        routeId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
+        action: {
+          type: "string",
+          enum: ["advance", "rework", "complete", "error", "ignore"],
+        },
+        transitionKind: { type: "string", enum: ["next", "outcome"] },
+        outcome: { type: "string", minLength: 1, maxLength: 64 },
+        targetStepId: { type: "string", minLength: 1, maxLength: 64 },
+        targetStepKind: {
+          type: "string",
+          enum: ["task", "wait", "terminal"],
+        },
+        targetTaskDefinitionId: {
+          type: "string",
+          minLength: 1,
+          maxLength: 64,
+        },
+      },
+      required: [
+        ...Object.keys(lifecycleContextProperties),
+        "evaluationId",
+        "routeId",
+        "action",
+      ],
+    },
+  },
 ];
 
 export async function callTool(name, args) {
   const config = configuration(name);
   const github = new GitHub(config);
   if (name === "get_root_issue") return getRootIssue(args, github, config);
+  if (name === "get_task_snapshot") {
+    return getTaskSnapshot(args, github, config);
+  }
+  if (name === "submit_task_evaluation") {
+    return submitTaskEvaluation(args, github, config);
+  }
+  if (name === "submit_task_route") {
+    return submitTaskRoute(args, github, config);
+  }
   if (name === "submit_task_result") {
     return submitTaskResult(args, github, config);
   }

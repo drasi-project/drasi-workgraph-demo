@@ -1,13 +1,15 @@
 # WorkGraph v1 reporter
 
 `.github/mcp/workgraph-reporter.mjs` is the testbed's narrow MCP boundary for
-reading the admitted Root Issue and submitting task Results. It exposes exactly
-two tools:
+worker and lifecycle reporting. It exposes exactly five tools:
 
 | Tool | Purpose | GitHub write |
 |---|---|---|
 | `get_root_issue` | Verify a validator child, its Root Task, and the immutable Root Issue snapshot | No |
 | `submit_task_result` | Verify a task, Dispatch, and active Lease, then create or reconcile its Result | One comment when absent |
+| `get_task_snapshot` | Verify the current Dispatch, Result, direct identities, attempt, and effective compiled lifecycle policy | No |
+| `submit_task_evaluation` | Create or reconcile the current Result's canonical Evaluation | One comment when absent |
+| `submit_task_route` | Create or reconcile an authorized Route for the current Evaluation | One comment when absent |
 
 The reporter is fixed to `drasi-project/drasi-workgraph-demo`. It rejects
 unknown arguments, unexpected Issue identities, foreign actors, noncanonical
@@ -15,9 +17,25 @@ bodies, duplicate protocol comments, a missing exact `workgraph` admission label
 closed task ancestry for new work, changed Root Issue content, stale Leases, and
 conflicting retries.
 
+Lifecycle tools pin
+`.github/workgraph/fixtures/v1/issue-lifecycle.expected.json`. They resolve the
+task's source step and effective evaluator, orchestrator, and rework maximum
+from that compiled definition. They require the latest immutable Dispatch and
+its exact canonical Result, derive the Result body digest, and verify direct
+Root Issue, run, task, Result, and Evaluation identities. Accepted Evaluations
+have empty feedback; rejected Evaluations require actionable feedback.
+
+The Route writer accepts only the verdict/action matrix and exact compiled
+edge returned by the snapshot. Advance carries the transition kind and target
+step/kind, outcome only for an outcome edge, and a hashed task-definition ID
+only for task targets. Rework returns the same task and assignment with the
+next bounded attempt and the Evaluation feedback. No lifecycle tool mutates the
+Root Issue, creates or closes a task, or performs any effect beyond its one
+canonical comment.
+
 ## Task locator
 
-Both tools receive an opaque `taskLocator` from the Reaction execution context:
+All tools receive an opaque `taskLocator` from the Reaction execution context:
 
 ```json
 {
@@ -132,7 +150,8 @@ Root Issue.
 
 ## Configuration
 
-The two agent profiles expose only:
+Worker profiles retain the existing Result configuration. Lifecycle profiles
+add:
 
 - `COPILOT_MCP_WORKGRAPH_TOKEN`
 - `COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID`
@@ -142,6 +161,10 @@ The two agent profiles expose only:
 - `COPILOT_MCP_WORKGRAPH_EXECUTOR_ID`
 - `COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL`
 - `COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN`
+- `COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID`
+- `COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID`
+- exactly one of `COPILOT_MCP_WORKGRAPH_EVALUATOR_ID` or
+  `COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_ID`
 
 Run the offline contract tests with:
 

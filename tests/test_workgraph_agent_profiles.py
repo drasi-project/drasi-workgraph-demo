@@ -19,10 +19,22 @@ EXPECTED_TOOLS = {
         "workgraph/get_root_issue",
         "workgraph/submit_task_result",
     ],
-    "result-evaluator": ["workgraph/submit_task_evaluation"],
-    "issue-validation-evaluator": ["workgraph/submit_task_evaluation"],
-    "workflow-coordinator": ["workgraph/submit_task_route"],
-    "validation-stage-coordinator": ["workgraph/submit_task_route"],
+    "result-evaluator": [
+        "workgraph/get_task_snapshot",
+        "workgraph/submit_task_evaluation",
+    ],
+    "issue-validation-evaluator": [
+        "workgraph/get_task_snapshot",
+        "workgraph/submit_task_evaluation",
+    ],
+    "workflow-coordinator": [
+        "workgraph/get_task_snapshot",
+        "workgraph/submit_task_route",
+    ],
+    "validation-stage-coordinator": [
+        "workgraph/get_task_snapshot",
+        "workgraph/submit_task_route",
+    ],
     "issue-info-requester": [
         "workgraph/get_root_issue",
         "workgraph/submit_task_result",
@@ -55,7 +67,14 @@ class WorkGraphProfilesTest(unittest.TestCase):
                 tools = re.findall(r"(?m)^  - (\S+)$", frontmatter)
                 self.assertEqual(tools, EXPECTED_TOOLS[name])
                 self.assertNotIn("github/issue_write", frontmatter)
-        for name in ("issue-validator", "issue-coordinator"):
+        for name in (
+            "issue-validator",
+            "issue-coordinator",
+            "result-evaluator",
+            "issue-validation-evaluator",
+            "workflow-coordinator",
+            "validation-stage-coordinator",
+        ):
             with self.subTest(runtime_profile=name):
                 self.assertIn("mcp-servers:", self.agents[name])
                 self.assertIn(

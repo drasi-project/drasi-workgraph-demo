@@ -2,11 +2,18 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { once } from "node:events";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { formatRuntimeTask } from "../.github/mcp/workgraph-v1-definition.mjs";
+import {
+  formatRuntimeTask,
+  formatTaskEvaluation,
+  formatTaskRoute,
+  parseTaskEvaluation,
+  parseTaskRoute,
+} from "../.github/mcp/workgraph-v1-definition.mjs";
 import {
   callTool,
   deriveWorkGraphRootIssueContentDigest,
@@ -16,6 +23,7 @@ import {
   formatTaskDispatch,
   formatTaskResult,
   parseTaskResult,
+  resultBodyDigest,
   tools,
   validateLeaseValidationUrl,
 } from "../.github/mcp/workgraph-reporter.mjs";
@@ -29,6 +37,8 @@ const TYPE_ID = "IT_workgraph";
 const LAUNCHER_ID = 101;
 const ASSIGNMENT_ID = 102;
 const RESULT_ID = 103;
+const EVALUATION_ID = 104;
+const ROUTE_ID = 105;
 const REPOSITORY_NODE_ID = "R_workgraph_testbed";
 const ROOT_ISSUE_ID = "I_root_issue";
 const ROOT_ISSUE_NUMBER = 42;
@@ -40,6 +50,15 @@ const ADMISSION_ID = "admission-1";
 const DEFINITION_DIGEST = `sha256:${"a".repeat(64)}`;
 const ROOT_TITLE = "Validate this Issue";
 const ROOT_BODY = "The body to validate.";
+const COMPILED = JSON.parse(
+  readFileSync(
+    new URL(
+      "../.github/workgraph/fixtures/v1/issue-lifecycle.expected.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+).workgraphDefinition;
 
 function fixture() {
   const contentDigest = deriveWorkGraphRootIssueContentDigest(
@@ -399,6 +418,258 @@ function resultInput(task, dispatch, locator) {
   };
 }
 
+function lifecycleFixture({
+  stepId = "c",
+  attempt = 0,
+  verdict = null,
+  route = null,
+  conflictingEvaluation = false,
+  staleEvaluation = false,
+} = {}) {
+  const workflowRunId = "workgraph-v1:run:fixture";
+  const rootIssueId = ROOT_ISSUE_ID;
+  const rootDefinition = COMPILED.root.taskDefinitionId;
+  const taskDefinition = COMPILED.steps[stepId].taskDefinition.taskDefinitionId;
+  const identity = (taskId, taskDefinitionId) => ({
+    taskId,
+    workflowRunId,
+    workflowDefinitionId: COMPILED.workflowDefinitionId,
+    workflowDefinitionVersion: COMPILED.version,
+    workflowDefinitionDigest: COMPILED.digest,
+    taskDefinitionId,
+  });
+  const rootTask = {
+    ...identity("task-a", rootDefinition),
+    rootIssueId,
+    resolvedInputs: {},
+  };
+  const task = {
+    ...identity(`task-${stepId}`, taskDefinition),
+    rootIssueId,
+    resolvedInputs: {},
+  };
+  const policy = COMPILED.steps[stepId].executionPolicies[taskDefinition];
+  const dispatches = Array.from({ length: attempt + 1 }, (_, index) => ({
+    dispatchId: `dispatch-${stepId}-${index}`,
+    launchId: `launch-${stepId}-${index}`,
+    task: identity(task.taskId, taskDefinition),
+    lease: {
+      leaseId: `lease-${stepId}-${index}`,
+      assignmentId: `assignment-${stepId}`,
+      executorId: policy.workerId,
+      slotId: `${policy.workerId}-slot-1`,
+    },
+  }));
+  const dispatch = dispatches.at(-1);
+  const result = {
+    resultId: deriveWorkGraphTaskResultId(
+      task.taskId,
+      dispatch.dispatchId,
+      dispatch.lease.leaseId,
+    ),
+    taskId: task.taskId,
+    dispatchId: dispatch.dispatchId,
+    leaseId: dispatch.lease.leaseId,
+    outcome: "succeeded",
+    output: { outcome: "continue", summary: "done" },
+  };
+  const resultBody = formatTaskResult(result);
+  const evaluation = verdict
+    ? {
+        evaluationId: staleEvaluation
+          ? "evaluation-stale"
+          : "evaluation-current",
+        rootIssueId,
+        workflowRunId,
+        taskId: task.taskId,
+        resultId: staleEvaluation ? "result-stale" : result.resultId,
+        resultDigest: staleEvaluation
+          ? `sha256:${"f".repeat(64)}`
+          : resultBodyDigest(resultBody),
+        evaluatorId: policy.evaluatorId,
+        verdict,
+        summary: verdict === "accepted" ? "Accepted." : "Rejected.",
+        feedback: verdict === "accepted" ? "" : "Fix the missing evidence.",
+      }
+    : null;
+  const comments = [
+    ...dispatches.map((payload, index) => ({
+      id: 200 + index,
+      node_id: `IC_dispatch_${index}`,
+      body: formatTaskDispatch(payload),
+      user: { id: ASSIGNMENT_ID, login: "assigner" },
+      created_at: `2026-08-29T20:${String(index).padStart(2, "0")}:00Z`,
+      updated_at: `2026-08-29T20:${String(index).padStart(2, "0")}:00Z`,
+    })),
+    {
+      id: 230,
+      node_id: "IC_result",
+      body: resultBody,
+      user: { id: RESULT_ID, login: "result-reporter" },
+      created_at: "2026-08-29T20:30:00Z",
+      updated_at: "2026-08-29T20:30:00Z",
+    },
+  ];
+  if (evaluation && !staleEvaluation) {
+    comments.push({
+      id: 240,
+      node_id: "IC_evaluation",
+      body: formatTaskEvaluation(evaluation),
+      user: { id: EVALUATION_ID, login: "evaluation-reporter" },
+      created_at: "2026-08-29T20:40:00Z",
+      updated_at: "2026-08-29T20:40:00Z",
+    });
+    if (conflictingEvaluation) {
+      comments.push({
+        id: 241,
+        node_id: "IC_evaluation_conflict",
+        body: formatTaskEvaluation({
+          ...evaluation,
+          evaluationId: "evaluation-conflict",
+        }),
+        user: { id: EVALUATION_ID, login: "evaluation-reporter" },
+        created_at: "2026-08-29T20:41:00Z",
+        updated_at: "2026-08-29T20:41:00Z",
+      });
+    }
+  }
+  if (route) {
+    comments.push({
+      id: 250,
+      node_id: "IC_route",
+      body: formatTaskRoute(route),
+      user: { id: ROUTE_ID, login: "route-reporter" },
+      created_at: "2026-08-29T20:50:00Z",
+      updated_at: "2026-08-29T20:50:00Z",
+    });
+  }
+  return {
+    rootTask,
+    task,
+    policy,
+    dispatch,
+    result,
+    resultBody,
+    evaluation,
+    comments,
+    input: {
+      taskLocator: childLocator(),
+      rootIssueId,
+      workflowRunId,
+      taskId: task.taskId,
+      dispatchId: dispatch.dispatchId,
+      leaseId: dispatch.lease.leaseId,
+      resultId: result.resultId,
+      attempt,
+    },
+  };
+}
+
+async function withFakeLifecycle(options, callback) {
+  const data = lifecycleFixture(options);
+  const root = rootIssue();
+  const rootTask = taskIssue(ROOT_TASK_NUMBER, ROOT_TASK_NODE_ID, data.rootTask);
+  const task = taskIssue(CHILD_TASK_NUMBER, CHILD_TASK_NODE_ID, data.task);
+  const comments = new Map([[CHILD_TASK_NUMBER, data.comments]]);
+  const writes = [];
+  const role = options.role ?? "evaluator";
+  const actorId = role === "evaluator" ? EVALUATION_ID : ROUTE_ID;
+  const server = createServer(async (request, response) => {
+    const url = new URL(request.url, "http://127.0.0.1");
+    const send = (status, value) => {
+      response.writeHead(status, { "Content-Type": "application/json" });
+      response.end(JSON.stringify(value));
+    };
+    if (request.method === "GET" && url.pathname === "/user") {
+      return send(200, { id: actorId, login: `${role}-reporter` });
+    }
+    if (
+      request.method === "GET" &&
+      url.pathname === `/repos/${OWNER}/${REPO}`
+    ) {
+      return send(200, {
+        name: REPO,
+        owner: { login: OWNER },
+        node_id: REPOSITORY_NODE_ID,
+      });
+    }
+    const issueMatch = url.pathname.match(
+      new RegExp(`^/repos/${OWNER}/${REPO}/issues/(\\d+)$`),
+    );
+    if (request.method === "GET" && issueMatch) {
+      return send(
+        200,
+        new Map([
+          [ROOT_ISSUE_NUMBER, root],
+          [ROOT_TASK_NUMBER, rootTask],
+          [CHILD_TASK_NUMBER, task],
+        ]).get(Number(issueMatch[1])),
+      );
+    }
+    const parentMatch = url.pathname.match(
+      new RegExp(`^/repos/${OWNER}/${REPO}/issues/(\\d+)/parent$`),
+    );
+    if (request.method === "GET" && parentMatch) {
+      const parent =
+        Number(parentMatch[1]) === CHILD_TASK_NUMBER ? rootTask : root;
+      return send(200, parent);
+    }
+    const commentsMatch = url.pathname.match(
+      new RegExp(`^/repos/${OWNER}/${REPO}/issues/(\\d+)/comments$`),
+    );
+    if (request.method === "GET" && commentsMatch) {
+      return send(200, comments.get(Number(commentsMatch[1])) ?? []);
+    }
+    if (request.method === "POST" && commentsMatch) {
+      const number = Number(commentsMatch[1]);
+      const { body } = await requestBody(request);
+      const comment = {
+        id: 300 + writes.length,
+        node_id: `IC_write_${writes.length}`,
+        body,
+        user: { id: actorId, login: `${role}-reporter` },
+        created_at: "2026-08-29T21:00:00Z",
+        updated_at: "2026-08-29T21:00:00Z",
+      };
+      comments.get(number).push(comment);
+      writes.push({ number, body });
+      return send(201, comment);
+    }
+    return send(404, { message: `Unhandled ${request.method} ${url.pathname}` });
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const previous = { ...process.env };
+  Object.assign(process.env, {
+    NODE_ENV: "test",
+    WORKGRAPH_TEST_GITHUB_API_URL: origin,
+    COPILOT_MCP_WORKGRAPH_TOKEN: "github-token",
+    COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID: TYPE_ID,
+    COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID: String(LAUNCHER_ID),
+    COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID: String(ASSIGNMENT_ID),
+    COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID: String(RESULT_ID),
+    COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID: String(EVALUATION_ID),
+    COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID: String(ROUTE_ID),
+  });
+  if (role === "evaluator") {
+    process.env.COPILOT_MCP_WORKGRAPH_EVALUATOR_ID =
+      options.evaluatorId ?? data.policy.evaluatorId;
+    delete process.env.COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_ID;
+  } else {
+    process.env.COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_ID =
+      options.orchestratorId ?? data.policy.orchestratorId;
+    delete process.env.COPILOT_MCP_WORKGRAPH_EVALUATOR_ID;
+  }
+  try {
+    await callback({ data, writes, comments });
+  } finally {
+    process.env = previous;
+    server.close();
+    await once(server, "close");
+  }
+}
+
 test("v1 Result identity and body match the kernel vector", () => {
   const resultId = deriveWorkGraphTaskResultId(
     "task-1",
@@ -474,10 +745,16 @@ test("only the exact v1 lease endpoint is accepted", () => {
   );
 });
 
-test("MCP exposes only the Root Issue reader and Result writer", async () => {
+test("MCP exposes only narrow WorkGraph readers and lifecycle writers", async () => {
   assert.deepEqual(
     tools.map(({ name }) => name),
-    ["get_root_issue", "submit_task_result"],
+    [
+      "get_root_issue",
+      "submit_task_result",
+      "get_task_snapshot",
+      "submit_task_evaluation",
+      "submit_task_route",
+    ],
   );
   const child = spawn(process.execPath, [REPORTER], {
     cwd: ROOT,
@@ -507,7 +784,13 @@ test("MCP exposes only the Root Issue reader and Result writer", async () => {
   assert.equal(responses.length, 2);
   assert.deepEqual(
     responses[1].result.tools.map(({ name }) => name),
-    ["get_root_issue", "submit_task_result"],
+    [
+      "get_root_issue",
+      "submit_task_result",
+      "get_task_snapshot",
+      "submit_task_evaluation",
+      "submit_task_route",
+    ],
   );
 });
 
@@ -775,4 +1058,242 @@ test("Result output rejects graph-lossy JSON numbers", async () => {
     assert.equal(state.writes.length, 0);
     assert.equal(state.leaseRequests.length, 0);
   });
+});
+
+function evaluationInput(data, verdict) {
+  return {
+    ...data.input,
+    evaluationId: "evaluation-current",
+    verdict,
+    summary: verdict === "accepted" ? "Accepted." : "Rejected.",
+    feedback: verdict === "accepted" ? "" : "Add concrete supporting evidence.",
+  };
+}
+
+test("Evaluation snapshot and writer cover accepted and rejected verdicts", async () => {
+  for (const verdict of ["accepted", "rejected"]) {
+    await withFakeLifecycle({}, async ({ data, writes }) => {
+      const snapshot = await callTool("get_task_snapshot", data.input);
+      assert.equal(snapshot.evaluatorId, data.policy.evaluatorId);
+      assert.deepEqual(snapshot.authorizedVerdicts, ["accepted", "rejected"]);
+      assert.equal(snapshot.resultDigest, resultBodyDigest(data.resultBody));
+      const created = await callTool(
+        "submit_task_evaluation",
+        evaluationInput(data, verdict),
+      );
+      assert.equal(created.reconciled, false);
+      assert.equal(writes.length, 1);
+      const payload = parseTaskEvaluation(writes[0].body);
+      assert.equal(payload.verdict, verdict);
+      assert.equal(payload.rootIssueId, data.input.rootIssueId);
+      assert.equal(payload.workflowRunId, data.input.workflowRunId);
+      assert.equal(payload.taskId, data.input.taskId);
+      assert.equal(payload.resultId, data.input.resultId);
+      assert.equal(payload.resultDigest, resultBodyDigest(data.resultBody));
+      const retried = await callTool(
+        "submit_task_evaluation",
+        evaluationInput(data, verdict),
+      );
+      assert.equal(retried.reconciled, true);
+      assert.equal(writes.length, 1);
+    });
+  }
+});
+
+test("Evaluation fails closed on conflicting duplicates and direct identity drift", async () => {
+  await withFakeLifecycle(
+    { verdict: "accepted", conflictingEvaluation: true },
+    async ({ data, writes }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", data.input),
+        /duplicate, or conflicting Evaluation/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
+  await withFakeLifecycle({}, async ({ data, writes }) => {
+    await assert.rejects(
+      callTool("submit_task_evaluation", {
+        ...evaluationInput(data, "accepted"),
+        rootIssueId: "I_wrong_root",
+      }),
+      /directly match the Task/,
+    );
+    await assert.rejects(
+      callTool("submit_task_evaluation", {
+        ...evaluationInput(data, "accepted"),
+        attempt: 1,
+      }),
+      /attempt does not match/,
+    );
+    assert.equal(writes.length, 0);
+  });
+  await withFakeLifecycle(
+    { evaluatorId: "result-evaluator" },
+    async ({ data, writes }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", data.input),
+        /configured evaluator/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
+});
+
+test("Route advances through next and outcome edges to task, wait, and terminal", async () => {
+  await withFakeLifecycle(
+    { stepId: "b", role: "orchestrator", verdict: "accepted" },
+    async ({ data, writes }) => {
+      const snapshot = await callTool("get_task_snapshot", data.input);
+      assert.deepEqual(snapshot.authorizedTransitions, [
+        {
+          transitionKind: "next",
+          targetStepId: "c",
+          targetStepKind: "task",
+          targetTaskDefinitionId:
+            COMPILED.steps.c.taskDefinition.taskDefinitionId,
+        },
+      ]);
+      const routeInput = {
+        ...data.input,
+        evaluationId: data.evaluation.evaluationId,
+        routeId: "route-next-task",
+        action: "advance",
+        ...snapshot.authorizedTransitions[0],
+      };
+      const created = await callTool("submit_task_route", routeInput);
+      assert.equal(created.reconciled, false);
+      assert.equal(parseTaskRoute(writes[0].body).targetStepId, "c");
+      const retried = await callTool("submit_task_route", routeInput);
+      assert.equal(retried.reconciled, true);
+      assert.equal(writes.length, 1);
+    },
+  );
+  for (const [stepId, choiceIndex, expectedKind] of [
+    ["c", 1, "task"],
+    ["d", 0, "wait"],
+    ["h", 0, "terminal"],
+  ]) {
+    await withFakeLifecycle(
+      { stepId, role: "orchestrator", verdict: "accepted" },
+      async ({ data, writes }) => {
+        const snapshot = await callTool("get_task_snapshot", data.input);
+        const choice = snapshot.authorizedTransitions[choiceIndex];
+        await callTool("submit_task_route", {
+          ...data.input,
+          evaluationId: data.evaluation.evaluationId,
+          routeId: `route-${stepId}`,
+          action: "advance",
+          ...choice,
+        });
+        const payload = parseTaskRoute(writes[0].body);
+        assert.equal(payload.targetStepKind, expectedKind);
+        assert.equal("outcome" in payload, stepId === "c");
+        assert.equal(
+          "targetTaskDefinitionId" in payload,
+          expectedKind === "task",
+        );
+      },
+    );
+  }
+});
+
+test("Route rejects wrong compiled mapping and wrong orchestrator", async () => {
+  await withFakeLifecycle(
+    { stepId: "c", role: "orchestrator", verdict: "accepted" },
+    async ({ data, writes }) => {
+      const snapshot = await callTool("get_task_snapshot", data.input);
+      await assert.rejects(
+        callTool("submit_task_route", {
+          ...data.input,
+          evaluationId: data.evaluation.evaluationId,
+          routeId: "route-wrong",
+          action: "advance",
+          ...snapshot.authorizedTransitions[0],
+          targetStepId: "h",
+        }),
+        /compiled transition|bounded compiled choices|targetTaskDefinitionId/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
+  await withFakeLifecycle(
+    {
+      stepId: "g",
+      role: "orchestrator",
+      verdict: "accepted",
+      orchestratorId: "workflow-coordinator",
+    },
+    async ({ data, writes }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", data.input),
+        /configured orchestrator/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
+});
+
+test("Rejected Route reworks the same task and assignment within the limit", async () => {
+  await withFakeLifecycle(
+    { stepId: "g", attempt: 1, role: "orchestrator", verdict: "rejected" },
+    async ({ data, writes }) => {
+      const snapshot = await callTool("get_task_snapshot", data.input);
+      assert.deepEqual(snapshot.authorizedActions, ["rework", "error", "ignore"]);
+      const routed = await callTool("submit_task_route", {
+        ...data.input,
+        evaluationId: data.evaluation.evaluationId,
+        routeId: "route-rework",
+        action: "rework",
+      });
+      assert.deepEqual(routed.rework, {
+        taskId: data.task.taskId,
+        assignmentId: data.dispatch.lease.assignmentId,
+        attempt: 2,
+        feedback: data.evaluation.feedback,
+      });
+      assert.equal(parseTaskRoute(writes[0].body).attempt, 1);
+    },
+  );
+  await withFakeLifecycle(
+    { stepId: "g", attempt: 2, role: "orchestrator", verdict: "rejected" },
+    async ({ data, writes }) => {
+      const snapshot = await callTool("get_task_snapshot", data.input);
+      assert.deepEqual(snapshot.authorizedActions, ["error", "ignore"]);
+      await assert.rejects(
+        callTool("submit_task_route", {
+          ...data.input,
+          evaluationId: data.evaluation.evaluationId,
+          routeId: "route-over-limit",
+          action: "rework",
+        }),
+        /exceeds the source task policy|not authorized/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
+});
+
+test("Route rejects stale Result, Evaluation, and attempt identities", async () => {
+  await withFakeLifecycle(
+    { role: "orchestrator", verdict: "accepted" },
+    async ({ data, writes }) => {
+      for (const changed of [
+        { resultId: "result-stale" },
+        { evaluationId: "evaluation-stale" },
+        { attempt: 1 },
+      ]) {
+        await assert.rejects(
+          callTool("submit_task_route", {
+            ...data.input,
+            evaluationId: data.evaluation.evaluationId,
+            routeId: "route-stale",
+            action: "complete",
+            ...changed,
+          }),
+        );
+      }
+      assert.equal(writes.length, 0);
+    },
+  );
 });

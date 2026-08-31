@@ -14,6 +14,7 @@ The prototype has one protocol:
 - `WorkGraphTaskDispatch/v1`
 - `WorkGraphTaskResult/v1`
 - `WorkGraphTaskEvaluate/v1`
+- `WorkGraphTaskRoute/v1`
 
 Every task carries top-level `rootIssueId`. The hierarchy is:
 
@@ -38,12 +39,13 @@ authoritative. The expected logical result for later compiler reconciliation
 is tracked in
 [`issue-lifecycle.expected.json`](.github/workgraph/fixtures/v1/issue-lifecycle.expected.json).
 
-Evaluator and coordinator profiles are lifecycle roles. They write canonical
-Evaluate and Route artifacts on an existing task; they are not nested tasks.
-The existing `issue-validator` MCP profile and `issue-coordinator` executor
-remain registered so that the published body is executable. The new profiles
-coexist until Wave 2 can switch the runtime atomically. The reporter's existing
-live GitHub write surface is unchanged in this wave.
+Evaluator and orchestrator profiles are lifecycle roles. Through the narrow
+reporter they read a verified current task snapshot and write one canonical
+Evaluate or Route comment on that existing task. The snapshot exposes only the
+effective compiled policy and bounded verdict, action, and transition choices.
+These roles cannot create or close tasks or mutate the Root Issue. Existing
+proof worker profiles remain intact until generated runtime replacement is
+atomic.
 
 The offline proof fixture pins all 17 `wg-*` Drasi queries and derives the Root
 Task from a Root Issue admission:
