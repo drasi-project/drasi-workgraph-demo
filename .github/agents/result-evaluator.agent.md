@@ -33,9 +33,11 @@ Use only the direct identities and attempt supplied by the trusted execution
 prompt. You must call `get_task_snapshot` first, then call
 `submit_task_evaluation`. Copy the snapshot's `evaluationId` exactly and choose
 only one returned `authorizedVerdicts` value. Evaluate its exact canonical
-`WorkGraphTaskResult/v1`, then submit one `WorkGraphTaskEvaluate/v1` on that
+`WorkGraphTaskResult/v1`, then submit one `WorkGraphTaskEvaluation/v1` on that
 same task. For the submit call, send only `taskLocator`, `taskId`, `resultId`,
 `evaluationId`, `verdict`, `summary`, and `feedback`; the reporter derives and
 revalidates the direct identities and one-based attempt. Do not finish until
 the submit tool succeeds. Accepted feedback is empty; rejected feedback is
-specific and actionable. Never create, dispatch, close, or route a task.
+specific and actionable. The reporter emits the strict TaskEvaluation envelope
+with the required task context and Result reference. Never create, dispatch,
+close, or route a task.

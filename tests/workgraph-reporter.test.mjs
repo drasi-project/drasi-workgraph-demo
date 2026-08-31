@@ -15,19 +15,22 @@ import {
   parseTaskRoute,
 } from "../.github/mcp/workgraph-v1-definition.mjs";
 import {
-  canonicalResultJson,
+  canonicalTaskResultEnvelopeJson,
   callTool,
   deriveWorkGraphRootIssueContentDigest,
   deriveWorkGraphRootTaskId,
+  deriveWorkGraphTaskErrorId,
   deriveWorkGraphTaskEvaluationId,
   deriveWorkGraphTaskResultId,
   deriveWorkGraphTaskRouteId,
   deriveWorkGraphWorkflowRunId,
   formatTaskDispatch,
+  formatTaskError,
   formatTaskResult,
   parseTaskDispatch,
+  parseTaskError,
   parseTaskResult,
-  resultValueDigest,
+  taskResultDigest,
   tools,
   validateLeaseValidationUrl,
 } from "../.github/mcp/workgraph-reporter.mjs";
@@ -125,6 +128,8 @@ function fixture() {
     workflowDefinitionVersion: task.workflowDefinitionVersion,
     workflowDefinitionDigest: task.workflowDefinitionDigest,
     taskDefinitionId: task.taskDefinitionId,
+    taskKey: task.taskKey,
+    operation: task.operation,
   });
   const dispatch = (task, executorId) => ({
     dispatchId: `dispatch-${task.taskId}`,
@@ -277,6 +282,16 @@ async function withFakeRuntime(options, callback) {
         rootIssueId: data.childTask.rootIssueId,
         workflowRunId: data.childTask.workflowRunId,
         taskId: data.childTask.taskId,
+        task: {
+          taskId: data.childTask.taskId,
+          workflowRunId: data.childTask.workflowRunId,
+          workflowDefinitionId: data.childTask.workflowDefinitionId,
+          workflowDefinitionVersion: data.childTask.workflowDefinitionVersion,
+          workflowDefinitionDigest: data.childTask.workflowDefinitionDigest,
+          taskDefinitionId: data.childTask.taskDefinitionId,
+          taskKey: data.childTask.taskKey,
+          operation: data.childTask.operation,
+        },
         dispatchId: historicalDispatch.dispatchId,
         leaseId: historicalDispatch.lease.leaseId,
         attempt: 1,
@@ -438,6 +453,17 @@ function resultInput(task, dispatch, locator) {
   };
 }
 
+function formatWithClaimedEnvelopeId(format, payload, idKey, canonicalId) {
+  const claimedId = payload[idKey];
+  const body = format({ ...payload, [idKey]: canonicalId });
+  return claimedId === canonicalId
+    ? body
+    : body.replace(
+        `"id": ${JSON.stringify(canonicalId)}`,
+        `"id": ${JSON.stringify(claimedId)}`,
+      );
+}
+
 function lifecycleFixture({
   stepId = "c",
   childKey = null,
@@ -447,6 +473,7 @@ function lifecycleFixture({
   route = null,
   conflictingEvaluation = false,
   staleEvaluation = false,
+  persistedEvaluationId = null,
   resultAttempt = attempt,
 } = {}) {
   const rootIssueId = ROOT_ISSUE_ID;
@@ -525,7 +552,7 @@ function lifecycleFixture({
     rootIssueId,
     workflowRunId,
     taskId: task.taskId,
-    task: identity(task.taskId, taskDefinition),
+    task: runtimeIdentity(task.taskId, effectiveDefinition),
     lease: {
       leaseId: `lease-${stepId}-${index}`,
       assignmentId: `assignment-${stepId}`,
@@ -543,6 +570,7 @@ function lifecycleFixture({
     rootIssueId,
     workflowRunId,
     taskId: task.taskId,
+    task: runtimeIdentity(task.taskId, effectiveDefinition),
     dispatchId: dispatch.dispatchId,
     leaseId: dispatch.lease.leaseId,
     attempt: resultAttempt,
@@ -550,18 +578,25 @@ function lifecycleFixture({
     output: { summary: "done" },
   };
   const resultBody = formatTaskResult(result);
+  const resultDigest = staleEvaluation
+    ? `sha256:${"f".repeat(64)}`
+    : taskResultDigest(result);
+  const evaluationResultId = staleEvaluation ? "result-stale" : result.resultId;
+  const canonicalEvaluationId = deriveWorkGraphTaskEvaluationId(
+    task.taskId,
+    evaluationResultId,
+    resultDigest,
+  );
   const evaluation = verdict
     ? {
-        evaluationId: staleEvaluation
-          ? "evaluation-stale"
-          : "evaluation-current",
+        evaluationId:
+          persistedEvaluationId ?? canonicalEvaluationId,
         rootIssueId,
         workflowRunId,
         taskId: task.taskId,
-        resultId: staleEvaluation ? "result-stale" : result.resultId,
-        resultDigest: staleEvaluation
-          ? `sha256:${"f".repeat(64)}`
-          : resultValueDigest(result),
+        task: runtimeIdentity(task.taskId, effectiveDefinition),
+        resultId: evaluationResultId,
+        resultDigest,
         evaluatorId: policy.evaluatorId,
         attempt,
         verdict,
@@ -591,7 +626,12 @@ function lifecycleFixture({
     comments.push({
       id: 240,
       node_id: "IC_evaluation",
-      body: formatTaskEvaluation(evaluation),
+      body: formatWithClaimedEnvelopeId(
+        formatTaskEvaluation,
+        evaluation,
+        "evaluationId",
+        canonicalEvaluationId,
+      ),
       user: { id: EVALUATION_ID, login: "evaluation-reporter" },
       created_at: "2026-08-29T20:40:00Z",
       updated_at: "2026-08-29T20:40:00Z",
@@ -602,7 +642,7 @@ function lifecycleFixture({
         node_id: "IC_evaluation_conflict",
         body: formatTaskEvaluation({
           ...evaluation,
-          evaluationId: "evaluation-conflict",
+          evaluationId: canonicalEvaluationId,
         }),
         user: { id: EVALUATION_ID, login: "evaluation-reporter" },
         created_at: "2026-08-29T20:41:00Z",
@@ -611,10 +651,22 @@ function lifecycleFixture({
     }
   }
   if (route) {
+    const routeWithTask = {
+      ...route,
+      task: runtimeIdentity(task.taskId, effectiveDefinition),
+    };
     comments.push({
       id: 250,
       node_id: "IC_route",
-      body: formatTaskRoute(route),
+      body: formatWithClaimedEnvelopeId(
+        formatTaskRoute,
+        routeWithTask,
+        "routeId",
+        deriveWorkGraphTaskRouteId(
+          routeWithTask.taskId,
+          routeWithTask.evaluationId,
+        ),
+      ),
       user: { id: ROUTE_ID, login: "route-reporter" },
       created_at: "2026-08-29T20:50:00Z",
       updated_at: "2026-08-29T20:50:00Z",
@@ -877,7 +929,17 @@ async function withFakeLifecycle(options, callback) {
   }
 }
 
-test("v1 Result identity, body, and value digest match Rust vectors", () => {
+test("v1 Result identity, body, and envelope digest match Rust vectors", () => {
+  const task = {
+    taskId: "task-1",
+    workflowRunId: "run-1",
+    workflowDefinitionId: "workflow",
+    workflowDefinitionVersion: "v1",
+    workflowDefinitionDigest: `sha256:${"a".repeat(64)}`,
+    taskDefinitionId: "task-definition",
+    taskKey: "task",
+    operation: "execute",
+  };
   const resultId = deriveWorkGraphTaskResultId(
     "task-1",
     "dispatch-1",
@@ -892,6 +954,7 @@ test("v1 Result identity, body, and value digest match Rust vectors", () => {
     rootIssueId: "root-1",
     workflowRunId: "run-1",
     taskId: "task-1",
+    task,
     dispatchId: "dispatch-1",
     leaseId: "lease-1",
     attempt: 1,
@@ -905,17 +968,31 @@ test("v1 Result identity, body, and value digest match Rust vectors", () => {
 
 \`\`\`json
 {
-  "resultId": "${resultId}",
+  "apiVersion": "workgraph.drasi.io/v1",
+  "kind": "TaskResult",
+  "id": "${resultId}",
   "rootIssueId": "root-1",
   "workflowRunId": "run-1",
   "taskId": "task-1",
-  "dispatchId": "dispatch-1",
-  "leaseId": "lease-1",
-  "attempt": 1,
-  "outcome": "succeeded",
-  "output": {
-    "a": true,
-    "z": 1
+  "context": {
+    "workflowDefinitionId": "workflow",
+    "workflowDefinitionVersion": "v1",
+    "workflowDefinitionDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "taskDefinitionId": "task-definition",
+    "taskKey": "task",
+    "operation": "execute"
+  },
+  "references": {
+    "dispatchId": "dispatch-1",
+    "leaseId": "lease-1"
+  },
+  "data": {
+    "attempt": 1,
+    "outcome": "succeeded",
+    "output": {
+      "a": true,
+      "z": 1
+    }
   }
 }
 \`\`\`
@@ -926,6 +1003,7 @@ test("v1 Result identity, body, and value digest match Rust vectors", () => {
     rootIssueId: "root-1",
     workflowRunId: "run-1",
     taskId: "task-1",
+    task,
     dispatchId: "dispatch-1",
     leaseId: "lease-1",
     attempt: 1,
@@ -934,23 +1012,70 @@ test("v1 Result identity, body, and value digest match Rust vectors", () => {
   });
 
   assert.equal(
-    resultValueDigest(parseTaskResult(body)),
-    "sha256:83721a06232a82c4f08928eba8af4cc3729beabdd723004a9efd1741b88162e0",
+    taskResultDigest(parseTaskResult(body)),
+    "sha256:67388728475cec1a8db0d2d1429d4b451e7ddb37572b348847779cf4ad11eafe",
+  );
+  assert.notEqual(
+    taskResultDigest(parseTaskResult(body)),
+    "sha256:7fbfa3cf23de081c97a4742fd36c7cefadc0d5527c0205de962e346832c6d5e8",
+    "the envelope digest must differ from the obsolete flattened payload digest",
   );
   const integerKeys = {
     ...parseTaskResult(body),
     output: { 2: "two", 10: "ten" },
   };
   assert.equal(
-    canonicalResultJson(integerKeys),
-    `{"attempt":1,"dispatchId":"dispatch-1","leaseId":"lease-1","outcome":"succeeded","output":{"10":"ten","2":"two"},"resultId":"${resultId}","rootIssueId":"root-1","taskId":"task-1","workflowRunId":"run-1"}`,
+    canonicalTaskResultEnvelopeJson(integerKeys),
+    `{"apiVersion":"workgraph.drasi.io/v1","context":{"operation":"execute","taskDefinitionId":"task-definition","taskKey":"task","workflowDefinitionDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","workflowDefinitionId":"workflow","workflowDefinitionVersion":"v1"},"data":{"attempt":1,"outcome":"succeeded","output":{"10":"ten","2":"two"}},"id":"${resultId}","kind":"TaskResult","references":{"dispatchId":"dispatch-1","leaseId":"lease-1"},"rootIssueId":"root-1","taskId":"task-1","workflowRunId":"run-1"}`,
   );
   assert.equal(
-    resultValueDigest(integerKeys),
-    "sha256:1ab7320ad495334a20a26189c5229a45725f1ca895f8cc2e2b3dad904d20df63",
+    taskResultDigest(integerKeys),
+    "sha256:5ad5fe3db671f0ad34280f70892614d42cb6cd5043963b78aa46768040d9d2d3",
   );
-  assert.equal(parseTaskResult(body.replace('  "taskId"', ' "taskId"')), null);
-  assert.equal(parseTaskResult(body.replace("/v1", "/v2")), null);
+  const digestShape = JSON.parse(canonicalTaskResultEnvelopeJson(integerKeys));
+  assert.equal(digestShape.kind, "TaskResult");
+  assert.equal(digestShape.id, resultId);
+  assert.equal(digestShape.resultId, undefined);
+  assert.deepEqual(digestShape.references, {
+    dispatchId: "dispatch-1",
+    leaseId: "lease-1",
+  });
+  assert.throws(() => parseTaskResult(body.replace('  "taskId"', ' "taskId"')));
+  assert.throws(() => parseTaskResult(body.replace("/v1", "/v2")));
+});
+
+test("TaskResult envelope digest matches the Rust cross-implementation vector", () => {
+  const task = {
+    taskId: "task-1",
+    workflowRunId: "run-1",
+    workflowDefinitionId: "workflow-1",
+    workflowDefinitionVersion: "v1",
+    workflowDefinitionDigest: `sha256:${"1".repeat(64)}`,
+    taskDefinitionId: "definition-1",
+    taskKey: "task",
+    operation: "execute",
+  };
+  const result = {
+    resultId: deriveWorkGraphTaskResultId("task-1", "dispatch-1", "lease-1"),
+    rootIssueId: "root-1",
+    workflowRunId: "run-1",
+    taskId: "task-1",
+    task,
+    dispatchId: "dispatch-1",
+    leaseId: "lease-1",
+    attempt: 1,
+    outcome: "succeeded",
+    output: { 2: "two", 10: "ten" },
+  };
+
+  assert.equal(
+    taskResultDigest(result),
+    "sha256:6730606749a2391b7dea804eb16c8f995f090924ea8768d57d0034eb3c093875",
+  );
+  assert.equal(
+    taskResultDigest(parseTaskResult(formatTaskResult(result))),
+    taskResultDigest(result),
+  );
 });
 
 test("Dispatch uses the exact seven-field schema and direct task identities", async () => {
@@ -982,12 +1107,55 @@ test("Dispatch uses the exact seven-field schema and direct task identities", as
   );
 });
 
+test("reporter exports strict TaskError diagnostic support", () => {
+  const data = fixture();
+  const references = {
+    assignmentId: null,
+    dispatchId: data.childDispatch.dispatchId,
+    leaseId: data.childDispatch.lease.leaseId,
+    resultId: null,
+    evaluationId: null,
+    routeId: null,
+  };
+  const error = {
+    errorId: deriveWorkGraphTaskErrorId(
+      data.childTask.taskId,
+      "dispatch",
+      "dispatch-failed",
+      references.dispatchId,
+    ),
+    rootIssueId: data.childTask.rootIssueId,
+    workflowRunId: data.childTask.workflowRunId,
+    taskId: data.childTask.taskId,
+    task: data.childDispatch.task,
+    references,
+    stage: "dispatch",
+    code: "dispatch-failed",
+    category: "system",
+    summary: "Dispatch failed.",
+    retryable: false,
+    attempt: null,
+    details: {},
+  };
+  assert.deepEqual(parseTaskError(formatTaskError(error)), error);
+});
+
 test("Result output enforces the kernel JSON data domain", () => {
   const base = {
     resultId: deriveWorkGraphTaskResultId("task-1", "dispatch-1", "lease-1"),
     rootIssueId: "root-1",
     workflowRunId: "run-1",
     taskId: "task-1",
+    task: {
+      taskId: "task-1",
+      workflowRunId: "run-1",
+      workflowDefinitionId: "workflow",
+      workflowDefinitionVersion: "v1",
+      workflowDefinitionDigest: `sha256:${"a".repeat(64)}`,
+      taskDefinitionId: "task-definition",
+      taskKey: "task",
+      operation: "execute",
+    },
     dispatchId: "dispatch-1",
     leaseId: "lease-1",
     attempt: 1,
@@ -1229,7 +1397,7 @@ test("concurrent Result submissions create at most one comment", async () => {
   });
 });
 
-test("Core attempt 2 is authoritative when the first Dispatch follows an undispatched expiry", async () => {
+test("Core attempts are authoritative and bounded by the kernel contract", async () => {
   await withFakeRuntime({ leaseAttempt: 2 }, async ({ data, state }) => {
     const created = await callTool(
       "submit_task_result",
@@ -1241,11 +1409,14 @@ test("Core attempt 2 is authoritative when the first Dispatch follows an undispa
     assert.equal(state.leaseRequests.length, 1);
   });
   await withFakeRuntime({ leaseAttempt: 64 }, async ({ data, state }) => {
-    await callTool(
-      "submit_task_result",
-      resultInput(data.childTask, data.childDispatch, childLocator()),
+    await assert.rejects(
+      callTool(
+        "submit_task_result",
+        resultInput(data.childTask, data.childDispatch, childLocator()),
+      ),
+      /1 through 17/,
     );
-    assert.equal(parseTaskResult(state.writes[0].body).attempt, 64);
+    assert.equal(state.writes.length, 0);
   });
 });
 
@@ -1407,7 +1578,11 @@ test("Result output rejects graph-lossy JSON numbers", async () => {
 function evaluationInput(data, verdict) {
   return {
     ...data.input,
-    evaluationId: "evaluation-current",
+    evaluationId: deriveWorkGraphTaskEvaluationId(
+      data.input.taskId,
+      data.input.resultId,
+      taskResultDigest(data.result),
+    ),
     verdict,
     summary: verdict === "accepted" ? "Accepted." : "Rejected.",
     feedback: verdict === "accepted" ? "" : "Add concrete supporting evidence.",
@@ -1420,7 +1595,7 @@ test("Evaluation snapshot and writer cover accepted and rejected verdicts", asyn
       const snapshot = await callTool("get_task_snapshot", data.input);
       assert.equal(snapshot.evaluatorId, data.policy.evaluatorId);
       assert.deepEqual(snapshot.authorizedVerdicts, ["accepted", "rejected"]);
-      assert.equal(snapshot.resultDigest, resultValueDigest(data.result));
+      assert.equal(snapshot.resultDigest, taskResultDigest(data.result));
       assert.equal(
         snapshot.evaluationId,
         deriveWorkGraphTaskEvaluationId(
@@ -1451,7 +1626,7 @@ test("Evaluation snapshot and writer cover accepted and rejected verdicts", asyn
       assert.equal(payload.workflowRunId, data.input.workflowRunId);
       assert.equal(payload.taskId, data.input.taskId);
       assert.equal(payload.resultId, data.input.resultId);
-      assert.equal(payload.resultDigest, resultValueDigest(data.result));
+      assert.equal(payload.resultDigest, taskResultDigest(data.result));
       assert.equal(payload.attempt, 1);
       const retried = await callTool(
         "submit_task_evaluation",
@@ -1488,7 +1663,7 @@ test("Evaluation and Route bind the authoritative Result attempt", async () => {
       await callTool("submit_task_route", {
         ...data.input,
         evaluationId: data.evaluation.evaluationId,
-        routeId: "route-authoritative-attempt",
+        routeId: snapshot.routeId,
         action: "advance",
         ...snapshot.authorizedTransitions[0],
       });
@@ -1526,7 +1701,7 @@ test("deterministic lifecycle claims make concurrent identical writes idempotent
       const input = {
         ...data.input,
         evaluationId: data.evaluation.evaluationId,
-        routeId: "route-concurrent",
+        routeId: snapshot.routeId,
         action: "advance",
         ...snapshot.authorizedTransitions[0],
       };
@@ -1719,6 +1894,35 @@ test("Evaluation fails closed on conflicting duplicates and direct identity drif
   );
 });
 
+test("Evaluation rejects arbitrary and legacy IDs in comments and submissions", async () => {
+  const invalidIds = [
+    "evaluation-arbitrary",
+    `workgraph-v1:evaluation-artifact:sha256:${"1".repeat(64)}`,
+  ];
+  for (const evaluationId of invalidIds) {
+    await withFakeLifecycle(
+      { verdict: "accepted", persistedEvaluationId: evaluationId },
+      async ({ data, writes }) => {
+        await assert.rejects(
+          callTool("get_task_snapshot", data.input),
+          /evaluationId is not canonical/,
+        );
+        assert.equal(writes.length, 0);
+      },
+    );
+    await withFakeLifecycle({}, async ({ data, writes }) => {
+      await assert.rejects(
+        callTool("submit_task_evaluation", {
+          ...evaluationInput(data, "accepted"),
+          evaluationId,
+        }),
+        /canonical current Result identity/,
+      );
+      assert.equal(writes.length, 0);
+    });
+  }
+});
+
 test("Route advances through linear next edges to task and terminal", async () => {
   await withFakeLifecycle(
     { stepId: "b", role: "orchestrator", verdict: "accepted" },
@@ -1775,7 +1979,7 @@ test("Route advances through linear next edges to task and terminal", async () =
         await callTool("submit_task_route", {
           ...data.input,
           evaluationId: data.evaluation.evaluationId,
-          routeId: `route-${stepId}`,
+          routeId: snapshot.routeId,
           action: "advance",
           ...choice,
         });
@@ -1791,13 +1995,74 @@ test("Route advances through linear next edges to task and terminal", async () =
   }
 });
 
+test("Route rejects arbitrary and legacy IDs in comments and submissions", async () => {
+  const seed = lifecycleFixture({ stepId: "c", verdict: "accepted" });
+  const invalidIds = [
+    "route-arbitrary",
+    `workgraph-v1:route-artifact:sha256:${"2".repeat(64)}`,
+  ];
+  for (const routeId of invalidIds) {
+    await withFakeLifecycle(
+      {
+        stepId: "c",
+        role: "orchestrator",
+        verdict: "accepted",
+        route: {
+          routeId,
+          rootIssueId: seed.input.rootIssueId,
+          workflowRunId: seed.input.workflowRunId,
+          taskId: seed.input.taskId,
+          resultId: seed.input.resultId,
+          evaluationId: seed.evaluation.evaluationId,
+          evaluationVerdict: "accepted",
+          orchestratorId: seed.policy.orchestratorId,
+          action: "advance",
+          transitionKind: "next",
+          targetStepId: "d",
+          targetStepKind: "task",
+          targetTaskDefinitionId:
+            COMPILED.steps.d.taskDefinition.taskDefinitionId,
+          attempt: 1,
+        },
+      },
+      async ({ data, writes }) => {
+        await assert.rejects(
+          callTool("get_task_snapshot", data.input),
+          /routeId is not canonical/,
+        );
+        assert.equal(writes.length, 0);
+      },
+    );
+    await withFakeLifecycle(
+      { stepId: "c", role: "orchestrator", verdict: "accepted" },
+      async ({ data, writes }) => {
+        const snapshot = await callTool("get_task_snapshot", data.input);
+        await assert.rejects(
+          callTool("submit_task_route", {
+            ...data.input,
+            evaluationId: data.evaluation.evaluationId,
+            routeId,
+            action: "advance",
+            ...snapshot.authorizedTransitions[0],
+          }),
+          /canonical current Evaluation identity/,
+        );
+        assert.equal(writes.length, 0);
+      },
+    );
+  }
+});
+
 test("existing Routes are revalidated against the compiled linear policy", async () => {
   const seed = lifecycleFixture({
     stepId: "c",
     verdict: "accepted",
   });
   const invalidRoute = {
-    routeId: "route-existing-invalid",
+    routeId: deriveWorkGraphTaskRouteId(
+      seed.input.taskId,
+      seed.evaluation.evaluationId,
+    ),
     rootIssueId: seed.input.rootIssueId,
     workflowRunId: seed.input.workflowRunId,
     taskId: seed.input.taskId,
@@ -1834,7 +2099,10 @@ test("existing Routes are revalidated against the compiled linear policy", async
       role: "orchestrator",
       verdict: "accepted",
       route: {
-        routeId: "route-existing-complete",
+        routeId: deriveWorkGraphTaskRouteId(
+          topLevel.input.taskId,
+          topLevel.evaluation.evaluationId,
+        ),
         rootIssueId: topLevel.input.rootIssueId,
         workflowRunId: topLevel.input.workflowRunId,
         taskId: topLevel.input.taskId,
@@ -1865,7 +2133,7 @@ test("Route rejects wrong compiled mapping and wrong orchestrator", async () => 
         callTool("submit_task_route", {
           ...data.input,
           evaluationId: data.evaluation.evaluationId,
-          routeId: "route-wrong",
+          routeId: snapshot.routeId,
           action: "advance",
           ...snapshot.authorizedTransitions[0],
           targetStepId: "b",
@@ -1907,7 +2175,7 @@ test("Rejected Route reworks the same task and assignment within the limit", asy
       const routed = await callTool("submit_task_route", {
         ...data.input,
         evaluationId: data.evaluation.evaluationId,
-        routeId: "route-rework",
+        routeId: snapshot.routeId,
         action: "rework",
       });
       assert.deepEqual(routed.rework, {
@@ -1920,7 +2188,7 @@ test("Rejected Route reworks the same task and assignment within the limit", asy
       const retried = await callTool("submit_task_route", {
         ...data.input,
         evaluationId: data.evaluation.evaluationId,
-        routeId: "route-rework",
+        routeId: snapshot.routeId,
         action: "rework",
       });
       assert.equal(retried.reconciled, true);
@@ -1936,7 +2204,7 @@ test("Rejected Route reworks the same task and assignment within the limit", asy
         callTool("submit_task_route", {
           ...data.input,
           evaluationId: data.evaluation.evaluationId,
-          routeId: "route-over-limit",
+          routeId: snapshot.routeId,
           action: "rework",
         }),
         /exceeds the source task policy|not authorized/,
@@ -1950,6 +2218,10 @@ test("Route rejects stale Result, Evaluation, and attempt identities", async () 
   await withFakeLifecycle(
     { role: "orchestrator", verdict: "accepted" },
     async ({ data, writes }) => {
+      const canonicalRouteId = deriveWorkGraphTaskRouteId(
+        data.input.taskId,
+        data.evaluation.evaluationId,
+      );
       for (const changed of [
         { resultId: "result-stale" },
         { evaluationId: "evaluation-stale" },
@@ -1959,7 +2231,7 @@ test("Route rejects stale Result, Evaluation, and attempt identities", async () 
           callTool("submit_task_route", {
             ...data.input,
             evaluationId: data.evaluation.evaluationId,
-            routeId: "route-stale",
+            routeId: canonicalRouteId,
             action: "complete",
             ...changed,
           }),

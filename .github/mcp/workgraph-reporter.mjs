@@ -8,16 +8,47 @@ import { isDeepStrictEqual, TextEncoder } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import {
+  TASK_DISPATCH_MARKER,
+  TASK_ERROR_MARKER,
   TASK_EVALUATION_MARKER,
+  TASK_RESULT_MARKER,
   TASK_ROUTE_MARKER,
+  canonicalTaskResultEnvelopeJson,
+  deriveWorkGraphTaskEvaluationId,
+  deriveWorkGraphTaskResultId,
+  deriveWorkGraphTaskRouteId,
+  deriveWorkGraphTaskErrorId,
+  formatTaskDispatch,
+  formatTaskError,
   formatTaskEvaluation,
+  formatTaskResult,
   formatTaskRoute,
   normalizeCompiledWorkflowDefinition,
   parseRuntimeTask,
+  parseTaskDispatch,
+  parseTaskError,
   parseTaskEvaluation,
+  parseTaskResult,
   parseTaskRoute,
+  taskResultDigest,
   validateTaskRouteAgainstDefinition,
 } from "./workgraph-v1-definition.mjs";
+
+export {
+  TASK_ERROR_MARKER,
+  canonicalTaskResultEnvelopeJson,
+  deriveWorkGraphTaskEvaluationId,
+  deriveWorkGraphTaskResultId,
+  deriveWorkGraphTaskRouteId,
+  deriveWorkGraphTaskErrorId,
+  formatTaskDispatch,
+  formatTaskError,
+  formatTaskResult,
+  parseTaskDispatch,
+  parseTaskError,
+  parseTaskResult,
+  taskResultDigest,
+};
 
 const API = "https://api.github.com";
 const OWNER = "drasi-project";
@@ -29,11 +60,8 @@ const WORKFLOW_DEFINITION_VERSION = "v1";
 const WORKFLOW_DEFINITION_DIGEST = `sha256:${"a".repeat(64)}`;
 const ROOT_TASK_DEFINITION_ID = "root-v1";
 const VALIDATOR_TASK_DEFINITION_ID = "validate-v1";
-const TASK_DISPATCH_MARKER = "WorkGraphTaskDispatch/v1";
-const TASK_RESULT_MARKER = "WorkGraphTaskResult/v1";
 const LEASE_VALIDATION_PATH = "/github/workgraph-v1/lease/validate";
 const MAX_ID_BYTES = 256;
-const MAX_BODY_BYTES = 64 * 1024;
 const MAX_LEASE_ATTEMPT = 64;
 const MAX_LIFECYCLE_ATTEMPT = 17;
 const RUNTIME_ROUTE_POLICY = Object.freeze({
@@ -47,17 +75,8 @@ const TASK_IDENTITY_KEYS = [
   "workflowDefinitionVersion",
   "workflowDefinitionDigest",
   "taskDefinitionId",
-];
-const TASK_RESULT_KEYS = [
-  "resultId",
-  "rootIssueId",
-  "workflowRunId",
-  "taskId",
-  "dispatchId",
-  "leaseId",
-  "attempt",
-  "outcome",
-  "output",
+  "taskKey",
+  "operation",
 ];
 const COMPILED_FIXTURE = JSON.parse(
   readFileSync(
@@ -185,241 +204,6 @@ function canonicalJsonValue(value, label = "output", depth = 0) {
   );
 }
 
-function serdeJsonNumber(value) {
-  if (Object.is(value, -0)) return "-0.0";
-  if (Number.isSafeInteger(value)) return String(value);
-
-  const source = String(value).toLowerCase();
-  let digits;
-  let exponent;
-  if (source.includes("e")) {
-    const [coefficient, rawExponent] = source.split("e");
-    digits = coefficient.replace(/^-/, "").replace(".", "");
-    exponent = Number(rawExponent);
-  } else {
-    const unsigned = source.replace(/^-/, "");
-    const point = unsigned.indexOf(".");
-    const integer = point === -1 ? unsigned : unsigned.slice(0, point);
-    const fraction = point === -1 ? "" : unsigned.slice(point + 1);
-    if (integer !== "0") {
-      digits = `${integer}${fraction}`;
-      exponent = integer.length - 1;
-    } else {
-      const first = fraction.search(/[1-9]/);
-      digits = fraction.slice(first);
-      exponent = -first - 1;
-    }
-  }
-  digits = digits.replace(/0+$/, "");
-  const sign = value < 0 ? "-" : "";
-  if (exponent <= -6 || exponent >= 16) {
-    const fraction = digits.length > 1 ? `.${digits.slice(1)}` : "";
-    return `${sign}${digits[0]}${fraction}e${exponent >= 0 ? "+" : "-"}${Math.abs(exponent)}`;
-  }
-  if (exponent < 0) {
-    return `${sign}0.${"0".repeat(-exponent - 1)}${digits}`;
-  }
-  if (digits.length <= exponent + 1) {
-    return `${sign}${digits}${"0".repeat(exponent + 1 - digits.length)}.0`;
-  }
-  return `${sign}${digits.slice(0, exponent + 1)}.${digits.slice(exponent + 1)}`;
-}
-
-function prettyJson(value, depth = 0, sortData = false) {
-  if (value === null || typeof value === "boolean") return String(value);
-  if (typeof value === "number") return serdeJsonNumber(value);
-  if (typeof value === "string") return JSON.stringify(value);
-  const indent = "  ".repeat(depth);
-  const childIndent = "  ".repeat(depth + 1);
-  if (Array.isArray(value)) {
-    if (value.length === 0) return "[]";
-    return `[\n${value
-      .map((entry) => `${childIndent}${prettyJson(entry, depth + 1, sortData)}`)
-      .join(",\n")}\n${indent}]`;
-  }
-  const keys = Object.keys(value);
-  if (sortData) keys.sort(utf8Compare);
-  if (keys.length === 0) return "{}";
-  return `{\n${keys
-    .map((key) => {
-      const childSort = sortData || key === "output";
-      return `${childIndent}${JSON.stringify(key)}: ${prettyJson(
-        value[key],
-        depth + 1,
-        childSort,
-      )}`;
-    })
-    .join(",\n")}\n${indent}}`;
-}
-
-function canonicalBody(marker, value) {
-  const body = `${marker}\n\n\`\`\`json\n${prettyJson(value)}\n\`\`\`\n`;
-  if (Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
-    throw new WorkGraphReporterError(`${marker} body exceeds ${MAX_BODY_BYTES} bytes`);
-  }
-  return body;
-}
-
-function parseCanonicalBody(body, marker, normalize) {
-  if (
-    typeof body !== "string" ||
-    body.includes("\r") ||
-    Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES
-  ) {
-    return null;
-  }
-  const prefix = `${marker}\n\n\`\`\`json\n`;
-  const suffix = "\n```\n";
-  if (!body.startsWith(prefix) || !body.endsWith(suffix)) return null;
-  try {
-    const value = normalize(JSON.parse(body.slice(prefix.length, -suffix.length)));
-    return canonicalBody(marker, value) === body ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-function normalizeTaskIdentity(value, label = "task identity") {
-  exact(value, TASK_IDENTITY_KEYS, label);
-  const normalized = Object.fromEntries(
-    TASK_IDENTITY_KEYS.map((key) => [key, opaque(value[key], `${label}.${key}`)]),
-  );
-  digest(
-    normalized.workflowDefinitionDigest,
-    `${label}.workflowDefinitionDigest`,
-  );
-  return normalized;
-}
-
-function normalizeTaskDispatch(value) {
-  exact(
-    value,
-    [
-      "dispatchId",
-      "launchId",
-      "rootIssueId",
-      "workflowRunId",
-      "taskId",
-      "task",
-      "lease",
-    ],
-    "Dispatch",
-  );
-  exact(
-    value.lease,
-    ["leaseId", "assignmentId", "executorId", "slotId"],
-    "Dispatch.lease",
-  );
-  const task = normalizeTaskIdentity(value.task, "Dispatch.task");
-  const workflowRunId = opaque(
-    value.workflowRunId,
-    "Dispatch.workflowRunId",
-  );
-  const taskId = opaque(value.taskId, "Dispatch.taskId");
-  if (workflowRunId !== task.workflowRunId || taskId !== task.taskId) {
-    throw new WorkGraphReporterError(
-      "Dispatch top-level identities must match Dispatch.task",
-    );
-  }
-  return {
-    dispatchId: opaque(value.dispatchId, "Dispatch.dispatchId"),
-    launchId: opaque(value.launchId, "Dispatch.launchId"),
-    rootIssueId: opaque(value.rootIssueId, "Dispatch.rootIssueId"),
-    workflowRunId,
-    taskId,
-    task,
-    lease: {
-      leaseId: opaque(value.lease.leaseId, "Dispatch.lease.leaseId"),
-      assignmentId: opaque(
-        value.lease.assignmentId,
-        "Dispatch.lease.assignmentId",
-      ),
-      executorId: opaque(value.lease.executorId, "Dispatch.lease.executorId"),
-      slotId: opaque(value.lease.slotId, "Dispatch.lease.slotId"),
-    },
-  };
-}
-
-export function formatTaskDispatch(value) {
-  return canonicalBody(TASK_DISPATCH_MARKER, normalizeTaskDispatch(value));
-}
-
-export function parseTaskDispatch(body) {
-  return parseCanonicalBody(body, TASK_DISPATCH_MARKER, normalizeTaskDispatch);
-}
-
-export function deriveWorkGraphTaskResultId(taskId, dispatchId, leaseId) {
-  for (const [label, value] of [
-    ["taskId", taskId],
-    ["dispatchId", dispatchId],
-    ["leaseId", leaseId],
-  ]) {
-    opaque(value, label);
-  }
-  return `workgraph-v1:result:sha256:${framedSha256([
-    taskId,
-    dispatchId,
-    leaseId,
-  ])}`;
-}
-
-function normalizeTaskResult(value) {
-  exact(
-    value,
-    TASK_RESULT_KEYS,
-    "Result",
-  );
-  for (const key of [
-    "resultId",
-    "rootIssueId",
-    "workflowRunId",
-    "taskId",
-    "dispatchId",
-    "leaseId",
-  ]) {
-    opaque(value[key], `Result.${key}`);
-  }
-  if (
-    !Number.isSafeInteger(value.attempt) ||
-    value.attempt < 1 ||
-    value.attempt > MAX_LEASE_ATTEMPT
-  ) {
-    throw new WorkGraphReporterError(
-      `Result.attempt must be an integer from 1 through ${MAX_LEASE_ATTEMPT}`,
-    );
-  }
-  if (!["succeeded", "failed", "cancelled"].includes(value.outcome)) {
-    throw new WorkGraphReporterError(
-      "Result.outcome must be succeeded, failed, or cancelled",
-    );
-  }
-  if (
-    value.resultId !==
-    deriveWorkGraphTaskResultId(value.taskId, value.dispatchId, value.leaseId)
-  ) {
-    throw new WorkGraphReporterError("Result.resultId is not canonical");
-  }
-  return {
-    resultId: value.resultId,
-    rootIssueId: value.rootIssueId,
-    workflowRunId: value.workflowRunId,
-    taskId: value.taskId,
-    dispatchId: value.dispatchId,
-    leaseId: value.leaseId,
-    attempt: value.attempt,
-    outcome: value.outcome,
-    output: canonicalJsonValue(value.output),
-  };
-}
-
-export function formatTaskResult(value) {
-  return canonicalBody(TASK_RESULT_MARKER, normalizeTaskResult(value));
-}
-
-export function parseTaskResult(body) {
-  return parseCanonicalBody(body, TASK_RESULT_MARKER, normalizeTaskResult);
-}
-
 function framedSha256(parts) {
   const hash = createHash("sha256");
   for (const value of parts) {
@@ -489,38 +273,6 @@ export function deriveWorkGraphRootTaskId(workflowRunId, rootTaskDefinitionId) {
   opaque(workflowRunId, "workflowRunId");
   opaque(rootTaskDefinitionId, "rootTaskDefinitionId");
   return `wgt-${framedSha256([workflowRunId, rootTaskDefinitionId]).slice(0, 60)}`;
-}
-
-export function canonicalResultJson(value) {
-  const normalized = normalizeTaskResult(value);
-  return compactCanonicalJson(normalized);
-}
-
-export function resultValueDigest(value) {
-  return `sha256:${createHash("sha256")
-    .update(canonicalResultJson(value), "utf8")
-    .digest("hex")}`;
-}
-
-function compactCanonicalJson(value) {
-  if (
-    value === null ||
-    typeof value === "boolean" ||
-    typeof value === "number" ||
-    typeof value === "string"
-  ) {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return `[${value.map(compactCanonicalJson).join(",")}]`;
-  }
-  return `{${Object.keys(value)
-    .sort(utf8Compare)
-    .map(
-      (key) =>
-        `${JSON.stringify(key)}:${compactCanonicalJson(value[key])}`,
-    )
-    .join(",")}}`;
 }
 
 function validateTaskLocator(value) {
@@ -1322,6 +1074,7 @@ function resultContext(context, input, config, expectedBody) {
         payload.rootIssueId !== context.task.rootIssueId ||
         payload.workflowRunId !== context.task.workflowRunId ||
         payload.taskId !== context.task.taskId ||
+        !sameTaskIdentity(payload.task, context.task) ||
         payload.resultId !==
           deriveWorkGraphTaskResultId(
             payload.taskId,
@@ -1501,6 +1254,10 @@ function sameTaskIdentity(left, right) {
   return TASK_IDENTITY_KEYS.every((key) => left[key] === right[key]);
 }
 
+function lifecycleTaskIdentity(task) {
+  return Object.fromEntries(TASK_IDENTITY_KEYS.map((key) => [key, task[key]]));
+}
+
 function dispatchMatchesTask(dispatch, task) {
   return (
     dispatch.rootIssueId === task.rootIssueId &&
@@ -1545,7 +1302,6 @@ function compiledSource(taskDefinitionId) {
 }
 
 function validateTaskMetadata(task, definition, label) {
-  if (task.taskKey === undefined) return;
   if (
     task.taskKey !== definition.taskKey ||
     task.operation !== definition.operation
@@ -1876,6 +1632,7 @@ function lifecycleArtifacts(context, input, config, requireCurrent = true) {
         payload.rootIssueId !== context.task.rootIssueId ||
         payload.workflowRunId !== context.task.workflowRunId ||
         payload.taskId !== context.task.taskId ||
+        !sameTaskIdentity(payload.task, context.task) ||
         payload.resultId !==
           deriveWorkGraphTaskResultId(
             payload.taskId,
@@ -1926,7 +1683,7 @@ function lifecycleArtifacts(context, input, config, requireCurrent = true) {
       "attempt does not match the authoritative current Result attempt",
     );
   }
-  const resultDigest = resultValueDigest(result.payload);
+  const resultDigest = taskResultDigest(result.payload);
 
   const evaluations = markedComments(
     context.comments,
@@ -1949,10 +1706,17 @@ function lifecycleArtifacts(context, input, config, requireCurrent = true) {
         payload.rootIssueId !== context.task.rootIssueId ||
         payload.workflowRunId !== context.task.workflowRunId ||
         payload.taskId !== context.task.taskId ||
+        !sameTaskIdentity(payload.task, context.task) ||
         payload.evaluatorId !== context.policy.evaluatorId ||
         !referenced ||
         payload.attempt !== referenced?.payload.attempt ||
-        payload.resultDigest !== resultValueDigest(referenced.payload)
+        payload.resultDigest !== taskResultDigest(referenced.payload) ||
+        payload.evaluationId !==
+          deriveWorkGraphTaskEvaluationId(
+            payload.taskId,
+            payload.resultId,
+            payload.resultDigest,
+          )
       );
     }) ||
     new Set(evaluations.map(({ payload }) => payload.evaluationId)).size !==
@@ -1990,7 +1754,10 @@ function lifecycleArtifacts(context, input, config, requireCurrent = true) {
         payload.rootIssueId !== context.task.rootIssueId ||
         payload.workflowRunId !== context.task.workflowRunId ||
         payload.taskId !== context.task.taskId ||
+        !sameTaskIdentity(payload.task, context.task) ||
         payload.resultId !== evaluation.resultId ||
+        payload.routeId !==
+          deriveWorkGraphTaskRouteId(payload.taskId, payload.evaluationId) ||
         payload.evaluationVerdict !== evaluation.verdict ||
         payload.attempt !== evaluation.attempt ||
         payload.orchestratorId !== context.policy.orchestratorId
@@ -2275,30 +2042,6 @@ export function deriveWorkGraphArtifactClaimId(
   ])}`;
 }
 
-export function deriveWorkGraphTaskEvaluationId(
-  taskId,
-  resultId,
-  resultDigest,
-) {
-  opaque(taskId, "evaluation taskId");
-  opaque(resultId, "evaluation resultId");
-  digest(resultDigest, "evaluation resultDigest");
-  return `workgraph-v1:evaluation-artifact:sha256:${framedSha256([
-    taskId,
-    resultId,
-    resultDigest,
-  ])}`;
-}
-
-export function deriveWorkGraphTaskRouteId(taskId, evaluationId) {
-  opaque(taskId, "route taskId");
-  opaque(evaluationId, "route evaluationId");
-  return `workgraph-v1:route-artifact:sha256:${framedSha256([
-    taskId,
-    evaluationId,
-  ])}`;
-}
-
 const lifecycleClaims = new Map();
 
 async function reconcileLifecycleComment({
@@ -2387,6 +2130,16 @@ async function submitTaskEvaluation(input, github, config) {
   const readOpen = () =>
     readLifecycleContext(input, github, config, extra, true);
   const initial = await readAny();
+  const expectedEvaluationId = deriveWorkGraphTaskEvaluationId(
+    input.taskId,
+    input.resultId,
+    initial.artifacts.resultDigest,
+  );
+  if (input.evaluationId !== expectedEvaluationId) {
+    throw new WorkGraphReporterError(
+      "evaluationId does not match the canonical current Result identity",
+    );
+  }
   if (
     initial.artifacts.currentEvaluation &&
     initial.artifacts.currentEvaluation.payload.evaluationId !==
@@ -2401,6 +2154,7 @@ async function submitTaskEvaluation(input, github, config) {
     rootIssueId: input.rootIssueId,
     workflowRunId: input.workflowRunId,
     taskId: input.taskId,
+    task: lifecycleTaskIdentity(initial.context.task),
     resultId: input.resultId,
     resultDigest: initial.artifacts.resultDigest,
     evaluatorId: initial.context.policy.evaluatorId,
@@ -2428,11 +2182,20 @@ async function submitTaskEvaluation(input, github, config) {
 }
 
 function routeFromInput(input, context, evaluation) {
+  const routeId = opaque(input.routeId, "arguments.routeId");
+  if (
+    routeId !== deriveWorkGraphTaskRouteId(input.taskId, input.evaluationId)
+  ) {
+    throw new WorkGraphReporterError(
+      "routeId does not match the canonical current Evaluation identity",
+    );
+  }
   const route = {
-    routeId: opaque(input.routeId, "arguments.routeId"),
+    routeId,
     rootIssueId: input.rootIssueId,
     workflowRunId: input.workflowRunId,
     taskId: input.taskId,
+    task: lifecycleTaskIdentity(context.task),
     resultId: input.resultId,
     evaluationId: input.evaluationId,
     evaluationVerdict: evaluation.verdict,
@@ -2640,7 +2403,7 @@ async function submitTaskResult(input, github, config) {
     return {
       commentNodeId: selected.existing.node_id,
       resultId: selected.existingResult.resultId,
-      resultDigest: resultValueDigest(selected.existingResult),
+      resultDigest: taskResultDigest(selected.existingResult),
       reconciled: true,
     };
   }
@@ -2659,6 +2422,7 @@ async function submitTaskResult(input, github, config) {
     rootIssueId: initialContext.task.rootIssueId,
     workflowRunId: initialContext.task.workflowRunId,
     taskId: input.taskId,
+    task: lifecycleTaskIdentity(initialContext.task),
     dispatchId: input.dispatchId,
     leaseId: input.leaseId,
     attempt,
@@ -2683,7 +2447,7 @@ async function submitTaskResult(input, github, config) {
     return {
       commentNodeId: before.existing.node_id,
       resultId: result.resultId,
-      resultDigest: resultValueDigest(result),
+      resultDigest: taskResultDigest(result),
       reconciled: true,
     };
   }
@@ -2704,7 +2468,7 @@ async function submitTaskResult(input, github, config) {
   return {
     commentNodeId: posted.node_id,
     resultId: result.resultId,
-    resultDigest: resultValueDigest(result),
+    resultDigest: taskResultDigest(result),
     reconciled: false,
   };
 }
@@ -2781,7 +2545,7 @@ export const tools = [
   {
     name: "submit_task_evaluation",
     description:
-      "Create or reconcile one canonical WorkGraphTaskEvaluate/v1 for the exact current Result using the evaluationId returned by get_task_snapshot.",
+      "Create or reconcile one canonical WorkGraphTaskEvaluation/v1 for the exact current Result using the evaluationId returned by get_task_snapshot.",
     inputSchema: schema({
       ...lifecycleSubmissionProperties,
       evaluationId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },

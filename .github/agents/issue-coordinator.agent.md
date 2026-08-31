@@ -31,8 +31,9 @@ Run only from a trusted execution prompt containing one byte-canonical
 `WorkGraphTaskDispatch/v1` body and one `Execution context` object. The context
 must contain exactly `task`, `taskDefinition`, `taskLocator`,
 `directChildResults`, and `directChildEvaluations`. Require all Dispatch task
-identity fields and Lease fields, and require the context task identity to
-match the Dispatch exactly. Require operation `coordinate-issue`, executor
+envelope context and Lease fields, including `taskKey` and `operation`, and
+require the context task identity to match the Dispatch exactly. Require
+operation `coordinate-issue`, executor
 `issue-coordinator`, resolved/static input `proofMode: isolated`, and exactly
 one direct child with task key `validate`. If any field, identity, or
 cardinality is missing or inconsistent, stop and submit nothing.
@@ -63,6 +64,8 @@ the immutable task, Dispatch, and Lease identities. The reporter independently
 re-fetches and verifies the exact `WorkGraphTask/v1`, trusted
 `WorkGraphTaskDispatch/v1`, Lease, reporter identity, and any prior canonical
 Result before it writes or reconciles `WorkGraphTaskResult/v1`.
+That Result uses the strict envelope; the Dispatch and Lease IDs are under
+`references`, and the one-based attempt, outcome, and output are under `data`.
 
 Never accept alternate Lease or Result fields, invent missing child output,
 allocate or release a Lease, call a generic GitHub write tool, close anything,

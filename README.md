@@ -10,16 +10,19 @@ The prototype has one protocol:
 
 - `WorkGraphWorkflowDefinition/v1`
 - `WorkGraphTask/v1`
-- `WorkGraphTaskAssign/v1`
+- `WorkGraphTaskAssignment/v1`
 - `WorkGraphTaskDispatch/v1`
 - `WorkGraphTaskResult/v1`
-- `WorkGraphTaskEvaluate/v1`
+- `WorkGraphTaskEvaluation/v1`
 - `WorkGraphTaskRoute/v1`
+- `WorkGraphTaskError/v1`
 
-Every newly generated task carries top-level `rootIssueId`, `taskKey`, and
-`operation`. The latter two are validated against the pinned definition so the
-Issue body and title expose what the task does without replacing its stable
-`taskDefinitionId`. The hierarchy is:
+Every task and lifecycle body uses the strict `workgraph.drasi.io/v1` envelope:
+`kind` identifies the message, direct identity fields remain top-level,
+definition and human-readable task metadata live in `context`, causal IDs live
+in `references`, and message content lives in `data`. `taskKey` and `operation`
+are required everywhere and are validated against the pinned definition. Old
+flat bodies and old marker spellings are rejected. The hierarchy is:
 
 ```text
 Root Issue
@@ -40,17 +43,19 @@ bundle. The committed
 is that canonical body, and
 [`issue-lifecycle.expected.json`](.github/workgraph/fixtures/v1/issue-lifecycle.expected.json)
 is the exact complete compiler output. The runtime combines the generated
-queries with 20 generic admission, lifecycle, and detail queries.
+queries with 21 generic admission, lifecycle, and detail queries.
 
 Evaluator and orchestrator profiles are lifecycle roles. Through the narrow
 reporter they read a verified current task snapshot and write one canonical
 Evaluate or Route comment on that existing task. The snapshot exposes only the
 effective compiled policy and bounded verdict, action, and transition choices.
-These roles cannot create or close tasks or mutate the Root Issue. The shared `issue-worker` profile handles all four stages. Lifecycle artifacts
+These roles cannot create or close tasks or mutate the Root Issue. The shared `issue-worker` profile handles all four stages. Lifecycle messages
 use one-based attempts and deterministic claim identities so concurrent retries
 in one reporter process reconcile one immutable comment.
 
-The offline proof fixture pins all 26 `wg-*` Drasi queries and derives the Root
+The offline proof fixture pins the loopback server/state-store identities, the
+exact ordered 21 generic plus six generated `wg-*` Drasi queries, and a
+SHA-256 digest of their canonical Canvas inventory entries. It derives the Root
 Task from a Root Issue admission:
 
 ```bash

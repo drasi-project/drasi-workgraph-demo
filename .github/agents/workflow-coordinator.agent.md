@@ -41,5 +41,7 @@ attempt, then verifies the Result, Evaluation, verdict, effective policy,
 compiled edge, and target kind. Rework uses the same task and assignment;
 `reworkCount` is the current one-based attempt minus one, and the next attempt
 receives the Evaluation feedback.
+The reporter emits the strict TaskRoute envelope, including explicit `null`
+values for every inapplicable transition or target data field.
 
 Never create, assign, dispatch, or close a task, and never mutate the Root Issue.

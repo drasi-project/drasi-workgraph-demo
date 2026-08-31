@@ -21,9 +21,10 @@ Lifecycle tools pin
 `.github/workgraph/fixtures/v1/issue-lifecycle.expected.json`. They resolve the
 task's source step and effective evaluator, orchestrator, and rework maximum
 from that compiled definition. They require the latest immutable Dispatch and
-its exact canonical Result, derive the compact normalized Result value digest,
+its exact canonical Result, derive the canonical TaskResult envelope digest,
 and verify direct
-Root Issue, run, task, Result, and Evaluation identities. Accepted Evaluations
+Root Issue, run, task, Result, and Evaluation identities, including required
+`taskKey` and `operation` context. Accepted Evaluations
 have empty feedback; rejected Evaluations require actionable feedback. The
 Evaluation and Route carry the same one-based attempt; `reworkCount` is
 `attempt - 1`.
@@ -37,10 +38,10 @@ next bounded attempt and the Evaluation feedback. No lifecycle tool mutates the
 Root Issue, creates or closes a task, or performs any effect beyond its one
 canonical comment.
 
-Evaluation and Route writes use a deterministic artifact claim identity.
+Evaluation and Route writes use a deterministic lifecycle claim identity.
 Identical concurrent calls in one reporter process share the write and
 reconcile its immutable comment; conflicting claims fail closed. Exact existing
-artifacts reconcile before task openness checks. New comments require open task
+messages reconcile before task openness checks. New comments require open task
 ancestry immediately before the write, while post-write reconciliation
 tolerates a task closure race.
 The ordinary Root Issue must always remain open and retain its admission label
@@ -69,11 +70,11 @@ the Root Issue's direct children to verify run and admission integrity. It
 re-reads every referenced object from GitHub; caller-supplied locator values
 are never sufficient proof.
 
-New `WorkGraphTask/v1` Issue bodies also carry `taskKey` and `operation` copied
-from the pinned task definition. These fields make task descriptions and titles
-human-readable; they are validated metadata, not substitutes for
-`taskDefinitionId`, definition version, or digest. Legacy task bodies without
-the fields remain readable during migration.
+`WorkGraphTask/v1` Issue bodies require `taskKey` and `operation` in envelope
+`context`, copied from the pinned task definition. These fields make task
+descriptions and titles human-readable; they are validated metadata, not
+substitutes for `taskDefinitionId`, definition version, or digest. Flat legacy
+task bodies are rejected.
 
 ## Root Issue reader
 
@@ -111,9 +112,8 @@ title or body change after admission fails closed.
 
 The reporter requires every Dispatch attempt to be a unique, canonical,
 assignment-reporter-authored, never-edited `WorkGraphTaskDispatch/v1` comment,
-with exactly `dispatchId`, `launchId`, `rootIssueId`, `workflowRunId`, `taskId`,
-`task`, and `lease`. All three top-level identities must match the task and its
-nested identity. It
+with the unified envelope and exact Dispatch references/data. All direct
+identities and all six context fields must match the task. It
 then selects the one exact `dispatchId` and `leaseId` supplied by the current
 Agent Task. The profile-local executor ID must also match that Dispatch.
 This lets an expired attempt remain as immutable history without authorizing it.
@@ -161,15 +161,29 @@ WorkGraphTaskResult/v1
 
 ```json
 {
-  "resultId": "workgraph-v1:result:sha256:...",
+  "apiVersion": "workgraph.drasi.io/v1",
+  "kind": "TaskResult",
+  "id": "workgraph-v1:result:sha256:...",
   "rootIssueId": "root-issue-id",
   "workflowRunId": "workflow-run-id",
   "taskId": "task-id",
-  "dispatchId": "dispatch-id",
-  "leaseId": "lease-id",
-  "attempt": 1,
-  "outcome": "succeeded",
-  "output": {}
+  "context": {
+    "workflowDefinitionId": "issue-lifecycle",
+    "workflowDefinitionVersion": "v1",
+    "workflowDefinitionDigest": "sha256:...",
+    "taskDefinitionId": "wgd-...",
+    "taskKey": "a",
+    "operation": "intake-issue"
+  },
+  "references": {
+    "dispatchId": "workgraph-v1:dispatch:...",
+    "leaseId": "lease-id"
+  },
+  "data": {
+    "attempt": 1,
+    "outcome": "succeeded",
+    "output": {}
+  }
 }
 ```
 ````
@@ -181,11 +195,20 @@ objects, and JavaScript-safe integers only. The
 reporter never closes tasks, evaluates Results, allocates Leases, or mutates the
 Root Issue.
 
-Evaluation `resultDigest` is SHA-256 over compact `serde_json` serialization of
-the normalized Result payload. The reporter emits this digest input explicitly,
-sorting every object key recursively by UTF-8 bytes (including integer-like
-keys). It does not rely on JavaScript object enumeration. Markdown marker,
-fence, indentation, and trailing newline bytes are not part of the digest.
+Evaluation `resultDigest` is SHA-256 over the recursively key-sorted compact
+JSON serialization of the canonical TaskResult envelope object—the exact object
+inside the fenced Result JSON. It therefore includes `apiVersion`, `kind`,
+envelope identity and context, references, and data, but excludes the Markdown
+marker, fence, indentation, and trailing newline bytes. Integer-like object keys
+are sorted by UTF-8 bytes rather than JavaScript enumeration order.
+
+Evaluation and Route IDs use `workgraph-v1:evaluation:sha256:...` and
+`workgraph-v1:route:sha256:...`; no legacy suffix is generated. The reporter
+requires every submitted or persisted Evaluation ID to derive from
+`(taskId, resultId, resultDigest)` and every Route ID from
+`(taskId, evaluationId)`. Error-terminal routing is diagnosed by a
+`WorkGraphTaskError/v1` message. Worker failures remain `TaskResult` messages
+with `data.outcome` set to `failed`.
 
 ## Configuration
 

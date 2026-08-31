@@ -89,6 +89,8 @@ the immutable task, Dispatch, and Lease identities. The reporter independently
 re-fetches and verifies the exact `WorkGraphTask/v1`, trusted
 `WorkGraphTaskDispatch/v1`, Lease, reporter identity, and any prior canonical
 Result before it writes or reconciles `WorkGraphTaskResult/v1`.
+That Result uses the strict envelope with required `taskKey` and `operation`
+context, causal Dispatch/Lease references, and output under `data.output`.
 
 Never accept alternate Lease or Result fields, allocate or release a Lease,
 use a generic GitHub write tool, mutate the ordinary Root Issue, close

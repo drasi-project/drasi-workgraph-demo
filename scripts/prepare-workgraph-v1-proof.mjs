@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,7 +27,34 @@ const COMPILED_PATH = resolve(
   WORKGRAPH_ROOT,
   "fixtures/v1/issue-lifecycle.expected.json",
 );
-const QUERY_COUNT = 26;
+const CANONICAL_GENERIC_INVENTORY_PATH = resolve(
+  REPOSITORY_ROOT,
+  "../drasi-dogfooding/.github/extensions/workgraph-v1-view/contract/query-inventory.json",
+);
+const GENERIC_QUERY_IDS = [
+  "wg-issues-waiting-for-admission",
+  "wg-tasks-waiting-for-fork",
+  "wg-tasks-waiting-for-join-all",
+  "wg-task-leaves-waiting-for-assign",
+  "wg-task-parents-waiting-for-assign",
+  "wg-tasks-waiting-for-lease",
+  "wg-tasks-waiting-for-dispatch",
+  "wg-tasks-waiting-for-result",
+  "wg-tasks-waiting-for-evaluate",
+  "wg-tasks-waiting-for-route",
+  "wg-tasks-waiting-for-close",
+  "wg-tasks-closed",
+  "wg-task-detail",
+  "wg-task-definition-detail",
+  "wg-child-realization-detail",
+  "wg-task-artifact-detail",
+  "wg-result-detail",
+  "wg-evaluation-detail",
+  "wg-route-detail",
+  "wg-error-detail",
+  "wg-predecessor-result-detail",
+];
+const GENERATED_QUERY_COUNT = 6;
 
 function exact(value, keys, label) {
   if (
@@ -77,9 +105,83 @@ function validateActivation(value) {
   }
 }
 
+function queryDigestEntries(entries, expectedIds, label) {
+  if (!Array.isArray(entries)) {
+    throw new Error(`${label} must be an array`);
+  }
+  const projected = entries.map((entry, index) => {
+    if (
+      entry === null ||
+      typeof entry !== "object" ||
+      Array.isArray(entry) ||
+      typeof entry.id !== "string" ||
+      typeof entry.sha256 !== "string" ||
+      !/^[0-9a-f]{64}$/.test(entry.sha256)
+    ) {
+      throw new Error(`${label}[${index}] must contain a valid id and SHA-256`);
+    }
+    return { id: entry.id, sha256: entry.sha256 };
+  });
+  if (
+    JSON.stringify(projected.map(({ id }) => id)) !==
+    JSON.stringify(expectedIds)
+  ) {
+    throw new Error(`${label} IDs are not the exact canonical ordered set`);
+  }
+  return projected;
+}
+
+function queryContractDigest(entries) {
+  return `sha256:${createHash("sha256")
+    .update(JSON.stringify(entries), "utf8")
+    .digest("hex")}`;
+}
+
+export function validateGeneratedQueryInventory(queryBundle) {
+  const generatedInventory = queryBundle?.canvasInventory;
+  const generatedQueries = queryBundle?.queries;
+  if (
+    !Array.isArray(generatedInventory) ||
+    !Array.isArray(generatedQueries) ||
+    generatedInventory.length !== GENERATED_QUERY_COUNT ||
+    generatedQueries.length !== GENERATED_QUERY_COUNT
+  ) {
+    throw new Error("compiler output must contain exactly six generated queries");
+  }
+  const generatedQueryIds = generatedInventory.map(({ id }) => id);
+  const compiledQueryIds = generatedQueries.map(({ id }) => id);
+  if (JSON.stringify(generatedQueryIds) !== JSON.stringify(compiledQueryIds)) {
+    throw new Error(
+      "compiled query and Canvas inventories must have identical ordered IDs",
+    );
+  }
+  const compiledInventory = queryDigestEntries(
+    generatedInventory,
+    generatedQueryIds,
+    "compiled generated query inventory",
+  );
+  generatedQueries.forEach((query, index) => {
+    if (typeof query.query !== "string") {
+      throw new Error(`compiled generated query[${index}] body must be text`);
+    }
+    const actualHash = createHash("sha256")
+      .update(query.query, "utf8")
+      .digest("hex");
+    if (actualHash !== compiledInventory[index].sha256) {
+      throw new Error(
+        `compiled generated query '${query.id}' body SHA-256 differs from its Canvas inventory`,
+      );
+    }
+  });
+  return compiledInventory;
+}
+
 export async function buildWorkGraphV1Proof() {
   const inputs = JSON.parse(await readFile(INPUTS_PATH, "utf8"));
   const compiled = JSON.parse(await readFile(COMPILED_PATH, "utf8"));
+  const canonicalGenericInventory = JSON.parse(
+    await readFile(CANONICAL_GENERIC_INVENTORY_PATH, "utf8"),
+  );
   exact(
     inputs,
     [
@@ -95,22 +197,30 @@ export async function buildWorkGraphV1Proof() {
   );
   validateActivation(inputs.activation);
 
+  exact(
+    inputs.runtimeContract,
+    [
+      "sourceId",
+      "reactionId",
+      "serverConfig",
+      "stateStorePath",
+      "queryIds",
+      "queryContractDigest",
+    ],
+    "runtimeContract",
+  );
   const queryIds = inputs.runtimeContract.queryIds;
-  if (
-    !Array.isArray(queryIds) ||
-    queryIds.length !== QUERY_COUNT ||
-    new Set(queryIds).size !== QUERY_COUNT ||
-    queryIds.some((id) => typeof id !== "string" || !id.startsWith("wg-"))
-  ) {
-    throw new Error("proof must pin exactly 26 unique wg- query IDs");
-  }
   if (
     inputs.runtimeContract.sourceId !== "github-workgraph-v1" ||
     inputs.runtimeContract.reactionId !== "workgraph-v1" ||
-    inputs.runtimeContract.serverConfig !== "server-config-v1.yaml" ||
-    inputs.runtimeContract.stateStorePath !== "data/workgraph-v1.redb"
+    inputs.runtimeContract.serverConfig !==
+      "server-config-v1-loopback.yaml" ||
+    inputs.runtimeContract.stateStorePath !==
+      "data/workgraph-v1-loopback.redb"
   ) {
-    throw new Error("proof runtime identities do not match the v1 configuration");
+    throw new Error(
+      "proof runtime identities do not match the v1 loopback configuration",
+    );
   }
 
   const definitionPath = localWorkGraphPath(inputs.definition.bodyPath);
@@ -118,12 +228,45 @@ export async function buildWorkGraphV1Proof() {
   if (definitionBody !== compiled.canonicalDefinitionBody) {
     throw new Error("workflow definition differs from compiler output");
   }
-  const generatedQueryIds = compiled.queryBundle.queries.map(({ id }) => id);
+  const compiledInventory = validateGeneratedQueryInventory(
+    compiled.queryBundle,
+  );
+  const generatedQueryIds = compiledInventory.map(({ id }) => id);
+  const expectedQueryIds = [...GENERIC_QUERY_IDS, ...generatedQueryIds];
   if (
-    JSON.stringify(queryIds.slice(-generatedQueryIds.length)) !==
-    JSON.stringify(generatedQueryIds)
+    JSON.stringify(queryIds) !== JSON.stringify(expectedQueryIds)
   ) {
-    throw new Error("proof generated query IDs differ from compiler output");
+    throw new Error(
+      "proof query IDs must be the exact ordered generic and generated sets",
+    );
+  }
+  const genericSections = [
+    "admissionQueries",
+    "lifecycleQueries",
+    "detailQueries",
+  ];
+  if (
+    genericSections.some(
+      (section) => !Array.isArray(canonicalGenericInventory[section]),
+    )
+  ) {
+    throw new Error(
+      "canonical sibling inventory must contain generic query arrays",
+    );
+  }
+  const genericInventory = queryDigestEntries(
+    genericSections.flatMap((section) => canonicalGenericInventory[section]),
+    GENERIC_QUERY_IDS,
+    "canonical sibling generic query inventory",
+  );
+  const contractDigest = queryContractDigest([
+    ...genericInventory,
+    ...compiledInventory,
+  ]);
+  if (inputs.runtimeContract.queryContractDigest !== contractDigest) {
+    throw new Error(
+      "proof queryContractDigest differs from the canonical query inventories",
+    );
   }
   const definition = parseCompiledWorkflowDefinition(definitionBody);
   for (const field of ["workflowDefinitionId", "version", "digest"]) {

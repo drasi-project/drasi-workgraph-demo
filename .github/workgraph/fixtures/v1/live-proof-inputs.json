@@ -2,8 +2,8 @@
   "runtimeContract": {
     "sourceId": "github-workgraph-v1",
     "reactionId": "workgraph-v1",
-    "serverConfig": "server-config-v1.yaml",
-    "stateStorePath": "data/workgraph-v1.redb",
+    "serverConfig": "server-config-v1-loopback.yaml",
+    "stateStorePath": "data/workgraph-v1-loopback.redb",
     "queryIds": [
       "wg-issues-waiting-for-admission",
       "wg-tasks-waiting-for-fork",
@@ -24,6 +24,7 @@
       "wg-result-detail",
       "wg-evaluation-detail",
       "wg-route-detail",
+      "wg-error-detail",
       "wg-predecessor-result-detail",
       "wg-entry-9fa7c23308acc6f2f663",
       "wg-next-36052ed88c92f5b5cd29",
@@ -31,7 +32,8 @@
       "wg-next-81d9671b0d5b83db2a14",
       "wg-next-d9777655870aa7254c3f",
       "wg-terminal-8f328a93bc2ba9c6d49d"
-    ]
+    ],
+    "queryContractDigest": "sha256:6a073f9f324eaac9225f1654596f29958d5e18c8e0c1689b1ef02f3e9509095c"
   },
   "definition": {
     "bodyPath": "../../workflows/issue-lifecycle-v1.body",

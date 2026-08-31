@@ -28,26 +28,38 @@ deterministic Result for each of `a`, `b`, `c`, and `d`. The Node definition
 test binds its exact task-key set and expected terminal outcome to the compiled
 definition and rejects children, outcome transitions, or waits.
 
-## Evaluate and Route
+## Runtime message envelope
 
-`WorkGraphTaskEvaluate/v1` contains exactly `evaluationId`, `rootIssueId`,
-`workflowRunId`, `taskId`, `resultId`, `resultDigest`, `evaluatorId`, the
-one-based `attempt`, `verdict`, `summary`, and `feedback`. Verdict is `accepted`
-or `rejected`; rejected Evaluations require actionable feedback.
+Every task and lifecycle body contains exactly `apiVersion`, `kind`, `id`,
+`rootIssueId`, `workflowRunId`, `taskId`, `context`, `references`, and `data`.
+`apiVersion` is `workgraph.drasi.io/v1`. Context always contains the pinned
+definition ID, version, digest, task-definition ID, `taskKey`, and `operation`.
+The markers and kinds are Task, TaskAssignment, TaskDispatch, TaskResult,
+TaskEvaluation, TaskRoute, and TaskError using their matching
+`WorkGraph<kind>/v1` marker. Flat legacy bodies and old marker spellings are not
+accepted.
 
-`WorkGraphTaskRoute/v1` directly records the Root Issue, run, task, Result, and
-Evaluation IDs, plus `evaluationVerdict`, `orchestratorId`, `action`, and the
-same one-based `attempt`. Its `reworkCount` is `attempt - 1`. Accepted Results
-follow their exact `next` transition; step `d` reaches the `completed` terminal.
-Rejected Results may rework within their effective bound. The runtime route
-policy additionally permits its `error` and `ignore` exclusions.
-Advance alone carries `transitionKind: next`, `targetStepId`, and
-`targetStepKind`. `targetTaskDefinitionId` is present only for a task target
-and equals that target's compiler-derived hashed ID. Non-advance routes carry
-no transition or target fields. Definition-aware validation binds every route
-to its source step and task-definition ID. Each step's execution policy supplies
-the required orchestrator and rework limit and must name the same worker as its
-task routing executor.
+References/data are strict: Task uses `{}`/`{resolvedInputs}`; Assignment uses
+`{}`/`{permittedExecutors}`; Dispatch uses `{assignmentId}` with
+`{launchId, lease:{id,executorId,slotId}}`; Result uses
+`{dispatchId,leaseId}` with `{attempt,outcome,output}`; Evaluation uses
+`{resultId}` with `{resultDigest,evaluatorId,attempt,verdict,summary,feedback}`;
+and Route uses `{resultId,evaluationId}` with its verdict, orchestrator, action,
+attempt, transition, target, selected-outcome, and target-task fields. All five
+nullable Route data fields are serialized explicitly as `null`.
+Evaluation `resultDigest` hashes recursively key-sorted compact JSON for the
+canonical TaskResult envelope object, not the flattened parser projection.
+Evaluation IDs derive from `(taskId, resultId, resultDigest)`, and Route IDs
+derive from `(taskId, evaluationId)`. Their strict formatters and parsers reject
+noncanonical IDs. TaskResult formatting intentionally keeps `resultId` opaque;
+the reporter and source layers enforce its canonical identity.
+
+Verdicts are `accepted` or `rejected`; rejected Evaluations require actionable
+feedback. Accepted Results follow their exact transition, while rejected
+Results may rework within their effective bound. A failed worker execution is
+still a TaskResult with outcome `failed`. TaskError is reserved for diagnostics,
+including an error-terminal routing decision; its six optional causal
+references and optional attempt are explicit `null` when absent.
 
 Evaluate summary and feedback are lifecycle text rather than static data-map
 text, so protocol marker names are allowed. They remain well-formed LF text,
@@ -73,10 +85,27 @@ the Root Issue.
 The proof pins the complete runtime query inventory:
 
 - 1 admission query;
-- 10 lifecycle queries;
-- 9 detail queries;
+- 11 lifecycle queries;
+- 9 detail queries, including `wg-route-detail` and `wg-error-detail`;
 - 6 compiler-generated entry, transition, and terminal queries;
-- 26 total queries, all prefixed `wg-`.
+- 27 total queries in that exact category order.
+
+`runtimeContract` names `server-config-v1-loopback.yaml` and
+`data/workgraph-v1-loopback.redb`; production runtime names are not valid proof
+inputs. Its keys are exactly the Source and Reaction IDs, those two loopback
+paths, `queryIds`, and `queryContractDigest`. The query list must be the exact
+ordered 21 generic IDs from the canonical sibling Dogfooding Canvas inventory,
+followed by the exact six IDs from this Demo's compiled Canvas inventory.
+
+`queryContractDigest` is `sha256:` plus the SHA-256 of compact JSON for the
+ordered 27 entries projected to exactly `{"id","sha256"}` (with keys in that
+order). The generic entries and hashes are read only from
+`../drasi-dogfooding/.github/extensions/workgraph-v1-view/contract/query-inventory.json`;
+the generated entries and hashes come from
+`issue-lifecycle.expected.json`'s `queryBundle.canvasInventory`. This binds the
+offline proof to query content as well as query names. Before trusting a
+generated inventory hash, the proof hashes the corresponding
+`queryBundle.queries[].query` exact UTF-8 text and requires an exact match.
 
 Run:
 

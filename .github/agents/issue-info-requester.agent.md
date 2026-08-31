@@ -33,6 +33,8 @@ For step D, derive a concise information request from the accepted validation
 Result and write it as one canonical `WorkGraphTaskResult/v1` on the existing
 task. The workflow owns the wait. It resumes at C only after a qualifying
 non-agent-human comment on the ordinary Root Issue.
+The reporter emits the strict TaskResult envelope with required task context,
+Dispatch/Lease references, and the information request under `data.output`.
 
 Never create a nested task, post directly to GitHub, or treat an agent-authored
 comment as a resume event.

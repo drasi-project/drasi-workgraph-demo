@@ -118,7 +118,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
         for name in lifecycle_profiles[:2]:
             with self.subTest(name=name):
                 self.assertIn("existing", self.agents[name].lower())
-                self.assertIn("WorkGraphTaskEvaluate/v1", self.agents[name])
+                self.assertIn("WorkGraphTaskEvaluation/v1", self.agents[name])
                 self.assertNotRegex(
                     self.agents[name], r"workgraph/(?:create|assign|dispatch)_task"
                 )
@@ -169,14 +169,19 @@ class WorkGraphProfilesTest(unittest.TestCase):
         for marker in (
             "WorkGraphWorkflowDefinition/v1",
             "WorkGraphTask/v1",
+            "WorkGraphTaskAssignment/v1",
+            "WorkGraphTaskDispatch/v1",
             "WorkGraphTaskResult/v1",
-            "WorkGraphTaskEvaluate/v1",
+            "WorkGraphTaskEvaluation/v1",
             "WorkGraphTaskRoute/v1",
+            "WorkGraphTaskError/v1",
         ):
             self.assertIn(marker, production)
         self.assertIn("Root Issue", production)
         self.assertIn("Root Task", production)
         self.assertNotRegex(production, r"WorkGraph[A-Za-z]*/v[23]")
+        self.assertNotIn("WorkGraphTaskAssign/v1", production)
+        self.assertNotIn("WorkGraphTaskEvaluate/v1", production)
         self.assertNotRegex(production, r"(?i)\bvnext\b")
         self.assertNotRegex(production, r"(?i)\bcompatibility\b")
         self.assertNotRegex(production, r"(?i)status:\s*new")

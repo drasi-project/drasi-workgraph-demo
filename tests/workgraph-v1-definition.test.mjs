@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
@@ -6,7 +7,16 @@ import {
   DEFAULT_MAX_REWORK_ATTEMPTS,
   MAX_TASK_DEFINITION_CHILDREN,
   RUNTIME_TASK_MARKER,
+  TASK_ERROR_MARKER,
+  deriveWorkGraphTaskEvaluationId,
+  deriveWorkGraphTaskErrorId,
+  deriveWorkGraphTaskResultId,
+  deriveWorkGraphTaskRouteId,
   formatTaskEvaluation,
+  formatTaskAssignment,
+  formatTaskDispatch,
+  formatTaskError,
+  formatTaskResult,
   formatTaskRoute,
   formatCompiledWorkflowDefinition,
   formatRuntimeTask,
@@ -15,6 +25,10 @@ import {
   normalizeCompiledWorkflowDefinition,
   normalizeIssueWorkflow,
   parseTaskEvaluation,
+  parseTaskAssignment,
+  parseTaskDispatch,
+  parseTaskError,
+  parseTaskResult,
   parseTaskRoute,
   parseCompiledWorkflowDefinition,
   parseRuntimeTask,
@@ -22,7 +36,10 @@ import {
   validateRootRuntimeTask,
   validateTaskRouteAgainstDefinition,
 } from "../.github/mcp/workgraph-v1-definition.mjs";
-import { buildWorkGraphV1Proof } from "../scripts/prepare-workgraph-v1-proof.mjs";
+import {
+  buildWorkGraphV1Proof,
+  validateGeneratedQueryInventory,
+} from "../scripts/prepare-workgraph-v1-proof.mjs";
 
 const DEFINITION_PATH = ".github/workgraph/workflows/issue-lifecycle-v1.body";
 const INPUTS_PATH = ".github/workgraph/fixtures/v1/live-proof-inputs.json";
@@ -34,6 +51,35 @@ const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 const clone = (value) => structuredClone(value);
 const COMPILED_OUTPUT = JSON.parse(await read(EXPECTED_PATH));
 const COMPILED_FIXTURE = COMPILED_OUTPUT.workgraphDefinition;
+const PROOF_QUERY_IDS = [
+  "wg-issues-waiting-for-admission",
+  "wg-tasks-waiting-for-fork",
+  "wg-tasks-waiting-for-join-all",
+  "wg-task-leaves-waiting-for-assign",
+  "wg-task-parents-waiting-for-assign",
+  "wg-tasks-waiting-for-lease",
+  "wg-tasks-waiting-for-dispatch",
+  "wg-tasks-waiting-for-result",
+  "wg-tasks-waiting-for-evaluate",
+  "wg-tasks-waiting-for-route",
+  "wg-tasks-waiting-for-close",
+  "wg-tasks-closed",
+  "wg-task-detail",
+  "wg-task-definition-detail",
+  "wg-child-realization-detail",
+  "wg-task-artifact-detail",
+  "wg-result-detail",
+  "wg-evaluation-detail",
+  "wg-route-detail",
+  "wg-error-detail",
+  "wg-predecessor-result-detail",
+  "wg-entry-9fa7c23308acc6f2f663",
+  "wg-next-36052ed88c92f5b5cd29",
+  "wg-next-7b7e3f4ef615e40fac55",
+  "wg-next-81d9671b0d5b83db2a14",
+  "wg-next-d9777655870aa7254c3f",
+  "wg-terminal-8f328a93bc2ba9c6d49d",
+];
 const sourceContext = (stepId) => ({
   sourceStepId: stepId,
   taskDefinitionId:
@@ -188,10 +234,12 @@ test("parsing rejects unknown, oversized, reserved-marker, and noncanonical bodi
 
   for (const marker of [
     "WorkGraphTask/v1",
-    "WorkGraphTaskAssign/v1",
+    "WorkGraphTaskAssignment/v1",
     "WorkGraphTaskDispatch/v1",
     "WorkGraphTaskResult/v1",
-    "WorkGraphTaskEvaluate/v1",
+    "WorkGraphTaskEvaluation/v1",
+    "WorkGraphTaskRoute/v1",
+    "WorkGraphTaskError/v1",
   ]) {
     const marked = clone(definition);
     marked.root.staticInputs = { unsafe: marker };
@@ -224,6 +272,12 @@ test("runtime tasks require top-level Root Issue identity and exact definition p
   assert.equal(root.taskKey, "a");
   assert.equal(root.operation, "intake-issue");
   assert.equal(formatRuntimeTask(root), body);
+  const envelope = JSON.parse(body.match(/```json\n([\s\S]+)\n```/)[1]);
+  assert.equal(envelope.kind, "Task");
+  assert.equal(envelope.id, root.taskId);
+  assert.deepEqual(envelope.references, {});
+  assert.equal(envelope.context.taskKey, root.taskKey);
+  assert.deepEqual(envelope.data, { resolvedInputs: root.resolvedInputs });
   assert.deepEqual(validateRootRuntimeTask(definition, root), root);
 
   for (const [field, value] of [
@@ -249,16 +303,56 @@ test("runtime tasks require top-level Root Issue identity and exact definition p
   delete legacy.taskKey;
   delete legacy.operation;
   const legacyBody = `${RUNTIME_TASK_MARKER}\n\n\`\`\`json\n${JSON.stringify(legacy, null, 2)}\n\`\`\`\n`;
-  assert.deepEqual(parseRuntimeTask(legacyBody), legacy);
+  assert.throws(() => parseRuntimeTask(legacyBody), /properties must be exactly/);
   assert.throws(() => formatRuntimeTask(legacy), /properties must be exactly/);
 });
 
-test("proof inputs pin 26 wg- queries and remain fully inactive", async () => {
+test("proof inputs pin the exact loopback query contract and remain inactive", async () => {
   const inputs = JSON.parse(await read(INPUTS_PATH));
-  assert.equal(inputs.runtimeContract.queryIds.length, 26);
-  assert.equal(new Set(inputs.runtimeContract.queryIds).size, 26);
-  assert.ok(inputs.runtimeContract.queryIds.every((id) => id.startsWith("wg-")));
-  assert.equal(inputs.runtimeContract.stateStorePath, "data/workgraph-v1.redb");
+  assert.deepEqual(Object.keys(inputs.runtimeContract).sort(), [
+    "queryContractDigest",
+    "queryIds",
+    "reactionId",
+    "serverConfig",
+    "sourceId",
+    "stateStorePath",
+  ]);
+  assert.deepEqual(inputs.runtimeContract.queryIds, PROOF_QUERY_IDS);
+  assert.equal(
+    inputs.runtimeContract.serverConfig,
+    "server-config-v1-loopback.yaml",
+  );
+  assert.equal(
+    inputs.runtimeContract.stateStorePath,
+    "data/workgraph-v1-loopback.redb",
+  );
+  const canonicalGenericInventory = JSON.parse(
+    await readFile(
+      new URL(
+        "../../drasi-dogfooding/.github/extensions/workgraph-v1-view/contract/query-inventory.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const digestEntries = [
+    ...canonicalGenericInventory.admissionQueries,
+    ...canonicalGenericInventory.lifecycleQueries,
+    ...canonicalGenericInventory.detailQueries,
+    ...COMPILED_OUTPUT.queryBundle.canvasInventory,
+  ].map(({ id, sha256 }) => ({ id, sha256 }));
+  assert.deepEqual(
+    digestEntries.map(({ id }) => id),
+    PROOF_QUERY_IDS,
+  );
+  const queryContractDigest = `sha256:${createHash("sha256")
+    .update(JSON.stringify(digestEntries), "utf8")
+    .digest("hex")}`;
+  assert.equal(
+    inputs.runtimeContract.queryContractDigest,
+    "sha256:6a073f9f324eaac9225f1654596f29958d5e18c8e0c1689b1ef02f3e9509095c",
+  );
+  assert.equal(inputs.runtimeContract.queryContractDigest, queryContractDigest);
   assert.deepEqual(inputs.activation, {
     serverAutoStart: false,
     sourceAutoStart: false,
@@ -304,6 +398,15 @@ test("offline proof derives the Root Task from Root Issue admission", async () =
     proof.expectedRootTask.value.rootIssueId,
   );
   assert.equal(proof.expectedRootTask.firstLifecycleState, "FORK");
+});
+
+test("offline proof rejects generated query body hash drift", () => {
+  const queryBundle = clone(COMPILED_OUTPUT.queryBundle);
+  queryBundle.queries[0].query += " ";
+  assert.throws(
+    () => validateGeneratedQueryInventory(queryBundle),
+    /body SHA-256 differs from its Canvas inventory/,
+  );
 });
 
 function linearWorkflow() {
@@ -736,14 +839,33 @@ test("graph validation rejects unreachable work and cycles without waits", () =>
   assert.doesNotThrow(() => normalizeIssueWorkflow(complexWorkflow()));
 });
 
-function evaluation(verdict = "accepted") {
+function messageTask(taskId = "task-c") {
   return {
-    evaluationId: "evaluation-1",
+    taskId,
+    workflowRunId: "run-1",
+    workflowDefinitionId: COMPILED_FIXTURE.workflowDefinitionId,
+    workflowDefinitionVersion: COMPILED_FIXTURE.version,
+    workflowDefinitionDigest: COMPILED_FIXTURE.digest,
+    taskDefinitionId: COMPILED_FIXTURE.steps.c.taskDefinition.taskDefinitionId,
+    taskKey: "c",
+    operation: "inspect-issue",
+  };
+}
+
+function evaluation(verdict = "accepted") {
+  const resultDigest = `sha256:${"a".repeat(64)}`;
+  return {
+    evaluationId: deriveWorkGraphTaskEvaluationId(
+      "task-c",
+      "result-1",
+      resultDigest,
+    ),
     rootIssueId: "I_root_issue",
     workflowRunId: "run-1",
     taskId: "task-c",
+    task: messageTask(),
     resultId: "result-1",
-    resultDigest: `sha256:${"a".repeat(64)}`,
+    resultDigest,
     evaluatorId: "result-evaluator",
     attempt: 1,
     verdict,
@@ -753,13 +875,15 @@ function evaluation(verdict = "accepted") {
 }
 
 function route(action, verdict = "accepted") {
+  const evaluationId = evaluation().evaluationId;
   const value = {
-    routeId: `route-${action}`,
+    routeId: deriveWorkGraphTaskRouteId("task-c", evaluationId),
     rootIssueId: "I_root_issue",
     workflowRunId: "run-1",
     taskId: "task-c",
+    task: messageTask(),
     resultId: "result-1",
-    evaluationId: "evaluation-1",
+    evaluationId,
     evaluationVerdict: verdict,
     orchestratorId: "workflow-coordinator",
     action,
@@ -775,10 +899,160 @@ function route(action, verdict = "accepted") {
   return value;
 }
 
+test("all lifecycle bodies use the strict unified envelope", () => {
+  const task = messageTask();
+  const assignment = {
+    assignmentId: "workgraph-v1:assignment:one",
+    rootIssueId: "I_root_issue",
+    workflowRunId: "run-1",
+    taskId: task.taskId,
+    task,
+    permittedExecutors: ["issue-worker"],
+  };
+  const dispatch = {
+    dispatchId: "workgraph-v1:dispatch:one",
+    launchId: "launch-1",
+    rootIssueId: assignment.rootIssueId,
+    workflowRunId: assignment.workflowRunId,
+    taskId: task.taskId,
+    task,
+    lease: {
+      leaseId: "lease-1",
+      assignmentId: assignment.assignmentId,
+      executorId: "issue-worker",
+      slotId: "slot-1",
+    },
+  };
+  const result = {
+    resultId: deriveWorkGraphTaskResultId(
+      task.taskId,
+      dispatch.dispatchId,
+      dispatch.lease.leaseId,
+    ),
+    rootIssueId: assignment.rootIssueId,
+    workflowRunId: assignment.workflowRunId,
+    taskId: task.taskId,
+    task,
+    dispatchId: dispatch.dispatchId,
+    leaseId: dispatch.lease.leaseId,
+    attempt: 1,
+    outcome: "failed",
+    output: { summary: "worker failed" },
+  };
+  const errorReferences = {
+    assignmentId: null,
+    dispatchId: dispatch.dispatchId,
+    leaseId: dispatch.lease.leaseId,
+    resultId: result.resultId,
+    evaluationId: "workgraph-v1:evaluation:one",
+    routeId: "workgraph-v1:route:one",
+  };
+  const error = {
+    errorId: deriveWorkGraphTaskErrorId(
+      task.taskId,
+      "routing",
+      "workflow-routed-to-error",
+      errorReferences.routeId,
+    ),
+    rootIssueId: assignment.rootIssueId,
+    workflowRunId: assignment.workflowRunId,
+    taskId: task.taskId,
+    task,
+    references: errorReferences,
+    stage: "routing",
+    code: "workflow-routed-to-error",
+    category: "task",
+    summary: "The workflow routed to error.",
+    retryable: false,
+    attempt: null,
+    details: { routeAction: "error" },
+  };
+
+  for (const [value, format, parse] of [
+    [assignment, formatTaskAssignment, parseTaskAssignment],
+    [dispatch, formatTaskDispatch, parseTaskDispatch],
+    [result, formatTaskResult, parseTaskResult],
+    [evaluation(), formatTaskEvaluation, parseTaskEvaluation],
+    [route("complete"), formatTaskRoute, parseTaskRoute],
+    [error, formatTaskError, parseTaskError],
+  ]) {
+    const body = format(value);
+    assert.deepEqual(parse(body), value);
+    const envelope = JSON.parse(body.slice(body.indexOf("{"), body.lastIndexOf("}") + 1));
+    assert.deepEqual(Object.keys(envelope), [
+      "apiVersion",
+      "kind",
+      "id",
+      "rootIssueId",
+      "workflowRunId",
+      "taskId",
+      "context",
+      "references",
+      "data",
+    ]);
+    assert.equal(envelope.apiVersion, "workgraph.drasi.io/v1");
+    assert.equal(envelope.context.taskKey, "c");
+    assert.equal(envelope.context.operation, "inspect-issue");
+  }
+  assert.ok(formatTaskError(error).startsWith(`${TASK_ERROR_MARKER}\n`));
+  assert.deepEqual(JSON.parse(formatTaskAssignment(assignment).match(/```json\n([\s\S]+)\n```/)[1]).references, {});
+  assert.throws(
+    () => parseTaskResult(formatTaskResult(result).replace('"kind": "TaskResult"', '"kind": "Result"')),
+    /apiVersion or kind is invalid/,
+  );
+  const arbitraryResultId = { ...result, resultId: "result-wire-opaque" };
+  assert.equal(
+    parseTaskResult(formatTaskResult(arbitraryResultId)).resultId,
+    arbitraryResultId.resultId,
+  );
+
+  const nonAdvanceBody = formatTaskRoute(route("complete"));
+  const routeEnvelope = JSON.parse(
+    nonAdvanceBody.match(/```json\n([\s\S]+)\n```/)[1],
+  );
+  assert.deepEqual(routeEnvelope.data, {
+    evaluationVerdict: "accepted",
+    orchestratorId: "workflow-coordinator",
+    action: "complete",
+    attempt: 1,
+    transitionKind: null,
+    targetStepId: null,
+    targetStepKind: null,
+    selectedOutcome: null,
+    targetTaskDefinitionId: null,
+  });
+});
+
 test("Evaluate artifacts have exact direct bindings and accepted or rejected verdicts", () => {
+  assert.equal(
+    deriveWorkGraphTaskEvaluationId(
+      "task-1",
+      "result-1",
+      `sha256:${"a".repeat(64)}`,
+    ),
+    "workgraph-v1:evaluation:sha256:cd47941f3c0121485e3276e2ab70feb7b236d53976cea990e0323d3b17de6d5e",
+  );
   for (const verdict of ["accepted", "rejected"]) {
     const value = evaluation(verdict);
     assert.deepEqual(parseTaskEvaluation(formatTaskEvaluation(value)), value);
+  }
+  const canonical = evaluation();
+  const canonicalBody = formatTaskEvaluation(canonical);
+  for (const evaluationId of [
+    "evaluation-arbitrary",
+    `workgraph-v1:evaluation-artifact:sha256:${"1".repeat(64)}`,
+  ]) {
+    assert.throws(
+      () => formatTaskEvaluation({ ...canonical, evaluationId }),
+      /evaluationId is not canonical/,
+    );
+    assert.throws(
+      () =>
+        parseTaskEvaluation(
+          canonicalBody.replace(canonical.evaluationId, evaluationId),
+        ),
+      /evaluationId is not canonical/,
+    );
   }
   assert.throws(
     () => formatTaskEvaluation({ ...evaluation(), verdict: "continue" }),
@@ -845,6 +1119,13 @@ test("Evaluate artifacts have exact direct bindings and accepted or rejected ver
 
 test("Route matrix, advance pair, exclusions, and bounded same-task rework are strict", () => {
   const definition = COMPILED_FIXTURE;
+  assert.equal(
+    deriveWorkGraphTaskRouteId(
+      "task-1",
+      "workgraph-v1:evaluation:sha256:cd47941f3c0121485e3276e2ab70feb7b236d53976cea990e0323d3b17de6d5e",
+    ),
+    "workgraph-v1:route:sha256:b8952132281b2be87aae63426956c7c81375c90a5e7e430bba45308082670d05",
+  );
   for (const [action, verdict] of [
     ["advance", "accepted"],
     ["complete", "accepted"],
@@ -856,6 +1137,21 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
   ]) {
     const value = route(action, verdict);
     assert.deepEqual(parseTaskRoute(formatTaskRoute(value)), value);
+  }
+  const canonical = route("complete");
+  const canonicalBody = formatTaskRoute(canonical);
+  for (const routeId of [
+    "route-arbitrary",
+    `workgraph-v1:route-artifact:sha256:${"2".repeat(64)}`,
+  ]) {
+    assert.throws(
+      () => formatTaskRoute({ ...canonical, routeId }),
+      /routeId is not canonical/,
+    );
+    assert.throws(
+      () => parseTaskRoute(canonicalBody.replace(canonical.routeId, routeId)),
+      /routeId is not canonical/,
+    );
   }
   assert.deepEqual(
     validateTaskRouteAgainstDefinition(
@@ -891,21 +1187,7 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
   delete terminalRoute.targetTaskDefinitionId;
   assert.deepEqual(
     parseTaskRoute(formatTaskRoute(terminalRoute)),
-    {
-      routeId: "route-advance",
-      rootIssueId: "I_root_issue",
-      workflowRunId: "run-1",
-      taskId: "task-c",
-      resultId: "result-1",
-      evaluationId: "evaluation-1",
-      evaluationVerdict: "accepted",
-      orchestratorId: "workflow-coordinator",
-      action: "advance",
-      transitionKind: "next",
-      targetStepId: "completed",
-      targetStepKind: "terminal",
-      attempt: 1,
-    },
+    terminalRoute,
   );
   assert.deepEqual(
     validateTaskRouteAgainstDefinition(

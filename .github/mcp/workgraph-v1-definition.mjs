@@ -1,10 +1,16 @@
+import { createHash } from "node:crypto";
 import { isDeepStrictEqual, TextEncoder } from "node:util";
 
 export const WORKFLOW_DEFINITION_MARKER = "WorkGraphWorkflowDefinition/v1";
 export const RUNTIME_TASK_MARKER = "WorkGraphTask/v1";
-export const TASK_EVALUATION_MARKER = "WorkGraphTaskEvaluate/v1";
+export const TASK_ASSIGNMENT_MARKER = "WorkGraphTaskAssignment/v1";
+export const TASK_DISPATCH_MARKER = "WorkGraphTaskDispatch/v1";
+export const TASK_RESULT_MARKER = "WorkGraphTaskResult/v1";
+export const TASK_EVALUATION_MARKER = "WorkGraphTaskEvaluation/v1";
 export const TASK_ROUTE_MARKER = "WorkGraphTaskRoute/v1";
-export const WORKFLOW_AUTHORING_API_VERSION = "workgraph.drasi.io/v1";
+export const TASK_ERROR_MARKER = "WorkGraphTaskError/v1";
+export const WORKGRAPH_API_VERSION = "workgraph.drasi.io/v1";
+export const WORKFLOW_AUTHORING_API_VERSION = WORKGRAPH_API_VERSION;
 export const DEFAULT_MAX_REWORK_ATTEMPTS = 3;
 export const MAX_TASK_DEFINITION_CHILDREN = 16;
 export const MAX_TASK_DEFINITION_DEPTH = 4;
@@ -15,11 +21,12 @@ const MAX_DATA_DEPTH = 32;
 const RESERVED_MARKERS = [
   WORKFLOW_DEFINITION_MARKER,
   RUNTIME_TASK_MARKER,
-  "WorkGraphTaskAssign/v1",
-  "WorkGraphTaskDispatch/v1",
-  "WorkGraphTaskResult/v1",
-  "WorkGraphTaskEvaluate/v1",
-  "WorkGraphTaskRoute/v1",
+  TASK_ASSIGNMENT_MARKER,
+  TASK_DISPATCH_MARKER,
+  TASK_RESULT_MARKER,
+  TASK_EVALUATION_MARKER,
+  TASK_ROUTE_MARKER,
+  TASK_ERROR_MARKER,
 ];
 const DEFINITION_KEYS = [
   "workflowDefinitionId",
@@ -36,16 +43,6 @@ const TASK_DEFINITION_KEYS = [
   "children",
 ];
 const ROUTING_KEYS = ["permittedExecutors"];
-const LEGACY_RUNTIME_TASK_KEYS = [
-  "taskId",
-  "rootIssueId",
-  "workflowRunId",
-  "workflowDefinitionId",
-  "workflowDefinitionVersion",
-  "workflowDefinitionDigest",
-  "taskDefinitionId",
-  "resolvedInputs",
-];
 const RUNTIME_TASK_KEYS = [
   "taskId",
   "rootIssueId",
@@ -58,6 +55,27 @@ const RUNTIME_TASK_KEYS = [
   "operation",
   "resolvedInputs",
 ];
+const ENVELOPE_KEYS = [
+  "apiVersion",
+  "kind",
+  "id",
+  "rootIssueId",
+  "workflowRunId",
+  "taskId",
+  "context",
+  "references",
+  "data",
+];
+const CONTEXT_KEYS = [
+  "workflowDefinitionId",
+  "workflowDefinitionVersion",
+  "workflowDefinitionDigest",
+  "taskDefinitionId",
+  "taskKey",
+  "operation",
+];
+const TASK_IDENTITY_KEYS = ["taskId", "workflowRunId", ...CONTEXT_KEYS];
+const EMPTY_KEYS = [];
 
 export class WorkGraphDefinitionError extends Error {}
 
@@ -157,7 +175,7 @@ function canonicalData(value, context, depth) {
     return value;
   }
   if (typeof value === "number") {
-    if (!Number.isSafeInteger(value)) {
+    if (!Number.isSafeInteger(value) || Object.is(value, -0)) {
       throw new WorkGraphDefinitionError(
         `${context} numbers must be JavaScript-safe integers`,
       );
@@ -197,6 +215,53 @@ function dataMap(value, context) {
   return canonicalData(value, context, 0);
 }
 
+function lifecycleData(value, context, depth = 0) {
+  if (depth > MAX_DATA_DEPTH) {
+    throw new WorkGraphDefinitionError(
+      `${context} must not exceed ${MAX_DATA_DEPTH} nested levels`,
+    );
+  }
+  if (value === null || typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    if (!lifecycleText(value)) {
+      throw new WorkGraphDefinitionError(
+        `${context} strings must be ordinary LF text`,
+      );
+    }
+    return value;
+  }
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value) || Object.is(value, -0)) {
+      throw new WorkGraphDefinitionError(
+        `${context} numbers must be JavaScript-safe integers`,
+      );
+    }
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry, index) =>
+      lifecycleData(entry, `${context}[${index}]`, depth + 1),
+    );
+  }
+  if (!object(value)) {
+    throw new WorkGraphDefinitionError(`${context} must contain only JSON values`);
+  }
+  const keys = Object.keys(value).sort(utf8Compare);
+  for (const key of keys) {
+    if (key === "" || !lifecycleText(key)) {
+      throw new WorkGraphDefinitionError(
+        `${context} property names must be non-empty ordinary LF text`,
+      );
+    }
+  }
+  return Object.fromEntries(
+    keys.map((key) => [
+      key,
+      lifecycleData(value[key], `${context}.${key}`, depth + 1),
+    ]),
+  );
+}
+
 function prettyJson(value, depth = 0, dataMode = false) {
   if (value === null || typeof value !== "object") {
     return JSON.stringify(value);
@@ -216,7 +281,11 @@ function prettyJson(value, depth = 0, dataMode = false) {
   return `{\n${keys
     .map((key) => {
       const childDataMode =
-        dataMode || key === "staticInputs" || key === "resolvedInputs";
+        dataMode ||
+        key === "staticInputs" ||
+        key === "resolvedInputs" ||
+        key === "output" ||
+        key === "details";
       return `${childIndent}${JSON.stringify(key)}: ${prettyJson(
         value[key],
         depth + 1,
@@ -388,20 +457,125 @@ export function parseCompiledWorkflowDefinition(body) {
   );
 }
 
-export function normalizeRuntimeTask(task, { allowLegacy = false } = {}) {
-  if (!object(task)) {
-    throw new WorkGraphDefinitionError("runtime task must be an object");
-  }
-  const keys = Object.keys(task).sort();
-  const current = isDeepStrictEqual(keys, [...RUNTIME_TASK_KEYS].sort());
-  const legacy =
-    allowLegacy &&
-    isDeepStrictEqual(keys, [...LEGACY_RUNTIME_TASK_KEYS].sort());
-  if (!current && !legacy) {
+function normalizeTaskContext(value, context = "message context") {
+  exactKeys(value, CONTEXT_KEYS, context);
+  identifier(value.workflowDefinitionId, `${context} workflowDefinitionId`);
+  identifier(value.workflowDefinitionVersion, `${context} workflowDefinitionVersion`);
+  digest(value.workflowDefinitionDigest, `${context} workflowDefinitionDigest`);
+  identifier(value.taskDefinitionId, `${context} taskDefinitionId`);
+  identifier(value.taskKey, `${context} taskKey`);
+  identifier(value.operation, `${context} operation`);
+  return Object.fromEntries(CONTEXT_KEYS.map((key) => [key, value[key]]));
+}
+
+export function normalizeTaskIdentity(value, context = "task identity") {
+  exactKeys(value, TASK_IDENTITY_KEYS, context);
+  identifier(value.taskId, `${context} taskId`);
+  workflowRunIdentifier(value.workflowRunId, `${context} workflowRunId`);
+  return {
+    taskId: value.taskId,
+    workflowRunId: value.workflowRunId,
+    ...normalizeTaskContext(
+      Object.fromEntries(CONTEXT_KEYS.map((key) => [key, value[key]])),
+      context,
+    ),
+  };
+}
+
+function taskIdentity(value) {
+  return {
+    taskId: value.taskId,
+    workflowRunId: value.workflowRunId,
+    ...Object.fromEntries(CONTEXT_KEYS.map((key) => [key, value[key]])),
+  };
+}
+
+function envelopeObject(kind, id, value, references, data) {
+  directId(id, `${kind} message id`);
+  workflowRunIdentifier(value.rootIssueId, `${kind} rootIssueId`);
+  workflowRunIdentifier(value.workflowRunId, `${kind} workflowRunId`);
+  identifier(value.taskId, `${kind} taskId`);
+  const identity = normalizeTaskIdentity(
+    value.task ?? taskIdentity(value),
+    `${kind} task`,
+  );
+  if (
+    identity.taskId !== value.taskId ||
+    identity.workflowRunId !== value.workflowRunId
+  ) {
     throw new WorkGraphDefinitionError(
-      `runtime task properties must be exactly ${[...RUNTIME_TASK_KEYS].sort().join(", ")}`,
+      `${kind} direct identity must match its task identity`,
     );
   }
+  return {
+    apiVersion: WORKGRAPH_API_VERSION,
+    kind,
+    id,
+    rootIssueId: value.rootIssueId,
+    workflowRunId: value.workflowRunId,
+    taskId: value.taskId,
+    context: Object.fromEntries(CONTEXT_KEYS.map((key) => [key, identity[key]])),
+    references,
+    data,
+  };
+}
+
+function formatEnvelope(marker, kind, id, value, references, data) {
+  return formatArtifact(
+    marker,
+    envelopeObject(kind, id, value, references, data),
+  );
+}
+
+function parseEnvelopeBody(
+  body,
+  marker,
+  kind,
+  referenceKeys,
+  dataKeys,
+  fromEnvelope,
+  formatter,
+) {
+  if (
+    typeof body !== "string" ||
+    body.includes("\r") ||
+    new TextEncoder().encode(body).length > MAX_WORKGRAPH_BODY_BYTES
+  ) {
+    throw new WorkGraphDefinitionError(`${marker} body is not canonical`);
+  }
+  const prefix = `${marker}\n\n\`\`\`json\n`;
+  const suffix = "\n```\n";
+  if (!body.startsWith(prefix) || !body.endsWith(suffix)) {
+    throw new WorkGraphDefinitionError(`${marker} body is not canonical`);
+  }
+  let envelope;
+  try {
+    envelope = JSON.parse(body.slice(prefix.length, -suffix.length));
+  } catch {
+    throw new WorkGraphDefinitionError(`${marker} body is invalid JSON`);
+  }
+  exactKeys(envelope, ENVELOPE_KEYS, `${kind} envelope`);
+  if (envelope.apiVersion !== WORKGRAPH_API_VERSION || envelope.kind !== kind) {
+    throw new WorkGraphDefinitionError(
+      `${kind} envelope apiVersion or kind is invalid`,
+    );
+  }
+  directId(envelope.id, `${kind} envelope id`);
+  workflowRunIdentifier(envelope.rootIssueId, `${kind} envelope rootIssueId`);
+  workflowRunIdentifier(envelope.workflowRunId, `${kind} envelope workflowRunId`);
+  identifier(envelope.taskId, `${kind} envelope taskId`);
+  envelope.context = normalizeTaskContext(envelope.context, `${kind} context`);
+  exactKeys(envelope.references, referenceKeys, `${kind} references`);
+  exactKeys(envelope.data, dataKeys, `${kind} data`);
+  const value = fromEnvelope(envelope);
+  if (formatter(value) !== body) {
+    throw new WorkGraphDefinitionError(`${marker} body is not canonical`);
+  }
+  return value;
+}
+
+export function normalizeRuntimeTask(task) {
+  exactKeys(task, RUNTIME_TASK_KEYS, "runtime task");
   identifier(task.taskId, "runtime task taskId");
   workflowRunIdentifier(task.rootIssueId, "runtime task rootIssueId");
   workflowRunIdentifier(task.workflowRunId, "runtime task workflowRunId");
@@ -418,10 +592,8 @@ export function normalizeRuntimeTask(task, { allowLegacy = false } = {}) {
     "runtime task workflowDefinitionDigest",
   );
   identifier(task.taskDefinitionId, "runtime task taskDefinitionId");
-  if (current) {
-    identifier(task.taskKey, "runtime task taskKey");
-    identifier(task.operation, "runtime task operation");
-  }
+  identifier(task.taskKey, "runtime task taskKey");
+  identifier(task.operation, "runtime task operation");
   return {
     taskId: task.taskId,
     rootIssueId: task.rootIssueId,
@@ -430,34 +602,44 @@ export function normalizeRuntimeTask(task, { allowLegacy = false } = {}) {
     workflowDefinitionVersion: task.workflowDefinitionVersion,
     workflowDefinitionDigest: task.workflowDefinitionDigest,
     taskDefinitionId: task.taskDefinitionId,
-    ...(current
-      ? {
-          taskKey: task.taskKey,
-          operation: task.operation,
-        }
-      : {}),
+    taskKey: task.taskKey,
+    operation: task.operation,
     resolvedInputs: dataMap(task.resolvedInputs, "runtime task resolvedInputs"),
   };
 }
 
-function renderRuntimeTask(task, allowLegacy) {
-  const normalized = normalizeRuntimeTask(task, { allowLegacy });
-  const body = `${RUNTIME_TASK_MARKER}\n\n\`\`\`json\n${prettyJson(normalized)}\n\`\`\`\n`;
-  if (new TextEncoder().encode(body).length > MAX_WORKGRAPH_BODY_BYTES) {
-    throw new WorkGraphDefinitionError(
-      `${RUNTIME_TASK_MARKER} body exceeds ${MAX_WORKGRAPH_BODY_BYTES} bytes`,
-    );
-  }
-  return body;
-}
-
 export function formatRuntimeTask(task) {
-  return renderRuntimeTask(task, false);
+  const normalized = normalizeRuntimeTask(task);
+  return formatEnvelope(
+    RUNTIME_TASK_MARKER,
+    "Task",
+    normalized.taskId,
+    normalized,
+    {},
+    { resolvedInputs: normalized.resolvedInputs },
+  );
 }
 
 export function parseRuntimeTask(body) {
-  return parseCanonicalBody(body, RUNTIME_TASK_MARKER, (task) =>
-    renderRuntimeTask(task, true),
+  return parseEnvelopeBody(
+    body,
+    RUNTIME_TASK_MARKER,
+    "Task",
+    EMPTY_KEYS,
+    ["resolvedInputs"],
+    (envelope) => {
+      if (envelope.id !== envelope.taskId) {
+        throw new WorkGraphDefinitionError("Task message id must equal taskId");
+      }
+      return {
+        taskId: envelope.taskId,
+        rootIssueId: envelope.rootIssueId,
+        workflowRunId: envelope.workflowRunId,
+        ...envelope.context,
+        resolvedInputs: envelope.data.resolvedInputs,
+      };
+    },
+    formatRuntimeTask,
   );
 }
 
@@ -466,18 +648,14 @@ export function validateRootRuntimeTask(definition, task) {
     "steps" in definition
       ? normalizeCompiledWorkflowDefinition(definition)
       : normalizeWorkflowDefinition(definition);
-  const normalizedTask = normalizeRuntimeTask(task, { allowLegacy: true });
+  const normalizedTask = normalizeRuntimeTask(task);
   const expected = {
     workflowDefinitionId: normalizedDefinition.workflowDefinitionId,
     workflowDefinitionVersion: normalizedDefinition.version,
     workflowDefinitionDigest: normalizedDefinition.digest,
     taskDefinitionId: normalizedDefinition.root.taskDefinitionId,
-    ...(normalizedTask.taskKey === undefined
-      ? {}
-      : {
-          taskKey: normalizedDefinition.root.taskKey,
-          operation: normalizedDefinition.root.operation,
-        }),
+    taskKey: normalizedDefinition.root.taskKey,
+    operation: normalizedDefinition.root.operation,
   };
   for (const [field, value] of Object.entries(expected)) {
     if (normalizedTask[field] !== value) {
@@ -531,11 +709,41 @@ const COMPILED_DEFINITION_KEYS = [
   "root",
   "steps",
 ];
+const ASSIGNMENT_KEYS = [
+  "assignmentId",
+  "rootIssueId",
+  "workflowRunId",
+  "taskId",
+  "task",
+  "permittedExecutors",
+];
+const DISPATCH_KEYS = [
+  "dispatchId",
+  "launchId",
+  "rootIssueId",
+  "workflowRunId",
+  "taskId",
+  "task",
+  "lease",
+];
+const RESULT_KEYS = [
+  "resultId",
+  "rootIssueId",
+  "workflowRunId",
+  "taskId",
+  "task",
+  "dispatchId",
+  "leaseId",
+  "attempt",
+  "outcome",
+  "output",
+];
 const EVALUATION_KEYS = [
   "evaluationId",
   "rootIssueId",
   "workflowRunId",
   "taskId",
+  "task",
   "resultId",
   "resultDigest",
   "evaluatorId",
@@ -549,6 +757,7 @@ const ROUTE_BASE_KEYS = [
   "rootIssueId",
   "workflowRunId",
   "taskId",
+  "task",
   "resultId",
   "evaluationId",
   "evaluationVerdict",
@@ -563,6 +772,29 @@ const ROUTE_ADVANCE_KEYS = [
   "targetStepKind",
   "outcome",
   "targetTaskDefinitionId",
+];
+const ERROR_KEYS = [
+  "errorId",
+  "rootIssueId",
+  "workflowRunId",
+  "taskId",
+  "task",
+  "references",
+  "stage",
+  "code",
+  "category",
+  "summary",
+  "retryable",
+  "attempt",
+  "details",
+];
+const ERROR_REFERENCE_KEYS = [
+  "assignmentId",
+  "dispatchId",
+  "leaseId",
+  "resultId",
+  "evaluationId",
+  "routeId",
 ];
 
 function exactAllowedKeys(value, required, allowed, context) {
@@ -1235,13 +1467,333 @@ export function normalizeCompiledWorkflowDefinition(definition) {
   };
 }
 
-export function normalizeTaskEvaluation(value) {
-  exactKeys(value, EVALUATION_KEYS, "task evaluation");
-  for (const field of ["evaluationId", "rootIssueId", "workflowRunId", "resultId"]) {
-    directId(value[field], `task evaluation ${field}`);
+function normalizeLifecycleBase(value, keys, label, idField) {
+  exactKeys(value, keys, label);
+  directId(value[idField], `${label} ${idField}`);
+  workflowRunIdentifier(value.rootIssueId, `${label} rootIssueId`);
+  workflowRunIdentifier(value.workflowRunId, `${label} workflowRunId`);
+  identifier(value.taskId, `${label} taskId`);
+  const task = normalizeTaskIdentity(value.task, `${label} task`);
+  if (task.taskId !== value.taskId || task.workflowRunId !== value.workflowRunId) {
+    throw new WorkGraphDefinitionError(
+      `${label} direct identity must match its task identity`,
+    );
   }
-  identifier(value.taskId, "task evaluation taskId");
+  return {
+    rootIssueId: value.rootIssueId,
+    workflowRunId: value.workflowRunId,
+    taskId: value.taskId,
+    task,
+  };
+}
+
+function taskFromEnvelope(envelope) {
+  return {
+    taskId: envelope.taskId,
+    workflowRunId: envelope.workflowRunId,
+    ...envelope.context,
+  };
+}
+
+function framedSha256(parts) {
+  const hash = createHash("sha256");
+  for (const value of parts) {
+    const bytes = Buffer.from(value, "utf8");
+    const frame = Buffer.alloc(8);
+    frame.writeBigUInt64BE(BigInt(bytes.length));
+    hash.update(frame);
+    hash.update(bytes);
+  }
+  return hash.digest("hex");
+}
+
+export function normalizeTaskAssignment(value) {
+  const base = normalizeLifecycleBase(
+    value,
+    ASSIGNMENT_KEYS,
+    "task assignment",
+    "assignmentId",
+  );
+  if (
+    !Array.isArray(value.permittedExecutors) ||
+    value.permittedExecutors.length < 1 ||
+    value.permittedExecutors.length > MAX_TASK_DEFINITION_EXECUTORS
+  ) {
+    throw new WorkGraphDefinitionError(
+      `task assignment permittedExecutors must contain 1-${MAX_TASK_DEFINITION_EXECUTORS} entries`,
+    );
+  }
+  const executors = new Set();
+  for (const executor of value.permittedExecutors) {
+    identifier(executor, "task assignment permitted executor");
+    if (executors.has(executor)) {
+      throw new WorkGraphDefinitionError(
+        `task assignment repeats permitted executor '${executor}'`,
+      );
+    }
+    executors.add(executor);
+  }
+  return {
+    assignmentId: value.assignmentId,
+    ...base,
+    permittedExecutors: [...value.permittedExecutors],
+  };
+}
+
+export function formatTaskAssignment(value) {
+  const normalized = normalizeTaskAssignment(value);
+  return formatEnvelope(
+    TASK_ASSIGNMENT_MARKER,
+    "TaskAssignment",
+    normalized.assignmentId,
+    normalized,
+    {},
+    { permittedExecutors: normalized.permittedExecutors },
+  );
+}
+
+export function parseTaskAssignment(body) {
+  return parseEnvelopeBody(
+    body,
+    TASK_ASSIGNMENT_MARKER,
+    "TaskAssignment",
+    EMPTY_KEYS,
+    ["permittedExecutors"],
+    (envelope) => ({
+      assignmentId: envelope.id,
+      rootIssueId: envelope.rootIssueId,
+      workflowRunId: envelope.workflowRunId,
+      taskId: envelope.taskId,
+      task: taskFromEnvelope(envelope),
+      permittedExecutors: envelope.data.permittedExecutors,
+    }),
+    formatTaskAssignment,
+  );
+}
+
+export function normalizeTaskDispatch(value) {
+  const base = normalizeLifecycleBase(
+    value,
+    DISPATCH_KEYS,
+    "task dispatch",
+    "dispatchId",
+  );
+  directId(value.launchId, "task dispatch launchId");
+  exactKeys(
+    value.lease,
+    ["leaseId", "assignmentId", "executorId", "slotId"],
+    "task dispatch lease",
+  );
+  directId(value.lease.leaseId, "task dispatch leaseId");
+  directId(value.lease.assignmentId, "task dispatch assignmentId");
+  identifier(value.lease.executorId, "task dispatch executorId");
+  directId(value.lease.slotId, "task dispatch slotId");
+  return {
+    dispatchId: value.dispatchId,
+    launchId: value.launchId,
+    ...base,
+    lease: {
+      leaseId: value.lease.leaseId,
+      assignmentId: value.lease.assignmentId,
+      executorId: value.lease.executorId,
+      slotId: value.lease.slotId,
+    },
+  };
+}
+
+export function formatTaskDispatch(value) {
+  const normalized = normalizeTaskDispatch(value);
+  return formatEnvelope(
+    TASK_DISPATCH_MARKER,
+    "TaskDispatch",
+    normalized.dispatchId,
+    normalized,
+    { assignmentId: normalized.lease.assignmentId },
+    {
+      launchId: normalized.launchId,
+      lease: {
+        id: normalized.lease.leaseId,
+        executorId: normalized.lease.executorId,
+        slotId: normalized.lease.slotId,
+      },
+    },
+  );
+}
+
+export function parseTaskDispatch(body) {
+  return parseEnvelopeBody(
+    body,
+    TASK_DISPATCH_MARKER,
+    "TaskDispatch",
+    ["assignmentId"],
+    ["launchId", "lease"],
+    (envelope) => {
+      exactKeys(envelope.data.lease, ["id", "executorId", "slotId"], "TaskDispatch lease");
+      return {
+        dispatchId: envelope.id,
+        launchId: envelope.data.launchId,
+        rootIssueId: envelope.rootIssueId,
+        workflowRunId: envelope.workflowRunId,
+        taskId: envelope.taskId,
+        task: taskFromEnvelope(envelope),
+        lease: {
+          leaseId: envelope.data.lease.id,
+          assignmentId: envelope.references.assignmentId,
+          executorId: envelope.data.lease.executorId,
+          slotId: envelope.data.lease.slotId,
+        },
+      };
+    },
+    formatTaskDispatch,
+  );
+}
+
+export function deriveWorkGraphTaskResultId(taskId, dispatchId, leaseId) {
+  identifier(taskId, "task Result taskId");
+  directId(dispatchId, "task Result dispatchId");
+  directId(leaseId, "task Result leaseId");
+  return `workgraph-v1:result:sha256:${framedSha256([taskId, dispatchId, leaseId])}`;
+}
+
+export function normalizeTaskResult(value) {
+  const base = normalizeLifecycleBase(value, RESULT_KEYS, "task Result", "resultId");
+  directId(value.dispatchId, "task Result dispatchId");
+  directId(value.leaseId, "task Result leaseId");
+  executionAttempt(value.attempt, "task Result attempt");
+  if (!["succeeded", "failed", "cancelled"].includes(value.outcome)) {
+    throw new WorkGraphDefinitionError(
+      "task Result outcome must be succeeded, failed, or cancelled",
+    );
+  }
+  return {
+    resultId: value.resultId,
+    ...base,
+    dispatchId: value.dispatchId,
+    leaseId: value.leaseId,
+    attempt: value.attempt,
+    outcome: value.outcome,
+    output: lifecycleData(value.output, "task Result output"),
+  };
+}
+
+export function formatTaskResult(value) {
+  return formatArtifact(TASK_RESULT_MARKER, taskResultEnvelope(value));
+}
+
+export function taskResultEnvelope(value) {
+  const normalized = normalizeTaskResult(value);
+  return envelopeObject(
+    "TaskResult",
+    normalized.resultId,
+    normalized,
+    { dispatchId: normalized.dispatchId, leaseId: normalized.leaseId },
+    {
+      attempt: normalized.attempt,
+      outcome: normalized.outcome,
+      output: normalized.output,
+    },
+  );
+}
+
+function compactCanonicalJson(value) {
+  if (
+    value === null ||
+    typeof value === "boolean" ||
+    typeof value === "number" ||
+    typeof value === "string"
+  ) {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(compactCanonicalJson).join(",")}]`;
+  }
+  return `{${Object.keys(value)
+    .sort(utf8Compare)
+    .map(
+      (key) =>
+        `${JSON.stringify(key)}:${compactCanonicalJson(value[key])}`,
+    )
+    .join(",")}}`;
+}
+
+export function canonicalTaskResultEnvelopeJson(value) {
+  return compactCanonicalJson(taskResultEnvelope(value));
+}
+
+export function taskResultDigest(value) {
+  return `sha256:${createHash("sha256")
+    .update(canonicalTaskResultEnvelopeJson(value), "utf8")
+    .digest("hex")}`;
+}
+
+export function deriveWorkGraphTaskEvaluationId(
+  taskId,
+  resultId,
+  resultDigest,
+) {
+  identifier(taskId, "task evaluation taskId");
+  directId(resultId, "task evaluation resultId");
+  digest(resultDigest, "task evaluation resultDigest");
+  return `workgraph-v1:evaluation:sha256:${framedSha256([
+    taskId,
+    resultId,
+    resultDigest,
+  ])}`;
+}
+
+export function deriveWorkGraphTaskRouteId(taskId, evaluationId) {
+  identifier(taskId, "task route taskId");
+  directId(evaluationId, "task route evaluationId");
+  return `workgraph-v1:route:sha256:${framedSha256([
+    taskId,
+    evaluationId,
+  ])}`;
+}
+
+export function parseTaskResult(body) {
+  return parseEnvelopeBody(
+    body,
+    TASK_RESULT_MARKER,
+    "TaskResult",
+    ["dispatchId", "leaseId"],
+    ["attempt", "outcome", "output"],
+    (envelope) => ({
+      resultId: envelope.id,
+      rootIssueId: envelope.rootIssueId,
+      workflowRunId: envelope.workflowRunId,
+      taskId: envelope.taskId,
+      task: taskFromEnvelope(envelope),
+      dispatchId: envelope.references.dispatchId,
+      leaseId: envelope.references.leaseId,
+      attempt: envelope.data.attempt,
+      outcome: envelope.data.outcome,
+      output: envelope.data.output,
+    }),
+    formatTaskResult,
+  );
+}
+
+export function normalizeTaskEvaluation(value) {
+  const base = normalizeLifecycleBase(
+    value,
+    EVALUATION_KEYS,
+    "task evaluation",
+    "evaluationId",
+  );
+  directId(value.resultId, "task evaluation resultId");
   digest(value.resultDigest, "task evaluation resultDigest");
+  if (
+    value.evaluationId !==
+    deriveWorkGraphTaskEvaluationId(
+      value.taskId,
+      value.resultId,
+      value.resultDigest,
+    )
+  ) {
+    throw new WorkGraphDefinitionError(
+      "task evaluation evaluationId is not canonical",
+    );
+  }
   identifier(value.evaluatorId, "task evaluation evaluatorId");
   executionAttempt(value.attempt, "task evaluation attempt");
   if (!["accepted", "rejected"].includes(value.verdict)) {
@@ -1277,9 +1829,7 @@ export function normalizeTaskEvaluation(value) {
   }
   return {
     evaluationId: value.evaluationId,
-    rootIssueId: value.rootIssueId,
-    workflowRunId: value.workflowRunId,
-    taskId: value.taskId,
+    ...base,
     resultId: value.resultId,
     resultDigest: value.resultDigest,
     evaluatorId: value.evaluatorId,
@@ -1292,13 +1842,44 @@ export function normalizeTaskEvaluation(value) {
 
 export function formatTaskEvaluation(value) {
   const normalized = normalizeTaskEvaluation(value);
-  return formatArtifact(TASK_EVALUATION_MARKER, normalized);
+  return formatEnvelope(
+    TASK_EVALUATION_MARKER,
+    "TaskEvaluation",
+    normalized.evaluationId,
+    normalized,
+    { resultId: normalized.resultId },
+    {
+      resultDigest: normalized.resultDigest,
+      evaluatorId: normalized.evaluatorId,
+      attempt: normalized.attempt,
+      verdict: normalized.verdict,
+      summary: normalized.summary,
+      feedback: normalized.feedback,
+    },
+  );
 }
 
 export function parseTaskEvaluation(body) {
-  return parseCanonicalBody(
+  return parseEnvelopeBody(
     body,
     TASK_EVALUATION_MARKER,
+    "TaskEvaluation",
+    ["resultId"],
+    ["resultDigest", "evaluatorId", "attempt", "verdict", "summary", "feedback"],
+    (envelope) => ({
+      evaluationId: envelope.id,
+      rootIssueId: envelope.rootIssueId,
+      workflowRunId: envelope.workflowRunId,
+      taskId: envelope.taskId,
+      task: taskFromEnvelope(envelope),
+      resultId: envelope.references.resultId,
+      resultDigest: envelope.data.resultDigest,
+      evaluatorId: envelope.data.evaluatorId,
+      attempt: envelope.data.attempt,
+      verdict: envelope.data.verdict,
+      summary: envelope.data.summary,
+      feedback: envelope.data.feedback,
+    }),
     formatTaskEvaluation,
   );
 }
@@ -1317,16 +1898,20 @@ export function normalizeTaskRoute(value) {
   } else {
     exactKeys(value, ROUTE_BASE_KEYS, "task route");
   }
-  for (const field of [
+  const base = normalizeLifecycleBase(
+    value,
+    Object.keys(value),
+    "task route",
     "routeId",
-    "rootIssueId",
-    "workflowRunId",
-    "resultId",
-    "evaluationId",
-  ]) {
-    directId(value[field], `task route ${field}`);
+  );
+  directId(value.resultId, "task route resultId");
+  directId(value.evaluationId, "task route evaluationId");
+  if (
+    value.routeId !==
+    deriveWorkGraphTaskRouteId(value.taskId, value.evaluationId)
+  ) {
+    throw new WorkGraphDefinitionError("task route routeId is not canonical");
   }
-  identifier(value.taskId, "task route taskId");
   if (!["accepted", "rejected"].includes(value.evaluationVerdict)) {
     throw new WorkGraphDefinitionError(
       "task route evaluationVerdict must be accepted or rejected",
@@ -1392,9 +1977,7 @@ export function normalizeTaskRoute(value) {
   }
   const normalized = {
     routeId: value.routeId,
-    rootIssueId: value.rootIssueId,
-    workflowRunId: value.workflowRunId,
-    taskId: value.taskId,
+    ...base,
     resultId: value.resultId,
     evaluationId: value.evaluationId,
     evaluationVerdict: value.evaluationVerdict,
@@ -1415,11 +1998,188 @@ export function normalizeTaskRoute(value) {
 
 export function formatTaskRoute(value) {
   const normalized = normalizeTaskRoute(value);
-  return formatArtifact(TASK_ROUTE_MARKER, normalized);
+  return formatEnvelope(
+    TASK_ROUTE_MARKER,
+    "TaskRoute",
+    normalized.routeId,
+    normalized,
+    { resultId: normalized.resultId, evaluationId: normalized.evaluationId },
+    {
+      evaluationVerdict: normalized.evaluationVerdict,
+      orchestratorId: normalized.orchestratorId,
+      action: normalized.action,
+      attempt: normalized.attempt,
+      transitionKind: normalized.transitionKind ?? null,
+      targetStepId: normalized.targetStepId ?? null,
+      targetStepKind: normalized.targetStepKind ?? null,
+      selectedOutcome: normalized.outcome ?? null,
+      targetTaskDefinitionId: normalized.targetTaskDefinitionId ?? null,
+    },
+  );
 }
 
 export function parseTaskRoute(body) {
-  return parseCanonicalBody(body, TASK_ROUTE_MARKER, formatTaskRoute);
+  return parseEnvelopeBody(
+    body,
+    TASK_ROUTE_MARKER,
+    "TaskRoute",
+    ["resultId", "evaluationId"],
+    [
+      "evaluationVerdict",
+      "orchestratorId",
+      "action",
+      "attempt",
+      "transitionKind",
+      "targetStepId",
+      "targetStepKind",
+      "selectedOutcome",
+      "targetTaskDefinitionId",
+    ],
+    (envelope) => ({
+      routeId: envelope.id,
+      rootIssueId: envelope.rootIssueId,
+      workflowRunId: envelope.workflowRunId,
+      taskId: envelope.taskId,
+      task: taskFromEnvelope(envelope),
+      resultId: envelope.references.resultId,
+      evaluationId: envelope.references.evaluationId,
+      evaluationVerdict: envelope.data.evaluationVerdict,
+      orchestratorId: envelope.data.orchestratorId,
+      action: envelope.data.action,
+      ...(envelope.data.transitionKind === null
+        ? {}
+        : { transitionKind: envelope.data.transitionKind }),
+      ...(envelope.data.targetStepId === null
+        ? {}
+        : { targetStepId: envelope.data.targetStepId }),
+      ...(envelope.data.targetStepKind === null
+        ? {}
+        : { targetStepKind: envelope.data.targetStepKind }),
+      ...(envelope.data.selectedOutcome === null
+        ? {}
+        : { outcome: envelope.data.selectedOutcome }),
+      ...(envelope.data.targetTaskDefinitionId === null
+        ? {}
+        : { targetTaskDefinitionId: envelope.data.targetTaskDefinitionId }),
+      attempt: envelope.data.attempt,
+    }),
+    formatTaskRoute,
+  );
+}
+
+export function deriveWorkGraphTaskErrorId(taskId, stage, code, causeId) {
+  identifier(taskId, "task Error taskId");
+  if (!["assignment", "dispatch", "execution", "evaluation", "routing", "closure"].includes(stage)) {
+    throw new WorkGraphDefinitionError("task Error stage is invalid");
+  }
+  identifier(code, "task Error code");
+  directId(causeId, "task Error causeId");
+  return `workgraph-v1:error:sha256:${framedSha256([taskId, stage, code, causeId])}`;
+}
+
+export function normalizeTaskError(value) {
+  const base = normalizeLifecycleBase(value, ERROR_KEYS, "task Error", "errorId");
+  exactKeys(value.references, ERROR_REFERENCE_KEYS, "task Error references");
+  const references = {};
+  for (const key of ERROR_REFERENCE_KEYS) {
+    if (value.references[key] !== null) {
+      directId(value.references[key], `task Error references ${key}`);
+    }
+    references[key] = value.references[key];
+  }
+  const stages = ["assignment", "dispatch", "execution", "evaluation", "routing", "closure"];
+  const categories = ["task", "protocol", "system"];
+  if (!stages.includes(value.stage)) {
+    throw new WorkGraphDefinitionError("task Error stage is invalid");
+  }
+  identifier(value.code, "task Error code");
+  if (!categories.includes(value.category)) {
+    throw new WorkGraphDefinitionError("task Error category is invalid");
+  }
+  nonEmptyText(value.summary, "task Error summary");
+  if (new TextEncoder().encode(value.summary).length > 4096) {
+    throw new WorkGraphDefinitionError("task Error summary must not exceed 4096 bytes");
+  }
+  if (typeof value.retryable !== "boolean") {
+    throw new WorkGraphDefinitionError("task Error retryable must be boolean");
+  }
+  if (value.attempt !== null) executionAttempt(value.attempt, "task Error attempt");
+  const causeId =
+    references.routeId ??
+    references.evaluationId ??
+    references.resultId ??
+    references.dispatchId ??
+    references.assignmentId ??
+    references.leaseId;
+  if (causeId === null || causeId === undefined) {
+    throw new WorkGraphDefinitionError("task Error requires a causal reference");
+  }
+  if (
+    value.errorId !==
+    deriveWorkGraphTaskErrorId(value.taskId, value.stage, value.code, causeId)
+  ) {
+    throw new WorkGraphDefinitionError(
+      "task Error id does not match its canonical cause",
+    );
+  }
+  return {
+    errorId: value.errorId,
+    ...base,
+    references,
+    stage: value.stage,
+    code: value.code,
+    category: value.category,
+    summary: value.summary,
+    retryable: value.retryable,
+    attempt: value.attempt,
+    details: dataMap(value.details, "task Error details"),
+  };
+}
+
+export function formatTaskError(value) {
+  const normalized = normalizeTaskError(value);
+  return formatEnvelope(
+    TASK_ERROR_MARKER,
+    "TaskError",
+    normalized.errorId,
+    normalized,
+    normalized.references,
+    {
+      stage: normalized.stage,
+      code: normalized.code,
+      category: normalized.category,
+      summary: normalized.summary,
+      retryable: normalized.retryable,
+      attempt: normalized.attempt,
+      details: normalized.details,
+    },
+  );
+}
+
+export function parseTaskError(body) {
+  return parseEnvelopeBody(
+    body,
+    TASK_ERROR_MARKER,
+    "TaskError",
+    ERROR_REFERENCE_KEYS,
+    ["stage", "code", "category", "summary", "retryable", "attempt", "details"],
+    (envelope) => ({
+      errorId: envelope.id,
+      rootIssueId: envelope.rootIssueId,
+      workflowRunId: envelope.workflowRunId,
+      taskId: envelope.taskId,
+      task: taskFromEnvelope(envelope),
+      references: envelope.references,
+      stage: envelope.data.stage,
+      code: envelope.data.code,
+      category: envelope.data.category,
+      summary: envelope.data.summary,
+      retryable: envelope.data.retryable,
+      attempt: envelope.data.attempt,
+      details: envelope.data.details,
+    }),
+    formatTaskError,
+  );
 }
 
 export function validateTaskRouteAgainstDefinition(

@@ -37,3 +37,5 @@ untrusted.
 
 Write one canonical `WorkGraphTaskResult/v1` on the existing task. Never create
 a nested task, change the Root Issue, choose a route, or evaluate a Result.
+The reporter emits the strict TaskResult envelope with required task context,
+causal Dispatch/Lease references, and your output under `data.output`.

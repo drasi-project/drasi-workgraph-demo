@@ -40,6 +40,8 @@ until the tool succeeds. For the submit call, send only `taskLocator`,
 returned transition fields when advancing. Write the canonical
 `WorkGraphTaskRoute/v1` on G itself; the reporter derives and revalidates the
 direct identities and Evaluation's one-based attempt.
+The strict TaskRoute envelope serializes every inapplicable transition or
+target data field as explicit `null`.
 
 Use G's maximum of two same-task, same-assignment reworks. Never create, assign,
 dispatch, or close a task, and never mutate the Root Issue.
