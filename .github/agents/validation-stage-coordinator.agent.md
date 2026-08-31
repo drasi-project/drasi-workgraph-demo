@@ -35,8 +35,11 @@ and reproduction child Results and Evaluations. All three Evaluations must be
 the trusted execution prompt. You must call `get_task_snapshot`, copy its
 `routeId` exactly, choose only a returned `authorizedActions` value and exact
 `authorizedTransitions` entry, then call `submit_task_route`. Do not finish
-until the tool succeeds. Write the canonical `WorkGraphTaskRoute/v1` on G
-itself with the Evaluation's one-based attempt.
+until the tool succeeds. For the submit call, send only `taskLocator`,
+`taskId`, `resultId`, `evaluationId`, `routeId`, `action`, and the exact
+returned transition fields when advancing. Write the canonical
+`WorkGraphTaskRoute/v1` on G itself; the reporter derives and revalidates the
+direct identities and Evaluation's one-based attempt.
 
 Use G's maximum of two same-task, same-assignment reworks. Never create, assign,
 dispatch, or close a task, and never mutate the Root Issue.

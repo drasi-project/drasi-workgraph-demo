@@ -2057,6 +2057,61 @@ async function readLifecycleContext(
   };
 }
 
+async function hydrateLifecycleSubmissionInput(
+  input,
+  github,
+  config,
+  extraKeys,
+) {
+  const fullKeys = [...LIFECYCLE_CONTEXT_KEYS, ...extraKeys].sort();
+  if (
+    object(input) &&
+    isDeepStrictEqual(Object.keys(input).sort(), fullKeys)
+  ) {
+    validateLifecycleContextInput(input, extraKeys);
+    return input;
+  }
+
+  exact(
+    input,
+    ["taskLocator", "taskId", "resultId", ...extraKeys],
+    "arguments",
+  );
+  const locator = validateTaskLocator(input.taskLocator);
+  opaque(input.taskId, "arguments.taskId");
+  opaque(input.resultId, "arguments.resultId");
+  const [issue, comments] = await Promise.all([
+    github.issue(locator.issueNumber),
+    github.comments(locator.issueNumber),
+  ]);
+  const task = taskIssue(issue, locator, config, "Task");
+  if (task.taskId !== input.taskId) {
+    throw new WorkGraphReporterError("taskId does not match WorkGraphTask/v1");
+  }
+  const results = markedComments(
+    comments,
+    TASK_RESULT_MARKER,
+    parseTaskResult,
+  ).filter(({ payload }) => payload?.resultId === input.resultId);
+  if (results.length !== 1) {
+    throw new WorkGraphReporterError(
+      "resultId does not identify exactly one canonical Result",
+    );
+  }
+  const result = results[0].payload;
+  return {
+    taskLocator: input.taskLocator,
+    rootIssueId: task.rootIssueId,
+    workflowRunId: task.workflowRunId,
+    taskId: task.taskId,
+    dispatchId: result.dispatchId,
+    leaseId: result.leaseId,
+    resultId: result.resultId,
+    attempt: result.attempt,
+    ...Object.fromEntries(extraKeys.map((key) => [key, input[key]])),
+  };
+}
+
 function transitionChoices(context, result) {
   if (!context.isStepRoot) return [];
   const transition = context.source.transition;
@@ -2302,6 +2357,7 @@ async function reconcileLifecycleComment({
 
 async function submitTaskEvaluation(input, github, config) {
   const extra = ["evaluationId", "verdict", "summary", "feedback"];
+  input = await hydrateLifecycleSubmissionInput(input, github, config, extra);
   const readAny = () =>
     readLifecycleContext(input, github, config, extra, false, false);
   const readOpen = () =>
@@ -2389,6 +2445,7 @@ async function submitTaskRoute(input, github, config) {
         ]
       : [];
   const extra = ["evaluationId", "routeId", "action", ...transitionKeys];
+  input = await hydrateLifecycleSubmissionInput(input, github, config, extra);
   const readAny = () =>
     readLifecycleContext(input, github, config, extra, false, false);
   const readOpen = () =>
@@ -2662,6 +2719,12 @@ const lifecycleContextProperties = {
   },
 };
 
+const lifecycleSubmissionProperties = {
+  taskLocator: locatorSchema,
+  taskId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
+  resultId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
+};
+
 export const tools = [
   {
     name: "get_root_issue",
@@ -2696,7 +2759,7 @@ export const tools = [
     description:
       "Create or reconcile one canonical WorkGraphTaskEvaluate/v1 for the exact current Result using the evaluationId returned by get_task_snapshot.",
     inputSchema: schema({
-      ...lifecycleContextProperties,
+      ...lifecycleSubmissionProperties,
       evaluationId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
       verdict: { type: "string", enum: ["accepted", "rejected"] },
       summary: { type: "string", minLength: 1, maxLength: 4096 },
@@ -2711,7 +2774,7 @@ export const tools = [
       type: "object",
       additionalProperties: false,
       properties: {
-        ...lifecycleContextProperties,
+        ...lifecycleSubmissionProperties,
         evaluationId: {
           type: "string",
           minLength: 1,
@@ -2736,7 +2799,7 @@ export const tools = [
         },
       },
       required: [
-        ...Object.keys(lifecycleContextProperties),
+        ...Object.keys(lifecycleSubmissionProperties),
         "evaluationId",
         "routeId",
         "action",

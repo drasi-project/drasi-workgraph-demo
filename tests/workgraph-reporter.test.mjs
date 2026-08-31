@@ -995,6 +995,22 @@ test("MCP exposes only narrow WorkGraph readers and lifecycle writers", async ()
       "submit_task_route",
     ],
   );
+  const lifecycleWriteKeys = ["taskLocator", "taskId", "resultId"];
+  assert.deepEqual(
+    tools.find(({ name }) => name === "submit_task_evaluation").inputSchema
+      .required,
+    [
+      ...lifecycleWriteKeys,
+      "evaluationId",
+      "verdict",
+      "summary",
+      "feedback",
+    ],
+  );
+  assert.deepEqual(
+    tools.find(({ name }) => name === "submit_task_route").inputSchema.required,
+    [...lifecycleWriteKeys, "evaluationId", "routeId", "action"],
+  );
   const child = spawn(process.execPath, [REPORTER], {
     cwd: ROOT,
     env: { ...process.env, NODE_ENV: "test" },
@@ -1367,9 +1383,19 @@ test("Evaluation snapshot and writer cover accepted and rejected verdicts", asyn
           snapshot.resultDigest,
         ),
       );
+      const input = {
+        taskLocator: data.input.taskLocator,
+        taskId: data.input.taskId,
+        resultId: data.input.resultId,
+        evaluationId: snapshot.evaluationId,
+        verdict,
+        summary: verdict === "accepted" ? "Accepted." : "Rejected.",
+        feedback:
+          verdict === "accepted" ? "" : "Add concrete supporting evidence.",
+      };
       const created = await callTool(
         "submit_task_evaluation",
-        evaluationInput(data, verdict),
+        input,
       );
       assert.equal(created.reconciled, false);
       assert.equal(writes.length, 1);
@@ -1383,7 +1409,7 @@ test("Evaluation snapshot and writer cover accepted and rejected verdicts", asyn
       assert.equal(payload.attempt, 1);
       const retried = await callTool(
         "submit_task_evaluation",
-        evaluationInput(data, verdict),
+        input,
       );
       assert.equal(retried.reconciled, true);
       assert.equal(writes.length, 1);
@@ -1651,9 +1677,11 @@ test("Route advances through next and outcome edges to task, wait, and terminal"
         },
       ]);
       const routeInput = {
-        ...data.input,
+        taskLocator: data.input.taskLocator,
+        taskId: data.input.taskId,
+        resultId: data.input.resultId,
         evaluationId: data.evaluation.evaluationId,
-        routeId: "route-next-task",
+        routeId: snapshot.routeId,
         action: "advance",
         ...snapshot.authorizedTransitions[0],
       };
