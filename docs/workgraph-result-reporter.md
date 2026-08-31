@@ -134,8 +134,8 @@ with exactly:
 
 The Source atomically reserves the active Lease for `claimId`; a competing claim
 fails closed. Its exact response repeats those six fields, adds the
-authoritative one-based `attempt`, and provides a valid, unexpired
-`acquiredAt`/`expiresAt` interval.
+authoritative one-based `attempt` (bounded by Core to 64), and provides a valid,
+unexpired `acquiredAt`/`expiresAt` interval.
 
 The caller never supplies `resultId`, `rootIssueId`, `workflowRunId`, or
 `attempt`. The reporter derives the direct identities from the verified task

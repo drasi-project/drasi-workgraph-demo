@@ -34,7 +34,8 @@ const TASK_RESULT_MARKER = "WorkGraphTaskResult/v1";
 const LEASE_VALIDATION_PATH = "/github/workgraph-v1/lease/validate";
 const MAX_ID_BYTES = 256;
 const MAX_BODY_BYTES = 64 * 1024;
-const MAX_ATTEMPT = 17;
+const MAX_LEASE_ATTEMPT = 64;
+const MAX_LIFECYCLE_ATTEMPT = 17;
 const RUNTIME_ROUTE_POLICY = Object.freeze({
   error: true,
   ignore: true,
@@ -381,10 +382,10 @@ function normalizeTaskResult(value) {
   if (
     !Number.isSafeInteger(value.attempt) ||
     value.attempt < 1 ||
-    value.attempt > MAX_ATTEMPT
+    value.attempt > MAX_LEASE_ATTEMPT
   ) {
     throw new WorkGraphReporterError(
-      `Result.attempt must be an integer from 1 through ${MAX_ATTEMPT}`,
+      `Result.attempt must be an integer from 1 through ${MAX_LEASE_ATTEMPT}`,
     );
   }
   if (!["succeeded", "failed", "cancelled"].includes(value.outcome)) {
@@ -1316,10 +1317,10 @@ async function validateActiveLease(dispatch, claimId, config) {
   if (
     !Number.isSafeInteger(snapshot.attempt) ||
     snapshot.attempt < 1 ||
-    snapshot.attempt > MAX_ATTEMPT
+    snapshot.attempt > MAX_LEASE_ATTEMPT
   ) {
     throw new WorkGraphReporterError(
-      `Source Lease attempt must be an integer from 1 through ${MAX_ATTEMPT}`,
+      `Source Lease attempt must be an integer from 1 through ${MAX_LEASE_ATTEMPT}`,
     );
   }
   if (
@@ -1439,10 +1440,10 @@ function validateLifecycleContextInput(input, extraKeys = []) {
   if (
     !Number.isSafeInteger(input.attempt) ||
     input.attempt < 1 ||
-    input.attempt > MAX_ATTEMPT
+    input.attempt > MAX_LIFECYCLE_ATTEMPT
   ) {
     throw new WorkGraphReporterError(
-      `arguments.attempt must be an integer from 1 through ${MAX_ATTEMPT}`,
+      `arguments.attempt must be an integer from 1 through ${MAX_LIFECYCLE_ATTEMPT}`,
     );
   }
   return locator;
@@ -2492,7 +2493,11 @@ const lifecycleContextProperties = {
   dispatchId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
   leaseId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
   resultId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
-  attempt: { type: "integer", minimum: 1, maximum: MAX_ATTEMPT },
+  attempt: {
+    type: "integer",
+    minimum: 1,
+    maximum: MAX_LIFECYCLE_ATTEMPT,
+  },
 };
 
 export const tools = [

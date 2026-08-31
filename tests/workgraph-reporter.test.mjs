@@ -1176,6 +1176,13 @@ test("Core attempt 2 is authoritative when the first Dispatch follows an undispa
     assert.equal(parseTaskResult(state.writes[0].body).attempt, 2);
     assert.equal(state.leaseRequests.length, 1);
   });
+  await withFakeRuntime({ leaseAttempt: 64 }, async ({ data, state }) => {
+    await callTool(
+      "submit_task_result",
+      resultInput(data.childTask, data.childDispatch, childLocator()),
+    );
+    assert.equal(parseTaskResult(state.writes[0].body).attempt, 64);
+  });
 });
 
 test("submit_task_result selects the current Dispatch after an expired attempt", async () => {
@@ -1287,7 +1294,7 @@ test("a mismatched lease response is rejected before any Result write", async ()
   );
   for (const options of [
     { leaseResponse: { attempt: 0 } },
-    { leaseResponse: { attempt: 18 } },
+    { leaseResponse: { attempt: 65 } },
     { leaseResponse: { attempt: 1.5 } },
     { omitLeaseAttempt: true },
     { leaseResponse: { unexpected: true } },
