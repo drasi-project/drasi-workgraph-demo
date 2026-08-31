@@ -1006,7 +1006,6 @@ async function loadTaskContext(locator, taskId, github, config, includeComments)
   verifyReporterIdentity(identity, config.resultId);
   verifyRepository(repository, locator.repositoryNodeId);
   const task = taskIssue(issue, locator, config, "Task");
-  validateTaskContract(task, "Task");
   if (task.taskId !== taskId) {
     throw new WorkGraphReporterError("taskId does not match WorkGraphTask/v1");
   }
@@ -1017,6 +1016,133 @@ async function loadTaskContext(locator, taskId, github, config, includeComments)
     "task native parent",
   );
 
+  const generated =
+    task.workflowDefinitionId === COMPILED_WORKFLOW.workflowDefinitionId &&
+    task.workflowDefinitionVersion === COMPILED_WORKFLOW.version &&
+    task.workflowDefinitionDigest === COMPILED_WORKFLOW.digest;
+  if (generated) {
+    const compiled = validateLifecycleTask(task, "Task");
+    let rootIssueCandidate;
+    if (compiled.isStepRoot) {
+      rootIssueCandidate = await github.issue(parentLink.number);
+      linkedIssue(
+        rootIssueCandidate,
+        parentLink.number,
+        parentLink.node_id,
+        "top-level task Root Issue parent",
+      );
+    } else {
+      let expectedParentDefinitionId = compiled.parentTaskDefinitionId;
+      let ancestorLink = parentLink;
+      for (let depth = 0; depth <= 5; depth += 1) {
+        const ancestorIssue = await github.issue(ancestorLink.number);
+        linkedIssue(
+          ancestorIssue,
+          ancestorLink.number,
+          ancestorLink.node_id,
+          "recursive task ancestor",
+        );
+        const ancestor = taskIssue(
+          ancestorIssue,
+          {
+            issueNumber: ancestorIssue.number,
+            issueNodeId: ancestorIssue.node_id,
+          },
+          config,
+          "Recursive task ancestor",
+        );
+        const ancestorCompiled = validateLifecycleTask(
+          ancestor,
+          "Recursive task ancestor",
+        );
+        if (
+          ancestor.taskDefinitionId !== expectedParentDefinitionId ||
+          ancestor.rootIssueId !== task.rootIssueId ||
+          ancestor.workflowRunId !== task.workflowRunId
+        ) {
+          throw new WorkGraphReporterError(
+            "recursive task ancestry does not match its compiled parent chain",
+          );
+        }
+        const nextLink = await github.parent(ancestorIssue.number);
+        if (ancestorCompiled.isStepRoot) {
+          rootIssueCandidate = await github.issue(nextLink.number);
+          linkedIssue(
+            rootIssueCandidate,
+            nextLink.number,
+            nextLink.node_id,
+            "top-level task Root Issue parent",
+          );
+          break;
+        }
+        expectedParentDefinitionId = ancestorCompiled.parentTaskDefinitionId;
+        ancestorLink = nextLink;
+      }
+    }
+    if (!rootIssueCandidate) {
+      throw new WorkGraphReporterError(
+        "Task ancestry does not reach its ordinary Root Issue",
+      );
+    }
+    const rootIssue = ordinaryRootIssue(
+      rootIssueCandidate,
+      rootIssueCandidate.number,
+      task.rootIssueId,
+      config,
+    );
+    const initialTasks = [];
+    for (const child of await github.subIssues(rootIssue.number)) {
+      if (
+        child?.type?.name !== TASK_TYPE_NAME ||
+        child?.type?.node_id !== config.taskTypeId ||
+        child?.user?.id !== config.launcherId
+      ) {
+        continue;
+      }
+      const candidate = taskIssue(
+        child,
+        { issueNumber: child.number, issueNodeId: child.node_id },
+        config,
+        "Initial Task candidate",
+      );
+      if (
+        candidate.taskDefinitionId ===
+          COMPILED_WORKFLOW.root.taskDefinitionId &&
+        candidate.rootIssueId === task.rootIssueId &&
+        candidate.workflowRunId === task.workflowRunId
+      ) {
+        initialTasks.push({ issue: child, task: candidate });
+      }
+    }
+    if (initialTasks.length !== 1) {
+      throw new WorkGraphReporterError(
+        "Root Issue must have exactly one matching initial Task",
+      );
+    }
+    const [{ issue: rootTaskIssue, task: rootTask }] = initialTasks;
+    const admission = validateRootAdmission(
+      rootTask,
+      rootIssue,
+      locator.repositoryNodeId,
+      {
+        taskDefinitionId: COMPILED_WORKFLOW.root.taskDefinitionId,
+        staticInputs: COMPILED_WORKFLOW.root.staticInputs,
+        validateContract: false,
+      },
+    );
+    return {
+      task,
+      compiled,
+      rootTask,
+      rootTaskIssue,
+      rootIssue,
+      admission,
+      issue,
+      comments,
+    };
+  }
+
+  validateTaskContract(task, "Task");
   let rootTask;
   let rootTaskIssue;
   let rootIssue;
@@ -1129,8 +1255,9 @@ function resultContext(context, input, config, expectedBody) {
     TASK_DISPATCH_MARKER,
     parseTaskDispatch,
   );
-  const expectedExecutor =
-    context.task.taskDefinitionId === ROOT_TASK_DEFINITION_ID
+  const expectedExecutor = context.compiled
+    ? context.compiled.policy.workerId
+    : context.task.taskDefinitionId === ROOT_TASK_DEFINITION_ID
       ? "issue-coordinator"
       : "issue-validator";
   if (config.executorId !== expectedExecutor) {
@@ -2321,17 +2448,22 @@ async function getRootIssue(input, github, config) {
     config,
     false,
   );
-  if (context.task.taskDefinitionId !== VALIDATOR_TASK_DEFINITION_ID) {
+  if (
+    !context.compiled &&
+    context.task.taskDefinitionId !== VALIDATOR_TASK_DEFINITION_ID
+  ) {
     throw new WorkGraphReporterError(
       "get_root_issue requires the validator child task",
     );
   }
   if (
     context.issue.state !== "open" ||
-    context.rootTaskIssue.state !== "open"
+    (!context.compiled && context.rootTaskIssue.state !== "open")
   ) {
     throw new WorkGraphReporterError(
-      "get_root_issue requires open validator and Root Task Issues",
+      context.compiled
+        ? "get_root_issue requires an open worker task"
+        : "get_root_issue requires open validator and Root Task Issues",
     );
   }
   return {
