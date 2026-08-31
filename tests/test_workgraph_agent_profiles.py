@@ -67,19 +67,22 @@ class WorkGraphProfilesTest(unittest.TestCase):
                 tools = re.findall(r"(?m)^  - (\S+)$", frontmatter)
                 self.assertEqual(tools, EXPECTED_TOOLS[name])
                 self.assertNotIn("github/issue_write", frontmatter)
-        for name in (
-            "issue-validator",
-            "issue-coordinator",
-            "result-evaluator",
-            "issue-validation-evaluator",
-            "workflow-coordinator",
-            "validation-stage-coordinator",
-        ):
+        for name in EXPECTED_TOOLS:
             with self.subTest(runtime_profile=name):
                 self.assertIn("mcp-servers:", self.agents[name])
                 self.assertIn(
                     ".github/mcp/workgraph-reporter.mjs",
                     self.agents[name],
+                )
+                server_tools = re.findall(
+                    r"(?m)^      - (\S+)$",
+                    self.agents[name]
+                    .split("\n    tools:", 1)[1]
+                    .split("\n    env:", 1)[0],
+                )
+                self.assertEqual(
+                    server_tools,
+                    [tool.removeprefix("workgraph/") for tool in EXPECTED_TOOLS[name]],
                 )
 
     def test_agent_capacity_registers_every_profile_once(self):

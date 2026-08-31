@@ -7,6 +7,24 @@ disable-model-invocation: false
 tools:
   - workgraph/get_root_issue
   - workgraph/submit_task_result
+mcp-servers:
+  workgraph:
+    type: local
+    command: node
+    args:
+      - .github/mcp/workgraph-reporter.mjs
+    tools:
+      - get_root_issue
+      - submit_task_result
+    env:
+      COPILOT_MCP_WORKGRAPH_TOKEN: ${{ secrets.COPILOT_MCP_WORKGRAPH_TOKEN }}
+      COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID }}
+      COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID }}
+      COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID }}
+      COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID: ${{ vars.COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID }}
+      COPILOT_MCP_WORKGRAPH_EXECUTOR_ID: issue-info-requester
+      COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL: ${{ vars.COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL }}
+      COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN: ${{ secrets.COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN }}
 ---
 
 # Issue information requester
