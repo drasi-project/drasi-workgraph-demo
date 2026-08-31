@@ -102,7 +102,7 @@ title or body change after admission fails closed.
 ```json
 {
   "taskLocator": {},
-  "taskId": "task-id",
+  "taskId": "workgraph-v1:task:sha256:...",
   "dispatchId": "dispatch-id",
   "leaseId": "lease-id",
   "outcome": "succeeded",
@@ -129,7 +129,7 @@ with exactly:
 
 ```json
 {
-  "taskId": "task-id",
+  "taskId": "workgraph-v1:task:sha256:...",
   "leaseId": "lease-id",
   "assignmentId": "assignment-id",
   "executorId": "issue-worker",
@@ -166,7 +166,7 @@ WorkGraphTaskResult/v1
   "id": "workgraph-v1:result:sha256:...",
   "rootIssueId": "root-issue-id",
   "workflowRunId": "workflow-run-id",
-  "taskId": "task-id",
+  "taskId": "workgraph-v1:task:sha256:...",
   "context": {
     "workflowDefinitionId": "issue-lifecycle",
     "workflowDefinitionVersion": "v1",

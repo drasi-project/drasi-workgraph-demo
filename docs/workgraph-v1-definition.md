@@ -2,7 +2,7 @@
 
 `.github/workgraph/workflows/issue-lifecycle.yaml` is the strict generic
 authoring source. It uses `workgraph.drasi.io/v1`, `IssueWorkflow`, and the
-exact `workgraph` trigger. The four task IDs are lowercase `a`-`d`. The logical
+exact `workgraph` trigger. The four task keys are lowercase `a`-`d`. The logical
 graph is:
 
 ```text
@@ -38,6 +38,15 @@ The markers and kinds are Task, TaskAssignment, TaskDispatch, TaskResult,
 TaskEvaluation, TaskRoute, and TaskError using their matching
 `WorkGraph<kind>/v1` marker. Flat legacy bodies and old marker spellings are not
 accepted.
+
+Every runtime `taskId` must match the canonical form
+`workgraph-v1:task:sha256:<64 lowercase hex>`. Root Task IDs hash the same
+length-framed `(workflowRunId, rootTaskDefinitionId)` inputs as before. Forked
+children and routed successors retain their existing length-framed
+`(workflowRunId, parentTaskId, taskDefinitionId)` inputs. Only the namespace and
+full 64-hex representation changed; `taskDefinitionId` remains `wgd-*`.
+Legacy `wgt-*`, arbitrary names, uppercase hex, and malformed digests are
+rejected by Task and lifecycle formatters, parsers, and ID derivation helpers.
 
 References/data are strict: Task uses `{}`/`{resolvedInputs}`; Assignment uses
 `{}`/`{permittedExecutors}`; Dispatch uses `{assignmentId}` with

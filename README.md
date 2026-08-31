@@ -51,7 +51,9 @@ Evaluate or Route comment on that existing task. The snapshot exposes only the
 effective compiled policy and bounded verdict, action, and transition choices.
 These roles cannot create or close tasks or mutate the Root Issue. The shared `issue-worker` profile handles all four stages. Lifecycle messages
 use one-based attempts and deterministic claim identities so concurrent retries
-in one reporter process reconcile one immutable comment.
+in one reporter process reconcile one immutable comment. Runtime task IDs must
+match `workgraph-v1:task:sha256:<64 lowercase hex>` exactly;
+task-definition IDs remain `wgd-*`.
 
 The offline proof fixture pins the loopback server/state-store identities, the
 exact ordered 21 generic plus six generated `wg-*` Drasi queries, and a

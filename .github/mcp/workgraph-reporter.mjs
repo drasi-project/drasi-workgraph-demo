@@ -139,6 +139,18 @@ function opaque(value, label) {
   return value;
 }
 
+function canonicalTaskId(value, label) {
+  if (
+    typeof value !== "string" ||
+    !/^workgraph-v1:task:sha256:[0-9a-f]{64}$/.test(value)
+  ) {
+    throw new WorkGraphReporterError(
+      `${label} must be workgraph-v1:task:sha256:<64 lowercase hex>`,
+    );
+  }
+  return value;
+}
+
 function issueNumber(value, label) {
   if (!Number.isSafeInteger(value) || value <= 0) {
     throw new WorkGraphReporterError(`${label} must be a positive integer`);
@@ -272,7 +284,10 @@ export function deriveWorkGraphWorkflowRunId(
 export function deriveWorkGraphRootTaskId(workflowRunId, rootTaskDefinitionId) {
   opaque(workflowRunId, "workflowRunId");
   opaque(rootTaskDefinitionId, "rootTaskDefinitionId");
-  return `wgt-${framedSha256([workflowRunId, rootTaskDefinitionId]).slice(0, 60)}`;
+  return `workgraph-v1:task:sha256:${framedSha256([
+    workflowRunId,
+    rootTaskDefinitionId,
+  ])}`;
 }
 
 function validateTaskLocator(value) {
@@ -1333,13 +1348,13 @@ function validateLifecycleContextInput(input, extraKeys = []) {
   for (const key of [
     "rootIssueId",
     "workflowRunId",
-    "taskId",
     "dispatchId",
     "leaseId",
     "resultId",
   ]) {
     opaque(input[key], `arguments.${key}`);
   }
+  canonicalTaskId(input.taskId, "arguments.taskId");
   if (
     !Number.isSafeInteger(input.attempt) ||
     input.attempt < 1 ||
@@ -1869,7 +1884,7 @@ async function hydrateLifecycleSubmissionInput(
     "arguments",
   );
   const locator = validateTaskLocator(input.taskLocator);
-  opaque(input.taskId, "arguments.taskId");
+  canonicalTaskId(input.taskId, "arguments.taskId");
   opaque(input.resultId, "arguments.resultId");
   const [issue, comments] = await Promise.all([
     github.issue(locator.issueNumber),
@@ -2033,7 +2048,7 @@ export function deriveWorkGraphArtifactClaimId(
       "artifactKind must be evaluation or route",
     );
   }
-  opaque(taskId, "artifact claim taskId");
+  canonicalTaskId(taskId, "artifact claim taskId");
   opaque(subjectId, "artifact claim subjectId");
   return `workgraph-v1:claim:sha256:${framedSha256([
     artifactKind,
@@ -2317,7 +2332,7 @@ async function submitTaskRoute(input, github, config) {
 async function getRootIssue(input, github, config) {
   exact(input, ["taskLocator", "taskId"], "arguments");
   const locator = validateTaskLocator(input.taskLocator);
-  opaque(input.taskId, "arguments.taskId");
+  canonicalTaskId(input.taskId, "arguments.taskId");
   const context = await loadTaskContext(
     locator,
     input.taskId,
@@ -2369,7 +2384,8 @@ async function submitTaskResult(input, github, config) {
     "arguments",
   );
   const locator = validateTaskLocator(input.taskLocator);
-  for (const key of ["taskId", "dispatchId", "leaseId"]) {
+  canonicalTaskId(input.taskId, "arguments.taskId");
+  for (const key of ["dispatchId", "leaseId"]) {
     opaque(input[key], `arguments.${key}`);
   }
   if (!["succeeded", "failed"].includes(input.outcome)) {
@@ -2492,11 +2508,16 @@ const locatorSchema = schema({
   parentIssueNodeId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
 });
 
+const taskIdSchema = {
+  type: "string",
+  pattern: "^workgraph-v1:task:sha256:[0-9a-f]{64}$",
+};
+
 const lifecycleContextProperties = {
   taskLocator: locatorSchema,
   rootIssueId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
   workflowRunId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
-  taskId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
+  taskId: taskIdSchema,
   dispatchId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
   leaseId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
   resultId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
@@ -2509,7 +2530,7 @@ const lifecycleContextProperties = {
 
 const lifecycleSubmissionProperties = {
   taskLocator: locatorSchema,
-  taskId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
+  taskId: taskIdSchema,
   resultId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
 };
 
@@ -2520,7 +2541,7 @@ export const tools = [
       "Return the admitted ordinary Root Issue after verifying its Root Task ancestry and immutable content digest.",
     inputSchema: schema({
       taskLocator: locatorSchema,
-      taskId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
+      taskId: taskIdSchema,
     }),
   },
   {
@@ -2529,7 +2550,7 @@ export const tools = [
       "Create or reconcile one canonical WorkGraphTaskResult/v1 after validating the exact active Dispatch Lease.",
     inputSchema: schema({
       taskLocator: locatorSchema,
-      taskId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
+      taskId: taskIdSchema,
       dispatchId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
       leaseId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
       outcome: { type: "string", enum: ["succeeded", "failed"] },

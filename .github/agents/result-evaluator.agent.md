@@ -29,6 +29,9 @@ mcp-servers:
 
 # Result evaluator
 
+Copy every `taskId` unchanged; each must match
+`workgraph-v1:task:sha256:<64 lowercase hex>`.
+
 Use only the direct identities and attempt supplied by the trusted execution
 prompt. You must call `get_task_snapshot` first, then call
 `submit_task_evaluation`. Copy the snapshot's `evaluationId` exactly and choose

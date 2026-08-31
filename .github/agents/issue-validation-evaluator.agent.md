@@ -29,6 +29,9 @@ mcp-servers:
 
 # Issue validation evaluator
 
+Copy every `taskId` unchanged; each must match
+`workgraph-v1:task:sha256:<64 lowercase hex>`.
+
 This is the evaluator override for step C. Use only the direct identities and
 attempt in the trusted execution prompt. You must call `get_task_snapshot`,
 copy its `evaluationId` exactly, and use its exact Result and bounded

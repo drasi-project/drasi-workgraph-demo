@@ -51,6 +51,8 @@ const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 const clone = (value) => structuredClone(value);
 const COMPILED_OUTPUT = JSON.parse(await read(EXPECTED_PATH));
 const COMPILED_FIXTURE = COMPILED_OUTPUT.workgraphDefinition;
+const TASK_C_ID = `workgraph-v1:task:sha256:${"c".repeat(64)}`;
+const VECTOR_TASK_ID = `workgraph-v1:task:sha256:${"1".repeat(64)}`;
 const PROOF_QUERY_IDS = [
   "wg-issues-waiting-for-admission",
   "wg-tasks-waiting-for-fork",
@@ -387,7 +389,7 @@ test("offline proof derives the Root Task from Root Issue admission", async () =
   });
   assert.equal(
     proof.expectedRootTask.value.taskId,
-    "wgt-a417c7051894a093f13e1e06c212d0bd740d608bbc75513b28aa61aad87e",
+    "workgraph-v1:task:sha256:a417c7051894a093f13e1e06c212d0bd740d608bbc75513b28aa61aad87ea238",
   );
   assert.equal(
     proof.expectedRootTask.value.workflowRunId,
@@ -839,7 +841,7 @@ test("graph validation rejects unreachable work and cycles without waits", () =>
   assert.doesNotThrow(() => normalizeIssueWorkflow(complexWorkflow()));
 });
 
-function messageTask(taskId = "task-c") {
+function messageTask(taskId = TASK_C_ID) {
   return {
     taskId,
     workflowRunId: "run-1",
@@ -856,13 +858,13 @@ function evaluation(verdict = "accepted") {
   const resultDigest = `sha256:${"a".repeat(64)}`;
   return {
     evaluationId: deriveWorkGraphTaskEvaluationId(
-      "task-c",
+      TASK_C_ID,
       "result-1",
       resultDigest,
     ),
     rootIssueId: "I_root_issue",
     workflowRunId: "run-1",
-    taskId: "task-c",
+    taskId: TASK_C_ID,
     task: messageTask(),
     resultId: "result-1",
     resultDigest,
@@ -877,10 +879,10 @@ function evaluation(verdict = "accepted") {
 function route(action, verdict = "accepted") {
   const evaluationId = evaluation().evaluationId;
   const value = {
-    routeId: deriveWorkGraphTaskRouteId("task-c", evaluationId),
+    routeId: deriveWorkGraphTaskRouteId(TASK_C_ID, evaluationId),
     rootIssueId: "I_root_issue",
     workflowRunId: "run-1",
-    taskId: "task-c",
+    taskId: TASK_C_ID,
     task: messageTask(),
     resultId: "result-1",
     evaluationId,
@@ -1023,14 +1025,156 @@ test("all lifecycle bodies use the strict unified envelope", () => {
   });
 });
 
+test("all task contracts reject legacy and malformed task IDs", () => {
+  const task = messageTask();
+  const assignment = {
+    assignmentId: "workgraph-v1:assignment:one",
+    rootIssueId: "I_root_issue",
+    workflowRunId: task.workflowRunId,
+    taskId: task.taskId,
+    task,
+    permittedExecutors: ["issue-worker"],
+  };
+  const dispatch = {
+    dispatchId: "workgraph-v1:dispatch:one",
+    launchId: "launch-1",
+    rootIssueId: assignment.rootIssueId,
+    workflowRunId: assignment.workflowRunId,
+    taskId: task.taskId,
+    task,
+    lease: {
+      leaseId: "lease-1",
+      assignmentId: assignment.assignmentId,
+      executorId: "issue-worker",
+      slotId: "slot-1",
+    },
+  };
+  const result = {
+    resultId: "result-wire-opaque",
+    rootIssueId: assignment.rootIssueId,
+    workflowRunId: assignment.workflowRunId,
+    taskId: task.taskId,
+    task,
+    dispatchId: dispatch.dispatchId,
+    leaseId: dispatch.lease.leaseId,
+    attempt: 1,
+    outcome: "succeeded",
+    output: {},
+  };
+  const errorReferences = {
+    assignmentId: null,
+    dispatchId: null,
+    leaseId: null,
+    resultId: null,
+    evaluationId: null,
+    routeId: null,
+  };
+  const error = {
+    errorId: deriveWorkGraphTaskErrorId(
+      task.taskId,
+      "routing",
+      "terminal-error",
+      "cause-1",
+    ),
+    rootIssueId: assignment.rootIssueId,
+    workflowRunId: assignment.workflowRunId,
+    taskId: task.taskId,
+    task,
+    references: errorReferences,
+    stage: "routing",
+    code: "terminal-error",
+    category: "task",
+    summary: "Routing ended in error.",
+    retryable: false,
+    attempt: null,
+    details: {},
+  };
+  const invalidTaskIds = [
+    `wgt-${"a".repeat(60)}`,
+    "task-1",
+    `workgraph-v1:task:sha256:${"A".repeat(64)}`,
+    `workgraph-v1:task:sha256:${"a".repeat(63)}`,
+    `workgraph-v1:task:sha256:${"g".repeat(64)}`,
+  ];
+  const values = [
+    [
+      {
+        ...task,
+        rootIssueId: assignment.rootIssueId,
+        resolvedInputs: {},
+      },
+      formatRuntimeTask,
+    ],
+    [assignment, formatTaskAssignment],
+    [dispatch, formatTaskDispatch],
+    [result, formatTaskResult],
+    [evaluation(), formatTaskEvaluation],
+    [route("complete"), formatTaskRoute],
+    [error, formatTaskError],
+  ];
+  const canonicalTaskBody = formatRuntimeTask(values[0][0]);
+  const canonicalResultBody = formatTaskResult(result);
+  for (const invalidTaskId of invalidTaskIds) {
+    for (const [value, format] of values) {
+      const invalid = {
+        ...value,
+        taskId: invalidTaskId,
+        ...(value.task
+          ? { task: { ...value.task, taskId: invalidTaskId } }
+          : {}),
+      };
+      assert.throws(
+        () => format(invalid),
+        /taskId must be workgraph-v1:task:sha256:<64 lowercase hex>/,
+      );
+    }
+    assert.throws(
+      () =>
+        parseRuntimeTask(
+          canonicalTaskBody.replaceAll(task.taskId, invalidTaskId),
+        ),
+      /taskId must be workgraph-v1:task:sha256:<64 lowercase hex>/,
+    );
+    assert.throws(
+      () =>
+        parseTaskResult(
+          canonicalResultBody.replaceAll(task.taskId, invalidTaskId),
+        ),
+      /taskId must be workgraph-v1:task:sha256:<64 lowercase hex>/,
+    );
+    for (const derive of [
+      () => deriveWorkGraphTaskResultId(invalidTaskId, "dispatch-1", "lease-1"),
+      () =>
+        deriveWorkGraphTaskEvaluationId(
+          invalidTaskId,
+          "result-1",
+          `sha256:${"a".repeat(64)}`,
+        ),
+      () => deriveWorkGraphTaskRouteId(invalidTaskId, "evaluation-1"),
+      () =>
+        deriveWorkGraphTaskErrorId(
+          invalidTaskId,
+          "routing",
+          "terminal-error",
+          "cause-1",
+        ),
+    ]) {
+      assert.throws(
+        derive,
+        /taskId must be workgraph-v1:task:sha256:<64 lowercase hex>/,
+      );
+    }
+  }
+});
+
 test("Evaluate artifacts have exact direct bindings and accepted or rejected verdicts", () => {
   assert.equal(
     deriveWorkGraphTaskEvaluationId(
-      "task-1",
+      VECTOR_TASK_ID,
       "result-1",
       `sha256:${"a".repeat(64)}`,
     ),
-    "workgraph-v1:evaluation:sha256:cd47941f3c0121485e3276e2ab70feb7b236d53976cea990e0323d3b17de6d5e",
+    "workgraph-v1:evaluation:sha256:8f1b901810fc3be4b5c3bcb0028b4dbb00e47088d09ccea5d55a0f110b910c00",
   );
   for (const verdict of ["accepted", "rejected"]) {
     const value = evaluation(verdict);
@@ -1079,7 +1223,7 @@ test("Evaluate artifacts have exact direct bindings and accepted or rejected ver
     /properties must be exactly/,
   );
   assert.throws(
-    () => formatTaskEvaluation({ ...evaluation(), taskId: "task_C" }),
+    () => formatTaskEvaluation({ ...evaluation(), taskId: "task id" }),
     /taskId/,
   );
   assert.throws(
@@ -1121,10 +1265,10 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
   const definition = COMPILED_FIXTURE;
   assert.equal(
     deriveWorkGraphTaskRouteId(
-      "task-1",
-      "workgraph-v1:evaluation:sha256:cd47941f3c0121485e3276e2ab70feb7b236d53976cea990e0323d3b17de6d5e",
+      VECTOR_TASK_ID,
+      "workgraph-v1:evaluation:sha256:8f1b901810fc3be4b5c3bcb0028b4dbb00e47088d09ccea5d55a0f110b910c00",
     ),
-    "workgraph-v1:route:sha256:b8952132281b2be87aae63426956c7c81375c90a5e7e430bba45308082670d05",
+    "workgraph-v1:route:sha256:78c706dfec8ab7cbeb72f58b56af7641567294acfd05be525bae1f4d4b914ff6",
   );
   for (const [action, verdict] of [
     ["advance", "accepted"],
@@ -1265,7 +1409,7 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
   assert.equal(formatTaskRoute(reversed), formatTaskRoute(route("advance")));
 
   const first = {
-    taskId: "task-c",
+    taskId: TASK_C_ID,
     assignmentId: "assignment-1",
     attempt: 1,
   };

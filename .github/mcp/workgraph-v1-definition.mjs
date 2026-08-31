@@ -126,6 +126,18 @@ function workflowRunIdentifier(value, context) {
   }
 }
 
+export function validateWorkGraphTaskId(value, context = "taskId") {
+  if (
+    typeof value !== "string" ||
+    !/^workgraph-v1:task:sha256:[0-9a-f]{64}$/.test(value)
+  ) {
+    throw new WorkGraphDefinitionError(
+      `${context} must be workgraph-v1:task:sha256:<64 lowercase hex>`,
+    );
+  }
+  return value;
+}
+
 function wellFormedUnicode(value) {
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
@@ -470,7 +482,7 @@ function normalizeTaskContext(value, context = "message context") {
 
 export function normalizeTaskIdentity(value, context = "task identity") {
   exactKeys(value, TASK_IDENTITY_KEYS, context);
-  identifier(value.taskId, `${context} taskId`);
+  validateWorkGraphTaskId(value.taskId, `${context} taskId`);
   workflowRunIdentifier(value.workflowRunId, `${context} workflowRunId`);
   return {
     taskId: value.taskId,
@@ -494,7 +506,7 @@ function envelopeObject(kind, id, value, references, data) {
   directId(id, `${kind} message id`);
   workflowRunIdentifier(value.rootIssueId, `${kind} rootIssueId`);
   workflowRunIdentifier(value.workflowRunId, `${kind} workflowRunId`);
-  identifier(value.taskId, `${kind} taskId`);
+  validateWorkGraphTaskId(value.taskId, `${kind} taskId`);
   const identity = normalizeTaskIdentity(
     value.task ?? taskIdentity(value),
     `${kind} task`,
@@ -563,7 +575,7 @@ function parseEnvelopeBody(
   directId(envelope.id, `${kind} envelope id`);
   workflowRunIdentifier(envelope.rootIssueId, `${kind} envelope rootIssueId`);
   workflowRunIdentifier(envelope.workflowRunId, `${kind} envelope workflowRunId`);
-  identifier(envelope.taskId, `${kind} envelope taskId`);
+  validateWorkGraphTaskId(envelope.taskId, `${kind} envelope taskId`);
   envelope.context = normalizeTaskContext(envelope.context, `${kind} context`);
   exactKeys(envelope.references, referenceKeys, `${kind} references`);
   exactKeys(envelope.data, dataKeys, `${kind} data`);
@@ -576,7 +588,7 @@ function parseEnvelopeBody(
 
 export function normalizeRuntimeTask(task) {
   exactKeys(task, RUNTIME_TASK_KEYS, "runtime task");
-  identifier(task.taskId, "runtime task taskId");
+  validateWorkGraphTaskId(task.taskId, "runtime task taskId");
   workflowRunIdentifier(task.rootIssueId, "runtime task rootIssueId");
   workflowRunIdentifier(task.workflowRunId, "runtime task workflowRunId");
   identifier(
@@ -1472,7 +1484,7 @@ function normalizeLifecycleBase(value, keys, label, idField) {
   directId(value[idField], `${label} ${idField}`);
   workflowRunIdentifier(value.rootIssueId, `${label} rootIssueId`);
   workflowRunIdentifier(value.workflowRunId, `${label} workflowRunId`);
-  identifier(value.taskId, `${label} taskId`);
+  validateWorkGraphTaskId(value.taskId, `${label} taskId`);
   const task = normalizeTaskIdentity(value.task, `${label} task`);
   if (task.taskId !== value.taskId || task.workflowRunId !== value.workflowRunId) {
     throw new WorkGraphDefinitionError(
@@ -1649,7 +1661,7 @@ export function parseTaskDispatch(body) {
 }
 
 export function deriveWorkGraphTaskResultId(taskId, dispatchId, leaseId) {
-  identifier(taskId, "task Result taskId");
+  validateWorkGraphTaskId(taskId, "task Result taskId");
   directId(dispatchId, "task Result dispatchId");
   directId(leaseId, "task Result leaseId");
   return `workgraph-v1:result:sha256:${framedSha256([taskId, dispatchId, leaseId])}`;
@@ -1731,7 +1743,7 @@ export function deriveWorkGraphTaskEvaluationId(
   resultId,
   resultDigest,
 ) {
-  identifier(taskId, "task evaluation taskId");
+  validateWorkGraphTaskId(taskId, "task evaluation taskId");
   directId(resultId, "task evaluation resultId");
   digest(resultDigest, "task evaluation resultDigest");
   return `workgraph-v1:evaluation:sha256:${framedSha256([
@@ -1742,7 +1754,7 @@ export function deriveWorkGraphTaskEvaluationId(
 }
 
 export function deriveWorkGraphTaskRouteId(taskId, evaluationId) {
-  identifier(taskId, "task route taskId");
+  validateWorkGraphTaskId(taskId, "task route taskId");
   directId(evaluationId, "task route evaluationId");
   return `workgraph-v1:route:sha256:${framedSha256([
     taskId,
@@ -2068,7 +2080,7 @@ export function parseTaskRoute(body) {
 }
 
 export function deriveWorkGraphTaskErrorId(taskId, stage, code, causeId) {
-  identifier(taskId, "task Error taskId");
+  validateWorkGraphTaskId(taskId, "task Error taskId");
   if (!["assignment", "dispatch", "execution", "evaluation", "routing", "closure"].includes(stage)) {
     throw new WorkGraphDefinitionError("task Error stage is invalid");
   }
@@ -2276,7 +2288,7 @@ export function nextReworkAttempt(
   maxReworkAttempts = DEFAULT_MAX_REWORK_ATTEMPTS,
 ) {
   exactKeys(current, ["taskId", "assignmentId", "attempt"], "rework attempt");
-  directId(current.taskId, "rework attempt taskId");
+  validateWorkGraphTaskId(current.taskId, "rework attempt taskId");
   directId(current.assignmentId, "rework attempt assignmentId");
   executionAttempt(current.attempt, "rework attempt");
   boundedCount(maxReworkAttempts, "rework maximum");

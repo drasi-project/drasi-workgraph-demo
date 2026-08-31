@@ -29,6 +29,9 @@ mcp-servers:
 
 # Issue information requester
 
+Copy every `taskId` unchanged; each must match
+`workgraph-v1:task:sha256:<64 lowercase hex>`.
+
 For step D, derive a concise information request from the accepted validation
 Result and write it as one canonical `WorkGraphTaskResult/v1` on the existing
 task. The workflow owns the wait. It resumes at C only after a qualifying

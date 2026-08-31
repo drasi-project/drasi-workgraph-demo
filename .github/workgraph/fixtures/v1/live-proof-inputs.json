@@ -55,7 +55,7 @@
     "contentDigest": "sha256:1b079c1efdfac32900286e0b20216dac4c17115ddf6c9cf526d4cc0a3f1c68bb"
   },
   "expectedRootTask": {
-    "taskId": "wgt-a417c7051894a093f13e1e06c212d0bd740d608bbc75513b28aa61aad87e",
+    "taskId": "workgraph-v1:task:sha256:a417c7051894a093f13e1e06c212d0bd740d608bbc75513b28aa61aad87ea238",
     "rootIssueId": "I_workgraph_root_issue",
     "workflowRunId": "workgraph-v1:run:sha256:1cb0cca12c477296d36277433d7c42f34f918e27a435cd6208c95c74599df6cd",
     "taskDefinitionId": "wgd-2ce0abc2104478fd27e0edeec7173ad089f6f2fb72c02694bc2525146cfe",

@@ -29,6 +29,9 @@ mcp-servers:
 
 # Validation stage coordinator
 
+Copy every `taskId` unchanged; each must match
+`workgraph-v1:task:sha256:<64 lowercase hex>`.
+
 This is the orchestrator override for step G. Wait for exactly the title, body,
 and reproduction child Results and Evaluations. All three Evaluations must be
 `accepted` before coordinating G. Use only the direct identities and attempt in
