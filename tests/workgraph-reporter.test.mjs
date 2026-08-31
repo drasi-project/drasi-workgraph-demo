@@ -653,6 +653,11 @@ function lifecycleFixture({
 
 async function withFakeLifecycle(options, callback) {
   const data = lifecycleFixture(options);
+  if (options.omitResult === true) {
+    data.comments = data.comments.filter(
+      ({ body }) => !body.startsWith("WorkGraphTaskResult/v1\n"),
+    );
+  }
   if (options.topLevelParentIsInitial === true && !data.parentTask) {
     data.input.taskLocator.parentIssueNumber = ROOT_TASK_NUMBER;
     data.input.taskLocator.parentIssueNodeId = ROOT_TASK_NODE_ID;
@@ -689,7 +694,12 @@ async function withFakeLifecycle(options, callback) {
   const comments = new Map([[taskNumber, data.comments]]);
   const writes = [];
   const role = options.role ?? "evaluator";
-  const actorId = role === "evaluator" ? EVALUATION_ID : ROUTE_ID;
+  const actorId =
+    role === "worker"
+      ? RESULT_ID
+      : role === "evaluator"
+        ? EVALUATION_ID
+        : ROUTE_ID;
   const server = createServer(async (request, response) => {
     const url = new URL(request.url, "http://127.0.0.1");
     const send = (status, value) => {
@@ -796,6 +806,18 @@ async function withFakeLifecycle(options, callback) {
       }
       return send(201, comment);
     }
+    if (
+      request.method === "POST" &&
+      url.pathname === "/github/workgraph-v1/lease/validate"
+    ) {
+      const value = await requestBody(request);
+      return send(200, {
+        ...value,
+        attempt: data.result.attempt,
+        acquiredAt: "2026-08-29T20:00:00Z",
+        expiresAt: "2026-08-29T22:00:00Z",
+      });
+    }
     return send(404, { message: `Unhandled ${request.method} ${url.pathname}` });
   });
   server.listen(0, "127.0.0.1");
@@ -804,6 +826,7 @@ async function withFakeLifecycle(options, callback) {
   const previous = { ...process.env };
   Object.assign(process.env, {
     NODE_ENV: "test",
+    WORKGRAPH_TEST_NOW: "2026-08-29T21:00:00Z",
     WORKGRAPH_TEST_GITHUB_API_URL: origin,
     COPILOT_MCP_WORKGRAPH_TOKEN: "github-token",
     COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID: TYPE_ID,
@@ -812,8 +835,15 @@ async function withFakeLifecycle(options, callback) {
     COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID: String(RESULT_ID),
     COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID: String(EVALUATION_ID),
     COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID: String(ROUTE_ID),
+    COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL:
+      `${origin}/github/workgraph-v1/lease/validate`,
+    COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN: "lease-token",
   });
-  if (role === "evaluator") {
+  if (role === "worker") {
+    process.env.COPILOT_MCP_WORKGRAPH_EXECUTOR_ID = data.policy.workerId;
+    delete process.env.COPILOT_MCP_WORKGRAPH_EVALUATOR_ID;
+    delete process.env.COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_ID;
+  } else if (role === "evaluator") {
     process.env.COPILOT_MCP_WORKGRAPH_EVALUATOR_ID =
       options.evaluatorId ?? data.policy.evaluatorId;
     delete process.env.COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_ID;
@@ -1611,6 +1641,26 @@ test("later top-level tasks are direct Root Issue children", async () => {
         /Root Issue is missing, stale|ordinary Root Issue/,
       );
       assert.equal(writes.length, 0);
+    },
+  );
+});
+
+test("later top-level tasks can report after the initial task closes", async () => {
+  await withFakeLifecycle(
+    {
+      stepId: "b",
+      role: "worker",
+      rootTaskClosed: true,
+      omitResult: true,
+    },
+    async ({ data, writes }) => {
+      const created = await callTool(
+        "submit_task_result",
+        resultInput(data.task, data.dispatch, data.input.taskLocator),
+      );
+      assert.equal(created.reconciled, false);
+      assert.equal(writes.length, 1);
+      assert.equal(parseTaskResult(writes[0].body).taskId, data.task.taskId);
     },
   );
 });

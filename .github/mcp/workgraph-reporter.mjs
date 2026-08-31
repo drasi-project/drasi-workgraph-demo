@@ -1359,7 +1359,7 @@ function resultContext(context, input, config, expectedBody) {
   }
   if (
     context.issue.state !== "open" ||
-    context.rootTaskIssue.state !== "open"
+    (!context.compiled && context.rootTaskIssue.state !== "open")
   ) {
     throw new WorkGraphReporterError(
       "a new Result requires open task and Root Task Issues",
