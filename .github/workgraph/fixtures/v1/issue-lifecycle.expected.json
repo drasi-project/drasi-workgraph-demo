@@ -578,7 +578,7 @@
       {
         "id": "wg-terminal-8f328a93bc2ba9c6d49d",
         "kind": "terminal-complete",
-        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)\nMATCH (route:WorkGraphTaskRoute)-[:CONCLUDES]->(terminal:WorkGraphTerminal)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:7706c7d30b8a0028ddaa4fad2d17577be388cdf723efc0b23e468c130fba476d' AND terminal.workflowRunId = run.workflowRunId AND terminal.stepId = 'completed' AND terminal.outcome = 'completed'\nRETURN run.workflowRunId AS workflowRunId, terminal.rootIssueId AS rootIssueId, route.taskId AS sourceTaskId, route.routeId AS routeId, terminal.stepId AS terminalStepId, terminal.outcome AS terminalOutcome",
+        "query": "MATCH (route:WorkGraphTaskRoute)-[:ROUTE_FOR]->(task:WorkGraphTask)-[:IN_RUN]->(run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)\nMATCH (route)-[:CONCLUDES]->(terminal:WorkGraphTerminal)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:7706c7d30b8a0028ddaa4fad2d17577be388cdf723efc0b23e468c130fba476d' AND route.workflowRunId = run.workflowRunId AND route.taskId = task.taskId AND terminal.workflowRunId = run.workflowRunId AND terminal.stepId = 'completed' AND terminal.outcome = 'completed'\nRETURN run.workflowRunId AS workflowRunId, terminal.rootIssueId AS rootIssueId, route.taskId AS sourceTaskId, route.routeId AS routeId, terminal.stepId AS terminalStepId, terminal.outcome AS terminalOutcome",
         "resultSchema": [
           {
             "name": "workflowRunId",
@@ -708,7 +708,7 @@
       {
         "id": "wg-terminal-8f328a93bc2ba9c6d49d",
         "kind": "terminal-complete",
-        "sha256": "43b00560a10f759245380cc39b2ab49d5b6135302a5a9a1aab56397650a7de0b",
+        "sha256": "c9622775799d29cbae11691b156b5da83ea00db2caca2400523b72ab34ab017d",
         "fields": [
           "workflowRunId",
           "rootIssueId",

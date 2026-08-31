@@ -492,6 +492,14 @@ test("linear v1 authoring and test case match the compiled sequence", async () =
     ),
     false,
   );
+  const terminalQuery = expected.queryBundle.queries.find(
+    ({ kind }) => kind === "terminal-complete",
+  ).query;
+  assert.match(
+    terminalQuery,
+    /^MATCH \(route:WorkGraphTaskRoute\)-\[:ROUTE_FOR\]->\(task:WorkGraphTask\)-\[:IN_RUN\]->\(run:WorkflowRun\)-\[:USES_DEFINITION\]->\(workflowDefinition:WorkflowDefinition\)/,
+  );
+  assert.match(terminalQuery, /route\.taskId = task\.taskId/);
 
   assert.deepEqual(Object.keys(testCase), [
     "apiVersion",
