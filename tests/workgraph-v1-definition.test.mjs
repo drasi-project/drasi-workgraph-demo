@@ -6,7 +6,6 @@ import test from "node:test";
 import {
   DEFAULT_MAX_REWORK_ATTEMPTS,
   MAX_TASK_DEFINITION_CHILDREN,
-  compileIssueWorkflowLogical,
   formatTaskEvaluation,
   formatTaskRoute,
   formatRuntimeTask,
@@ -30,6 +29,9 @@ const EXPECTED_PATH =
   ".github/workgraph/fixtures/v1/issue-lifecycle.expected.json";
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 const clone = (value) => structuredClone(value);
+const COMPILED_FIXTURE = JSON.parse(
+  await read(EXPECTED_PATH),
+).workgraphDefinition;
 
 function nestedDefinition() {
   return {
@@ -320,7 +322,7 @@ function richWorkflow() {
         d: task(
           "request-information",
           "issue-info-requester",
-          { requested: "human" },
+          "human",
           { source: "c" },
         ),
         human: {
@@ -332,7 +334,7 @@ function richWorkflow() {
         f: task(
           "record-rejection",
           "issue-worker",
-          { ignored: "ignored" },
+          "ignored",
         ),
         g: {
           ...task(
@@ -363,11 +365,8 @@ function richWorkflow() {
             },
           },
         },
-        h: task("finalize-issue", "issue-worker", {
-          completed: "completed",
-        }),
+        h: task("finalize-issue", "issue-worker", "completed"),
         completed: { type: "terminal", outcome: "completed" },
-        error: { type: "terminal", outcome: "error" },
         ignored: { type: "terminal", outcome: "ignored" },
       },
     },
@@ -385,47 +384,72 @@ test("rich v1 authoring preserves the branch, wait loop, recursion, and override
   assert.match(yaml, /^    maxReworkAttempts: 3$/m);
   assert.doesNotMatch(yaml, /\bagent:|\bmaxRework:|waitFor:|^\s+[A-H]:/m);
   assert.doesNotMatch(yaml, /status:\s*new/i);
-  assert.deepEqual(compileIssueWorkflowLogical(richWorkflow()), expected);
-  assert.deepEqual(normalizeCompiledWorkflowDefinition(expected), expected);
+  assert.deepEqual(
+    normalizeCompiledWorkflowDefinition(expected.workgraphDefinition),
+    expected.workgraphDefinition,
+  );
   assert.equal(
-    expected.defaults.maxReworkAttempts,
+    expected.definitionDigest,
+    expected.workgraphDefinition.digest,
+  );
+  assert.equal(
+    expected.canonicalDefinitionBody.startsWith(
+      "WorkGraphWorkflowDefinition/v1\n\n```json\n",
+    ),
+    true,
+  );
+  assert.equal(
+    expected.workgraphDefinition.defaults.maxReworkAttempts,
     DEFAULT_MAX_REWORK_ATTEMPTS,
   );
   assert.deepEqual(
-    Object.keys(expected.steps.g.task.children.tasks),
-    ["title", "body", "reproduction"],
+    expected.workgraphDefinition.steps.g.taskDefinition.children.map(
+      ({ taskKey }) => taskKey,
+    ),
+    ["body", "reproduction", "title"],
   );
+  const g = expected.workgraphDefinition.steps.g;
+  const parentPolicy =
+    g.executionPolicies[g.taskDefinition.taskDefinitionId];
+  assert.equal(parentPolicy.orchestratorId, "validation-stage-coordinator");
+  assert.equal(parentPolicy.maxReworkAttempts, 2);
+  for (const child of g.taskDefinition.children) {
+    const policy = g.executionPolicies[child.taskDefinitionId];
+    assert.equal(policy.evaluatorId, "result-evaluator");
+    assert.equal(policy.orchestratorId, "workflow-coordinator");
+    assert.equal(policy.maxReworkAttempts, 3);
+  }
   assert.deepEqual(
-    Object.values(expected.steps)
+    Object.values(expected.workgraphDefinition.steps)
       .filter(({ type }) => type === "terminal")
       .map(({ outcome }) => outcome),
-    ["completed", "error", "ignored"],
+    ["completed", "ignored"],
   );
-  assert.ok(
-    expected.transitions.some(
-      ({ sourceStepId, outcome, targetStepId }) =>
-        sourceStepId === "human" &&
-        outcome === "root-issue-commented" &&
-        targetStepId === "c",
-    ),
-  );
-
-  const wrongWaitOutcome = clone(expected);
-  wrongWaitOutcome.transitions.find(
-    ({ sourceStepId }) => sourceStepId === "human",
-  ).outcome = "commented";
-  assert.throws(
-    () => normalizeCompiledWorkflowDefinition(wrongWaitOutcome),
-    /preserve the wait event/,
+  assert.deepEqual(expected.workgraphDefinition.steps.human, {
+    type: "wait",
+    event: "root-issue-commented",
+    nextStepId: "c",
+  });
+  assert.deepEqual(
+    expected.workgraphDefinition.steps.c.transition,
+    {
+      type: "outcomes",
+      targets: { continue: "e", "needs-info": "d", reject: "f" },
+    },
   );
 
-  const wrongTerminalOutcome = clone(expected);
-  wrongTerminalOutcome.transitions.find(
-    ({ targetStepId }) => targetStepId === "completed",
-  ).outcome = "done";
+  const wrongWait = clone(expected.workgraphDefinition);
+  wrongWait.steps.human.nextStepId = "missing";
   assert.throws(
-    () => normalizeCompiledWorkflowDefinition(wrongTerminalOutcome),
-    /preserve the terminal outcome/,
+    () => normalizeCompiledWorkflowDefinition(wrongWait),
+    /reference a compiled step/,
+  );
+
+  const wrongTerminal = clone(expected.workgraphDefinition);
+  wrongTerminal.steps.completed.outcome = "done";
+  assert.throws(
+    () => normalizeCompiledWorkflowDefinition(wrongTerminal),
+    /invalid terminal outcome/,
   );
 });
 
@@ -498,13 +522,13 @@ test("recursive child namespaces and overrides are independent at every depth", 
       },
     },
   };
-  const compiled = compileIssueWorkflowLogical(workflow);
-  const title = compiled.steps.g.task.children.tasks.title;
+  const normalized = normalizeIssueWorkflow(workflow);
+  const title = normalized.spec.steps.g.children.tasks.title;
   assert.equal(title.evaluator, "issue-validation-evaluator");
   assert.equal(title.maxReworkAttempts, 1);
   assert.equal(title.children.tasks.a.maxReworkAttempts, 0);
-  assert.equal(title.children.tasks.a.orchestrator, "validation-stage-coordinator");
-  assert.ok(compiled.steps.a);
+  assert.equal(title.children.tasks.a.orchestrator, undefined);
+  assert.ok(normalized.spec.steps.a);
 });
 
 test("graph validation rejects unreachable work and cycles without waits", () => {
@@ -569,9 +593,12 @@ function route(action, verdict = "accepted") {
     attempt: 0,
   };
   if (action === "advance") {
+    value.transitionKind = "outcome";
     value.outcome = "continue";
     value.targetStepId = "e";
-    value.targetTaskDefinitionId = "e";
+    value.targetStepKind = "task";
+    value.targetTaskDefinitionId =
+      COMPILED_FIXTURE.steps.e.taskDefinition.taskDefinitionId;
   }
   return value;
 }
@@ -593,6 +620,14 @@ test("Evaluate artifacts have exact direct bindings and accepted or rejected ver
     () =>
       formatTaskEvaluation({
         ...evaluation(),
+        feedback: "accepted feedback is forbidden",
+      }),
+    /requires empty feedback/,
+  );
+  assert.throws(
+    () =>
+      formatTaskEvaluation({
+        ...evaluation(),
         result: { resultId: "result-1" },
       }),
     /properties must be exactly/,
@@ -607,7 +642,15 @@ test("Evaluate artifacts have exact direct bindings and accepted or rejected ver
         ...evaluation(),
         feedback: "x".repeat(64 * 1024),
       }),
-    /exceeds 65536 bytes/,
+    /16384 bytes/,
+  );
+  assert.throws(
+    () =>
+      formatTaskEvaluation({
+        ...evaluation(),
+        summary: "😀".repeat(1025),
+      }),
+    /4096 bytes/,
   );
   const reversed = Object.fromEntries(
     Object.entries(evaluation()).reverse(),
@@ -619,7 +662,7 @@ test("Evaluate artifacts have exact direct bindings and accepted or rejected ver
 });
 
 test("Route matrix, advance pair, exclusions, and bounded same-task rework are strict", () => {
-  const definition = compileIssueWorkflowLogical(richWorkflow());
+  const definition = COMPILED_FIXTURE;
   for (const [action, verdict] of [
     ["advance", "accepted"],
     ["complete", "accepted"],
@@ -648,7 +691,7 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
   delete missingTarget.targetStepId;
   assert.throws(
     () => formatTaskRoute(missingTarget),
-    /properties must be exactly/,
+    /missing: targetStepId/,
   );
   assert.throws(
     () => formatTaskRoute({ ...route("complete"), outcome: "continue" }),
@@ -656,9 +699,11 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
   );
   const terminalRoute = {
     ...route("advance"),
-    outcome: "completed",
+    transitionKind: "next",
     targetStepId: "completed",
+    targetStepKind: "terminal",
   };
+  delete terminalRoute.outcome;
   delete terminalRoute.targetTaskDefinitionId;
   assert.deepEqual(
     parseTaskRoute(formatTaskRoute(terminalRoute)),
@@ -672,8 +717,9 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
       evaluationVerdict: "accepted",
       orchestratorId: "workflow-coordinator",
       action: "advance",
-      outcome: "completed",
+      transitionKind: "next",
       targetStepId: "completed",
+      targetStepKind: "terminal",
       attempt: 0,
     },
   );
@@ -683,38 +729,44 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
   );
   const waitRoute = {
     ...route("advance"),
-    outcome: "requested",
+    transitionKind: "next",
     targetStepId: "human",
+    targetStepKind: "wait",
   };
+  delete waitRoute.outcome;
   delete waitRoute.targetTaskDefinitionId;
   assert.deepEqual(
     validateTaskRouteAgainstDefinition(waitRoute, definition),
     waitRoute,
   );
   assert.throws(
+    () => {
+      const invalid = {
+        ...route("advance"),
+        transitionKind: "next",
+        targetStepId: "human",
+        targetStepKind: "wait",
+        targetTaskDefinitionId: "human",
+      };
+      delete invalid.outcome;
+      return validateTaskRouteAgainstDefinition(invalid, definition);
+    },
+    /wait or terminal target must not include/,
+  );
+  assert.throws(
     () =>
       validateTaskRouteAgainstDefinition(
         {
           ...route("advance"),
-          targetStepId: "human",
-          targetTaskDefinitionId: "human",
-          outcome: "requested",
+          targetTaskDefinitionId: "different-task",
         },
         definition,
       ),
-    /forbidden for wait and terminal/,
+    /requires its targetTaskDefinitionId/,
   );
   assert.throws(
-    () =>
-      formatTaskRoute({
-        ...route("advance"),
-        targetTaskDefinitionId: "different-task",
-      }),
-    /matching step and task definition IDs/,
-  );
-  assert.throws(
-    () => formatTaskRoute({ ...route("advance"), attempt: 2 ** 53 }),
-    /safe integer/,
+    () => formatTaskRoute({ ...route("advance"), attempt: 17 }),
+    /0 through 16/,
   );
   const reversed = Object.fromEntries(Object.entries(route("advance")).reverse());
   assert.equal(formatTaskRoute(reversed), formatTaskRoute(route("advance")));

@@ -40,8 +40,7 @@ spec:
       worker: issue-info-requester
       inputs:
         source: c
-      outcomes:
-        requested: human
+      next: human
     human:
       type: wait
       event: root-issue-commented
@@ -57,8 +56,7 @@ spec:
       operation: record-rejection
       worker: issue-worker
       inputs: {}
-      outcomes:
-        ignored: ignored
+      next: ignored
     g:
       type: task
       operation: coordinate-validation
@@ -90,14 +88,10 @@ spec:
       operation: finalize-issue
       worker: issue-worker
       inputs: {}
-      outcomes:
-        completed: completed
+      next: completed
     completed:
       type: terminal
       outcome: completed
-    error:
-      type: terminal
-      outcome: error
     ignored:
       type: terminal
       outcome: ignored

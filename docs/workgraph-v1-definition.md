@@ -47,11 +47,13 @@ Evaluations require actionable feedback.
 Evaluation IDs, plus `evaluationVerdict`, `orchestratorId`, `action`, and a
 bounded zero-based `attempt`. Accepted Results may advance or complete;
 rejected Results may rework. `error` and `ignore` are universal exclusions.
-Advance alone carries `outcome` and `targetStepId`; it also carries
-`targetTaskDefinitionId` exactly when the compiled target step is a task.
-Outcome edges retain their outcome when they target a wait or terminal. A
-later reporter wave must verify the recorded Result/Evaluation mapping and
-compiled transition before writing.
+Advance alone carries `transitionKind` (`next` or `outcome`),
+`targetStepId`, and `targetStepKind`. `outcome` is present only for an outcome
+transition. `targetTaskDefinitionId` is present
+only for a task target and equals that target's compiler-derived hashed ID.
+Non-advance routes carry no transition or target fields. A later reporter wave
+must verify the recorded Result/Evaluation mapping and compiled transition
+before writing.
 
 ## Admission-first proof
 
@@ -83,6 +85,7 @@ node --check .github/mcp/workgraph-v1-definition.mjs
 node --check scripts/prepare-workgraph-v1-proof.mjs
 node --test tests/workgraph-v1-definition.test.mjs
 node scripts/prepare-workgraph-v1-proof.mjs
+node scripts/check-workgraph-compiler.mjs
 ```
 
 The fixture keeps server, Source, Queries, and Reaction inactive. It records
