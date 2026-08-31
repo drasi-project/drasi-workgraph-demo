@@ -97,14 +97,32 @@ class WorkGraphProfilesTest(unittest.TestCase):
         self.assertTrue(all(int(slots) > 0 for _, slots, _ in entries))
 
     def test_evaluators_and_coordinators_write_on_existing_tasks(self):
-        for name in ("result-evaluator", "issue-validation-evaluator"):
+        lifecycle_profiles = (
+            "result-evaluator",
+            "issue-validation-evaluator",
+            "workflow-coordinator",
+            "validation-stage-coordinator",
+        )
+        for name in lifecycle_profiles:
+            with self.subTest(reporter_identity=name):
+                self.assertIn(
+                    "COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID: "
+                    "${{ vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID }}",
+                    self.agents[name],
+                )
+                self.assertIn(
+                    "COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID: "
+                    "${{ vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID }}",
+                    self.agents[name],
+                )
+        for name in lifecycle_profiles[:2]:
             with self.subTest(name=name):
                 self.assertIn("existing", self.agents[name].lower())
                 self.assertIn("WorkGraphTaskEvaluate/v1", self.agents[name])
                 self.assertNotRegex(
                     self.agents[name], r"workgraph/(?:create|assign|dispatch)_task"
                 )
-        for name in ("workflow-coordinator", "validation-stage-coordinator"):
+        for name in lifecycle_profiles[2:]:
             with self.subTest(name=name):
                 self.assertIn("WorkGraphTaskRoute/v1", self.agents[name])
                 self.assertRegex(self.agents[name], r"(?i)never create")
