@@ -493,10 +493,7 @@ export function deriveWorkGraphRootTaskId(workflowRunId, rootTaskDefinitionId) {
 
 export function canonicalResultJson(value) {
   const normalized = normalizeTaskResult(value);
-  return `{${TASK_RESULT_KEYS.map(
-    (key) =>
-      `${JSON.stringify(key)}:${compactCanonicalJson(normalized[key])}`,
-  ).join(",")}}`;
+  return compactCanonicalJson(normalized);
 }
 
 export function resultValueDigest(value) {

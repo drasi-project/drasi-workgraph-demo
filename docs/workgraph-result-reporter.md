@@ -177,10 +177,9 @@ Root Issue.
 
 Evaluation `resultDigest` is SHA-256 over compact `serde_json` serialization of
 the normalized Result payload. The reporter emits this digest input explicitly,
-preserving Rust's Result struct declaration order while sorting keys recursively
-inside JSON data objects by UTF-8 bytes (including integer-like keys). It does
-not rely on JavaScript object enumeration. Markdown marker, fence, indentation,
-and trailing newline bytes are not part of the digest.
+sorting every object key recursively by UTF-8 bytes (including integer-like
+keys). It does not rely on JavaScript object enumeration. Markdown marker,
+fence, indentation, and trailing newline bytes are not part of the digest.
 
 ## Configuration
 
