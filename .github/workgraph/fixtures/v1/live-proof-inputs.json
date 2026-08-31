@@ -14,6 +14,7 @@
       "wg-tasks-waiting-for-dispatch",
       "wg-tasks-waiting-for-result",
       "wg-tasks-waiting-for-evaluate",
+      "wg-tasks-waiting-for-route",
       "wg-tasks-waiting-for-close",
       "wg-tasks-closed",
       "wg-task-detail",
@@ -21,14 +22,31 @@
       "wg-child-realization-detail",
       "wg-task-artifact-detail",
       "wg-result-detail",
-      "wg-evaluation-detail"
+      "wg-evaluation-detail",
+      "wg-route-detail",
+      "wg-predecessor-result-detail",
+      "wg-entry-1d2c4fab27aa06eb3e3b",
+      "wg-next-141f5bac840ff7bfb615",
+      "wg-next-33c92941a2d3c8e0ecac",
+      "wg-next-a8025dfecf98a9c9e577",
+      "wg-next-bfd3ea117f5824653fa9",
+      "wg-next-c6abf06a0eb26e3eb4c5",
+      "wg-next-e5e45ac2c2285621076d",
+      "wg-next-f8eb33f38446797ee6f7",
+      "wg-outcome-158f40442070fe906435",
+      "wg-outcome-1e8d97579c37e8a6f3d0",
+      "wg-outcome-7e58b666df0bce20335d",
+      "wg-resume-bd25efc4b887eb6b266f",
+      "wg-terminal-59bf91f3085b69bedfeb",
+      "wg-terminal-c3654194050ae440d4af",
+      "wg-wait-8ee5283e24d7c97fe1b3"
     ]
   },
   "definition": {
     "bodyPath": "../../workflows/issue-lifecycle-v1.body",
     "workflowDefinitionId": "issue-lifecycle",
     "version": "v1",
-    "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    "digest": "sha256:692a4ff45cfffcf1dc3462fcd3d904656a4c03efe7b598a09acdf368ce0d6645"
   },
   "rootIssueAdmission": {
     "repositoryOwner": "drasi-project",
@@ -44,10 +62,10 @@
     "contentDigest": "sha256:1b079c1efdfac32900286e0b20216dac4c17115ddf6c9cf526d4cc0a3f1c68bb"
   },
   "expectedRootTask": {
-    "taskId": "wgt-34c7e7f57d7382cd2fe4d3848d5a3242287150e55420d9cae04a9557daa1",
+    "taskId": "wgt-89e891aace2b7472ee8ddaaeb6130b229e2175c91052444162e316b49447",
     "rootIssueId": "I_workgraph_root_issue",
-    "workflowRunId": "workgraph-v1:run:sha256:7e382f874d15c6c60d8b4a15c365d0e85c2b5a65453924831442291cce73d510",
-    "taskDefinitionId": "root-v1",
+    "workflowRunId": "workgraph-v1:run:sha256:3996958fa103bff842e1424716b18603927af5830bf3064b58e24476e550da0e",
+    "taskDefinitionId": "wgd-2ce0abc2104478fd27e0edeec7173ad089f6f2fb72c02694bc2525146cfe",
     "firstLifecycleState": "FORK",
     "precreatedChildCount": 0
   },
@@ -59,6 +77,7 @@
     "DISPATCH",
     "RESULT",
     "EVALUATE",
+    "ROUTE",
     "CLOSE",
     "CLOSED"
   ],

@@ -1,13 +1,12 @@
 #!/usr/bin/env node
 
-import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
   formatRuntimeTask,
-  parseWorkflowDefinition,
+  parseCompiledWorkflowDefinition,
   validateRootRuntimeTask,
 } from "../.github/mcp/workgraph-v1-definition.mjs";
 import {
@@ -23,10 +22,11 @@ const INPUTS_PATH = resolve(
   WORKGRAPH_ROOT,
   "fixtures/v1/live-proof-inputs.json",
 );
-const DEFINITION_BYTES = 831;
-const DEFINITION_SHA256 =
-  "68918d0137ec173cbcd24b8c32792874f15c3f92abf95424f98012977566d85b";
-const QUERY_COUNT = 17;
+const COMPILED_PATH = resolve(
+  WORKGRAPH_ROOT,
+  "fixtures/v1/issue-lifecycle.expected.json",
+);
+const QUERY_COUNT = 35;
 
 function exact(value, keys, label) {
   if (
@@ -79,6 +79,7 @@ function validateActivation(value) {
 
 export async function buildWorkGraphV1Proof() {
   const inputs = JSON.parse(await readFile(INPUTS_PATH, "utf8"));
+  const compiled = JSON.parse(await readFile(COMPILED_PATH, "utf8"));
   exact(
     inputs,
     [
@@ -101,7 +102,7 @@ export async function buildWorkGraphV1Proof() {
     new Set(queryIds).size !== QUERY_COUNT ||
     queryIds.some((id) => typeof id !== "string" || !id.startsWith("wg-"))
   ) {
-    throw new Error("proof must pin exactly 17 unique wg- query IDs");
+    throw new Error("proof must pin exactly 35 unique wg- query IDs");
   }
   if (
     inputs.runtimeContract.sourceId !== "github-workgraph-v1" ||
@@ -114,14 +115,17 @@ export async function buildWorkGraphV1Proof() {
 
   const definitionPath = localWorkGraphPath(inputs.definition.bodyPath);
   const definitionBody = await readFile(definitionPath, "utf8");
-  if (
-    Buffer.byteLength(definitionBody, "utf8") !== DEFINITION_BYTES ||
-    createHash("sha256").update(definitionBody, "utf8").digest("hex") !==
-      DEFINITION_SHA256
-  ) {
-    throw new Error("workflow definition differs from the frozen v1 fixture");
+  if (definitionBody !== compiled.canonicalDefinitionBody) {
+    throw new Error("workflow definition differs from compiler output");
   }
-  const definition = parseWorkflowDefinition(definitionBody);
+  const generatedQueryIds = compiled.queryBundle.queries.map(({ id }) => id);
+  if (
+    JSON.stringify(queryIds.slice(-generatedQueryIds.length)) !==
+    JSON.stringify(generatedQueryIds)
+  ) {
+    throw new Error("proof generated query IDs differ from compiler output");
+  }
+  const definition = parseCompiledWorkflowDefinition(definitionBody);
   for (const field of ["workflowDefinitionId", "version", "digest"]) {
     if (definition[field] !== inputs.definition[field]) {
       throw new Error(`workflow definition ${field} differs from proof inputs`);
@@ -222,6 +226,7 @@ export async function buildWorkGraphV1Proof() {
       "DISPATCH",
       "RESULT",
       "EVALUATE",
+      "ROUTE",
       "CLOSE",
       "CLOSED",
     ])

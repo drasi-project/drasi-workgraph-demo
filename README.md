@@ -33,13 +33,14 @@ standalone Root Issue comment wait loop, triage, rejection, recursive
 three-child validation, and finalization. Lowercase step IDs, worker inputs,
 defaults, and task/stage overrides follow the compiler's v1 YAML schema.
 
-The existing
+Dogfooding's Rust `workgraph-compile` turns that YAML into the canonical
+`WorkGraphWorkflowDefinition/v1` body and a deterministic 15-query workflow
+bundle. The committed
 [`issue-lifecycle-v1.body`](.github/workgraph/workflows/issue-lifecycle-v1.body)
-remains a frozen runtime proof input. This wave does not synthesize a
-replacement canonical body in JavaScript; the Rust compiler remains
-authoritative. The expected logical result for later compiler reconciliation
-is tracked in
-[`issue-lifecycle.expected.json`](.github/workgraph/fixtures/v1/issue-lifecycle.expected.json).
+is that canonical body, and
+[`issue-lifecycle.expected.json`](.github/workgraph/fixtures/v1/issue-lifecycle.expected.json)
+is the exact complete compiler output. The runtime combines the generated
+queries with 20 generic admission, lifecycle, and detail queries.
 
 Evaluator and orchestrator profiles are lifecycle roles. Through the narrow
 reporter they read a verified current task snapshot and write one canonical
@@ -51,10 +52,11 @@ atomic. Lifecycle artifacts use one-based attempts and deterministic claim
 identities so concurrent retries in one reporter process reconcile one
 immutable comment.
 
-The offline proof fixture pins all 17 `wg-*` Drasi queries and derives the Root
+The offline proof fixture pins all 35 `wg-*` Drasi queries and derives the Root
 Task from a Root Issue admission:
 
 ```bash
+node scripts/check-workgraph-compiler.mjs
 node scripts/prepare-workgraph-v1-proof.mjs
 node --test tests/*.test.mjs
 python -m unittest tests/test_workgraph_agent_profiles.py

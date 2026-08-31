@@ -357,6 +357,25 @@ export function parseWorkflowDefinition(body) {
   );
 }
 
+export function formatCompiledWorkflowDefinition(definition) {
+  const normalized = normalizeCompiledWorkflowDefinition(definition);
+  const body = `${WORKFLOW_DEFINITION_MARKER}\n\n\`\`\`json\n${prettyJson(normalized)}\n\`\`\`\n`;
+  if (new TextEncoder().encode(body).length > MAX_WORKGRAPH_BODY_BYTES) {
+    throw new WorkGraphDefinitionError(
+      `${WORKFLOW_DEFINITION_MARKER} body exceeds ${MAX_WORKGRAPH_BODY_BYTES} bytes`,
+    );
+  }
+  return body;
+}
+
+export function parseCompiledWorkflowDefinition(body) {
+  return parseCanonicalBody(
+    body,
+    WORKFLOW_DEFINITION_MARKER,
+    formatCompiledWorkflowDefinition,
+  );
+}
+
 export function normalizeRuntimeTask(task) {
   exactKeys(task, RUNTIME_TASK_KEYS, "runtime task");
   identifier(task.taskId, "runtime task taskId");
@@ -403,7 +422,10 @@ export function parseRuntimeTask(body) {
 }
 
 export function validateRootRuntimeTask(definition, task) {
-  const normalizedDefinition = normalizeWorkflowDefinition(definition);
+  const normalizedDefinition =
+    "steps" in definition
+      ? normalizeCompiledWorkflowDefinition(definition)
+      : normalizeWorkflowDefinition(definition);
   const normalizedTask = normalizeRuntimeTask(task);
   const expected = {
     workflowDefinitionId: normalizedDefinition.workflowDefinitionId,

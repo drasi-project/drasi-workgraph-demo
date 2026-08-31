@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
@@ -8,6 +7,7 @@ import {
   MAX_TASK_DEFINITION_CHILDREN,
   formatTaskEvaluation,
   formatTaskRoute,
+  formatCompiledWorkflowDefinition,
   formatRuntimeTask,
   formatWorkflowDefinition,
   nextReworkAttempt,
@@ -15,6 +15,7 @@ import {
   normalizeIssueWorkflow,
   parseTaskEvaluation,
   parseTaskRoute,
+  parseCompiledWorkflowDefinition,
   parseRuntimeTask,
   parseWorkflowDefinition,
   validateRootRuntimeTask,
@@ -85,18 +86,13 @@ function taskDefinitions(root) {
 
 test("the v1 workflow definition remains byte exact", async () => {
   const body = await read(DEFINITION_PATH);
-  assert.equal(Buffer.byteLength(body), 831);
-  assert.equal(
-    createHash("sha256").update(body, "utf8").digest("hex"),
-    "68918d0137ec173cbcd24b8c32792874f15c3f92abf95424f98012977566d85b",
-  );
-  const definition = parseWorkflowDefinition(body);
-  assert.equal(formatWorkflowDefinition(definition), body);
+  assert.equal(body, COMPILED_OUTPUT.canonicalDefinitionBody);
+  const definition = parseCompiledWorkflowDefinition(body);
+  assert.equal(formatCompiledWorkflowDefinition(definition), body);
   assert.equal(definition.version, "v1");
-  assert.deepEqual(
-    taskDefinitions(definition.root).map(({ taskDefinitionId }) => taskDefinitionId),
-    ["root-v1", "validate-v1"],
-  );
+  assert.equal(definition.digest, COMPILED_OUTPUT.definitionDigest);
+  assert.equal(Object.keys(definition.steps).length, 11);
+  assert.equal(taskDefinitions(definition.steps.g.taskDefinition).length, 4);
 });
 
 test("recursive definitions preserve deterministic global task identities", () => {
@@ -175,7 +171,7 @@ test("definition validation rejects duplicate identities and invalid bounds", ()
 });
 
 test("parsing rejects unknown, oversized, reserved-marker, and noncanonical bodies", async () => {
-  const definition = parseWorkflowDefinition(await read(DEFINITION_PATH));
+  const definition = nestedDefinition();
   const unknown = clone(definition);
   unknown.root.unexpected = true;
   assert.throws(
@@ -214,7 +210,7 @@ test("parsing rejects unknown, oversized, reserved-marker, and noncanonical bodi
 
 test("runtime tasks require top-level Root Issue identity and exact definition pins", async () => {
   const proof = await buildWorkGraphV1Proof();
-  const definition = parseWorkflowDefinition(await read(DEFINITION_PATH));
+  const definition = parseCompiledWorkflowDefinition(await read(DEFINITION_PATH));
   const body = proof.expectedRootTask.body;
   const root = parseRuntimeTask(body);
   assert.equal(root.rootIssueId, "I_workgraph_root_issue");
@@ -240,10 +236,10 @@ test("runtime tasks require top-level Root Issue identity and exact definition p
   );
 });
 
-test("proof inputs pin 17 wg- queries and remain fully inactive", async () => {
+test("proof inputs pin 35 wg- queries and remain fully inactive", async () => {
   const inputs = JSON.parse(await read(INPUTS_PATH));
-  assert.equal(inputs.runtimeContract.queryIds.length, 17);
-  assert.equal(new Set(inputs.runtimeContract.queryIds).size, 17);
+  assert.equal(inputs.runtimeContract.queryIds.length, 35);
+  assert.equal(new Set(inputs.runtimeContract.queryIds).size, 35);
   assert.ok(inputs.runtimeContract.queryIds.every((id) => id.startsWith("wg-")));
   assert.equal(inputs.runtimeContract.stateStorePath, "data/workgraph-v1.redb");
   assert.deepEqual(inputs.activation, {
@@ -280,11 +276,11 @@ test("offline proof derives the Root Task from Root Issue admission", async () =
   });
   assert.equal(
     proof.expectedRootTask.value.taskId,
-    "wgt-34c7e7f57d7382cd2fe4d3848d5a3242287150e55420d9cae04a9557daa1",
+    "wgt-89e891aace2b7472ee8ddaaeb6130b229e2175c91052444162e316b49447",
   );
   assert.equal(
     proof.expectedRootTask.value.workflowRunId,
-    "workgraph-v1:run:sha256:7e382f874d15c6c60d8b4a15c365d0e85c2b5a65453924831442291cce73d510",
+    "workgraph-v1:run:sha256:3996958fa103bff842e1424716b18603927af5830bf3064b58e24476e550da0e",
   );
   assert.equal(
     proof.expectedRootTask.value.resolvedInputs.rootIssue.issueNodeId,

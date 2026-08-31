@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -37,6 +37,14 @@ const result = spawnSync(
 if (result.status !== 0) {
   process.stderr.write(result.stderr);
   process.exit(result.status ?? 1);
+}
+
+if (process.argv.includes("--write")) {
+  writeFileSync(fixture, result.stdout);
+  writeFileSync(
+    resolve(root, ".github/workgraph/workflows/issue-lifecycle-v1.body"),
+    JSON.parse(result.stdout).canonicalDefinitionBody,
+  );
 }
 
 assert.deepEqual(

@@ -4,23 +4,86 @@ WorkGraphWorkflowDefinition/v1
 {
   "workflowDefinitionId": "issue-lifecycle",
   "version": "v1",
-  "digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "digest": "sha256:692a4ff45cfffcf1dc3462fcd3d904656a4c03efe7b598a09acdf368ce0d6645",
+  "trigger": "workgraph",
+  "defaults": {
+    "evaluator": "result-evaluator",
+    "orchestrator": "workflow-coordinator",
+    "maxReworkAttempts": 3
+  },
+  "initialStepId": "a",
   "root": {
-    "taskDefinitionId": "root-v1",
-    "taskKey": "root",
-    "operation": "coordinate-issue",
+    "taskDefinitionId": "wgd-2ce0abc2104478fd27e0edeec7173ad089f6f2fb72c02694bc2525146cfe",
+    "taskKey": "a",
+    "operation": "intake-issue",
     "routing": {
       "permittedExecutors": [
-        "issue-coordinator"
+        "issue-worker"
       ]
     },
-    "staticInputs": {
-      "proofMode": "isolated"
+    "staticInputs": {},
+    "children": []
+  },
+  "steps": {
+    "a": {
+      "type": "task",
+      "taskDefinition": {
+        "taskDefinitionId": "wgd-2ce0abc2104478fd27e0edeec7173ad089f6f2fb72c02694bc2525146cfe",
+        "taskKey": "a",
+        "operation": "intake-issue",
+        "routing": {
+          "permittedExecutors": [
+            "issue-worker"
+          ]
+        },
+        "staticInputs": {},
+        "children": []
+      },
+      "executionPolicies": {
+        "wgd-2ce0abc2104478fd27e0edeec7173ad089f6f2fb72c02694bc2525146cfe": {
+          "workerId": "issue-worker",
+          "evaluatorId": "result-evaluator",
+          "orchestratorId": "workflow-coordinator",
+          "maxReworkAttempts": 3
+        }
+      },
+      "transition": {
+        "type": "next",
+        "targetStepId": "b"
+      }
     },
-    "children": [
-      {
-        "taskDefinitionId": "validate-v1",
-        "taskKey": "validate",
+    "b": {
+      "type": "task",
+      "taskDefinition": {
+        "taskDefinitionId": "wgd-b48fb3e191ebb3ac4ad937529081620b89964134acd6818a63d4abef4135",
+        "taskKey": "b",
+        "operation": "normalize-issue",
+        "routing": {
+          "permittedExecutors": [
+            "issue-worker"
+          ]
+        },
+        "staticInputs": {},
+        "children": []
+      },
+      "executionPolicies": {
+        "wgd-b48fb3e191ebb3ac4ad937529081620b89964134acd6818a63d4abef4135": {
+          "workerId": "issue-worker",
+          "evaluatorId": "result-evaluator",
+          "orchestratorId": "workflow-coordinator",
+          "maxReworkAttempts": 3
+        }
+      },
+      "transition": {
+        "type": "next",
+        "targetStepId": "c"
+      }
+    },
+    "c": {
+      "type": "task",
+      "taskDefinition": {
+        "taskDefinitionId": "wgd-95affedcc9b4f69dc6ac3aa3376245811348b9ee543a5072b44027d2aae1",
+        "taskKey": "c",
         "operation": "validate-issue",
         "routing": {
           "permittedExecutors": [
@@ -28,11 +91,238 @@ WorkGraphWorkflowDefinition/v1
           ]
         },
         "staticInputs": {
-          "validationProfile": "new-issue-default"
+          "profile": "new-issue-default"
         },
         "children": []
+      },
+      "executionPolicies": {
+        "wgd-95affedcc9b4f69dc6ac3aa3376245811348b9ee543a5072b44027d2aae1": {
+          "workerId": "issue-validator",
+          "evaluatorId": "issue-validation-evaluator",
+          "orchestratorId": "workflow-coordinator",
+          "maxReworkAttempts": 3
+        }
+      },
+      "transition": {
+        "type": "outcomes",
+        "targets": {
+          "continue": "e",
+          "needs-info": "d",
+          "reject": "f"
+        }
       }
-    ]
+    },
+    "completed": {
+      "type": "terminal",
+      "outcome": "completed"
+    },
+    "d": {
+      "type": "task",
+      "taskDefinition": {
+        "taskDefinitionId": "wgd-7f3cdeee71f8c43c5f9de62d097e56c652a13de22dee7708992a37b8708c",
+        "taskKey": "d",
+        "operation": "request-information",
+        "routing": {
+          "permittedExecutors": [
+            "issue-info-requester"
+          ]
+        },
+        "staticInputs": {
+          "source": "c"
+        },
+        "children": []
+      },
+      "executionPolicies": {
+        "wgd-7f3cdeee71f8c43c5f9de62d097e56c652a13de22dee7708992a37b8708c": {
+          "workerId": "issue-info-requester",
+          "evaluatorId": "result-evaluator",
+          "orchestratorId": "workflow-coordinator",
+          "maxReworkAttempts": 3
+        }
+      },
+      "transition": {
+        "type": "next",
+        "targetStepId": "human"
+      }
+    },
+    "e": {
+      "type": "task",
+      "taskDefinition": {
+        "taskDefinitionId": "wgd-ea10f5ea7f9aa52a26597311353535a1788d117410cb8243feae2b52177f",
+        "taskKey": "e",
+        "operation": "triage-issue",
+        "routing": {
+          "permittedExecutors": [
+            "issue-worker"
+          ]
+        },
+        "staticInputs": {},
+        "children": []
+      },
+      "executionPolicies": {
+        "wgd-ea10f5ea7f9aa52a26597311353535a1788d117410cb8243feae2b52177f": {
+          "workerId": "issue-worker",
+          "evaluatorId": "result-evaluator",
+          "orchestratorId": "workflow-coordinator",
+          "maxReworkAttempts": 3
+        }
+      },
+      "transition": {
+        "type": "next",
+        "targetStepId": "g"
+      }
+    },
+    "f": {
+      "type": "task",
+      "taskDefinition": {
+        "taskDefinitionId": "wgd-9c7f10ef0b63f441955abed1427cf7b09e85ffc41af47650dd8eaa6d2507",
+        "taskKey": "f",
+        "operation": "record-rejection",
+        "routing": {
+          "permittedExecutors": [
+            "issue-worker"
+          ]
+        },
+        "staticInputs": {},
+        "children": []
+      },
+      "executionPolicies": {
+        "wgd-9c7f10ef0b63f441955abed1427cf7b09e85ffc41af47650dd8eaa6d2507": {
+          "workerId": "issue-worker",
+          "evaluatorId": "result-evaluator",
+          "orchestratorId": "workflow-coordinator",
+          "maxReworkAttempts": 3
+        }
+      },
+      "transition": {
+        "type": "next",
+        "targetStepId": "ignored"
+      }
+    },
+    "g": {
+      "type": "task",
+      "taskDefinition": {
+        "taskDefinitionId": "wgd-734f5073a8c776d9eb5dd684fabdedfb4b0c0cfb844c93824de81dc31b51",
+        "taskKey": "g",
+        "operation": "coordinate-validation",
+        "routing": {
+          "permittedExecutors": [
+            "issue-worker"
+          ]
+        },
+        "staticInputs": {},
+        "children": [
+          {
+            "taskDefinitionId": "wgd-1aa35b5a5313d360fb466510a7bef0deaa4156850ba41273a85f4c6b0a3b",
+            "taskKey": "body",
+            "operation": "validate-body",
+            "routing": {
+              "permittedExecutors": [
+                "issue-validator"
+              ]
+            },
+            "staticInputs": {
+              "field": "body"
+            },
+            "children": []
+          },
+          {
+            "taskDefinitionId": "wgd-0320c86e4adada25214475f95510086081783f71143314d404b3ad248c38",
+            "taskKey": "reproduction",
+            "operation": "validate-reproduction",
+            "routing": {
+              "permittedExecutors": [
+                "issue-validator"
+              ]
+            },
+            "staticInputs": {
+              "section": "reproduction"
+            },
+            "children": []
+          },
+          {
+            "taskDefinitionId": "wgd-0fbf0cb1ed411fc9f7a751f576dcef71334ab438bbde58f310524ddebeda",
+            "taskKey": "title",
+            "operation": "validate-title",
+            "routing": {
+              "permittedExecutors": [
+                "issue-validator"
+              ]
+            },
+            "staticInputs": {
+              "field": "title"
+            },
+            "children": []
+          }
+        ]
+      },
+      "executionPolicies": {
+        "wgd-0320c86e4adada25214475f95510086081783f71143314d404b3ad248c38": {
+          "workerId": "issue-validator",
+          "evaluatorId": "result-evaluator",
+          "orchestratorId": "workflow-coordinator",
+          "maxReworkAttempts": 3
+        },
+        "wgd-0fbf0cb1ed411fc9f7a751f576dcef71334ab438bbde58f310524ddebeda": {
+          "workerId": "issue-validator",
+          "evaluatorId": "result-evaluator",
+          "orchestratorId": "workflow-coordinator",
+          "maxReworkAttempts": 3
+        },
+        "wgd-1aa35b5a5313d360fb466510a7bef0deaa4156850ba41273a85f4c6b0a3b": {
+          "workerId": "issue-validator",
+          "evaluatorId": "result-evaluator",
+          "orchestratorId": "workflow-coordinator",
+          "maxReworkAttempts": 3
+        },
+        "wgd-734f5073a8c776d9eb5dd684fabdedfb4b0c0cfb844c93824de81dc31b51": {
+          "workerId": "issue-worker",
+          "evaluatorId": "result-evaluator",
+          "orchestratorId": "validation-stage-coordinator",
+          "maxReworkAttempts": 2
+        }
+      },
+      "transition": {
+        "type": "next",
+        "targetStepId": "h"
+      }
+    },
+    "h": {
+      "type": "task",
+      "taskDefinition": {
+        "taskDefinitionId": "wgd-f61134fd0a90a7d569b9e1374ae5b005d924f9a1e95d3eb833979a5a83bc",
+        "taskKey": "h",
+        "operation": "finalize-issue",
+        "routing": {
+          "permittedExecutors": [
+            "issue-worker"
+          ]
+        },
+        "staticInputs": {},
+        "children": []
+      },
+      "executionPolicies": {
+        "wgd-f61134fd0a90a7d569b9e1374ae5b005d924f9a1e95d3eb833979a5a83bc": {
+          "workerId": "issue-worker",
+          "evaluatorId": "result-evaluator",
+          "orchestratorId": "workflow-coordinator",
+          "maxReworkAttempts": 3
+        }
+      },
+      "transition": {
+        "type": "next",
+        "targetStepId": "completed"
+      }
+    },
+    "human": {
+      "type": "wait",
+      "event": "root-issue-commented",
+      "nextStepId": "c"
+    },
+    "ignored": {
+      "type": "terminal",
+      "outcome": "ignored"
+    }
   }
 }
 ```

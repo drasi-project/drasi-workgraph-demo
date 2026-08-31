@@ -26,15 +26,12 @@ overrides the orchestrator and maximum with two. Every task has `worker` and
 error, and ignored terminals are standalone steps.
 
 The Rust compiler is authoritative for the final canonical
-`WorkGraphWorkflowDefinition/v1` body. JavaScript does not generate a second
-final body for the rich graph. The expected high-level result is
-`.github/workgraph/fixtures/v1/issue-lifecycle.expected.json`, which is retained
-for later compiler reconciliation. It contains all resolved task definitions,
-recursive children, waits, terminals, and graph transitions. The distinct
-`normalizeCompiledWorkflowDefinition` validates that complete graph, including
-reachability and wait-mediated cycles. The existing root-shaped
-`parseWorkflowDefinition` remains only for the published
-`issue-lifecycle-v1.body` admission-proof input until Wave 2.
+`WorkGraphWorkflowDefinition/v1` body and its generated query bundle.
+`.github/workgraph/fixtures/v1/issue-lifecycle.expected.json` is the exact
+complete compiler output; `.github/workgraph/workflows/issue-lifecycle-v1.body`
+is its `canonicalDefinitionBody`. JavaScript parses and validates that complete
+graph, including recursive fork/join definitions, reachability, and
+wait-mediated cycles, but does not independently compile the YAML.
 
 ## Evaluate and Route
 
@@ -85,12 +82,13 @@ No Root Task is pre-seeded. In live mode the `workgraph-v1` Reaction consumes
 `wg-issues-waiting-for-admission` and creates the Root Task as a native child of
 the Root Issue.
 
-The proof pins the complete query inventory:
+The proof pins the complete runtime query inventory:
 
 - 1 admission query;
 - 10 lifecycle queries;
-- 6 detail queries;
-- 17 total queries, all prefixed `wg-`.
+- 9 detail queries;
+- 15 compiler-generated entry, transition, wait/resume, and terminal queries;
+- 35 total queries, all prefixed `wg-`.
 
 Run:
 
@@ -101,6 +99,10 @@ node --test tests/workgraph-v1-definition.test.mjs
 node scripts/prepare-workgraph-v1-proof.mjs
 node scripts/check-workgraph-compiler.mjs
 ```
+
+Use `node scripts/check-workgraph-compiler.mjs --write` to regenerate the
+expected output and canonical body before materializing the Dogfooding runtime
+configuration. A second `--write` run must leave the worktree unchanged.
 
 The fixture keeps server, Source, Queries, and Reaction inactive. It records
 `dryRun: true`, `liveAcknowledgment: false`, and

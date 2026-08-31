@@ -791,12 +791,14 @@
         "type": "next",
         "sourceStepId": "a",
         "targetStepId": "b",
+        "targetStepKind": "task",
         "targetTaskDefinitionId": "wgd-b48fb3e191ebb3ac4ad937529081620b89964134acd6818a63d4abef4135"
       },
       {
         "type": "next",
         "sourceStepId": "b",
         "targetStepId": "c",
+        "targetStepKind": "task",
         "targetTaskDefinitionId": "wgd-95affedcc9b4f69dc6ac3aa3376245811348b9ee543a5072b44027d2aae1"
       },
       {
@@ -804,6 +806,7 @@
         "sourceStepId": "c",
         "outcome": "continue",
         "targetStepId": "e",
+        "targetStepKind": "task",
         "targetTaskDefinitionId": "wgd-ea10f5ea7f9aa52a26597311353535a1788d117410cb8243feae2b52177f"
       },
       {
@@ -811,6 +814,7 @@
         "sourceStepId": "c",
         "outcome": "needs-info",
         "targetStepId": "d",
+        "targetStepKind": "task",
         "targetTaskDefinitionId": "wgd-7f3cdeee71f8c43c5f9de62d097e56c652a13de22dee7708992a37b8708c"
       },
       {
@@ -818,6 +822,7 @@
         "sourceStepId": "c",
         "outcome": "reject",
         "targetStepId": "f",
+        "targetStepKind": "task",
         "targetTaskDefinitionId": "wgd-9c7f10ef0b63f441955abed1427cf7b09e85ffc41af47650dd8eaa6d2507"
       },
       {
@@ -828,41 +833,1002 @@
       {
         "type": "next",
         "sourceStepId": "d",
-        "targetStepId": "human"
+        "targetStepId": "human",
+        "targetStepKind": "wait"
       },
       {
         "type": "next",
         "sourceStepId": "e",
         "targetStepId": "g",
+        "targetStepKind": "task",
         "targetTaskDefinitionId": "wgd-734f5073a8c776d9eb5dd684fabdedfb4b0c0cfb844c93824de81dc31b51"
       },
       {
         "type": "next",
         "sourceStepId": "f",
-        "targetStepId": "ignored"
+        "targetStepId": "ignored",
+        "targetStepKind": "terminal"
       },
       {
         "type": "next",
         "sourceStepId": "g",
         "targetStepId": "h",
+        "targetStepKind": "task",
         "targetTaskDefinitionId": "wgd-f61134fd0a90a7d569b9e1374ae5b005d924f9a1e95d3eb833979a5a83bc"
       },
       {
         "type": "next",
         "sourceStepId": "h",
-        "targetStepId": "completed"
+        "targetStepId": "completed",
+        "targetStepKind": "terminal"
       },
       {
         "type": "wait",
         "stepId": "human",
         "event": "root-issue-commented",
         "targetStepId": "c",
+        "targetStepKind": "task",
         "targetTaskDefinitionId": "wgd-95affedcc9b4f69dc6ac3aa3376245811348b9ee543a5072b44027d2aae1"
       },
       {
         "type": "terminal",
         "stepId": "ignored",
         "outcome": "ignored"
+      }
+    ]
+  },
+  "queryBundle": {
+    "version": "v1",
+    "workflowDefinitionId": "issue-lifecycle",
+    "definitionDigest": "sha256:692a4ff45cfffcf1dc3462fcd3d904656a4c03efe7b598a09acdf368ce0d6645",
+    "queries": [
+      {
+        "id": "wg-entry-1d2c4fab27aa06eb3e3b",
+        "kind": "workflow-entry",
+        "query": "MATCH (root:WorkGraphRootIssue)\nMATCH (definition:WorkflowDefinition {workflowDefinitionId: 'issue-lifecycle', digest: 'sha256:692a4ff45cfffcf1dc3462fcd3d904656a4c03efe7b598a09acdf368ce0d6645'})-[:HAS_TASK]->(target:TaskDefinition {taskDefinitionId: 'wgd-2ce0abc2104478fd27e0edeec7173ad089f6f2fb72c02694bc2525146cfe'})\nOPTIONAL MATCH (run:WorkflowRun)-[:RUN_FOR]->(root)\nWITH root, definition, target, count(run) AS runCount\nWHERE root.isOpen = true AND runCount = 0\nRETURN null AS workflowRunId, root.rootIssueId AS rootIssueId, null AS sourceTaskId, null AS routeId, null AS sourceStepId, 'a' AS targetStepId, 'task' AS targetStepKind, target.taskDefinitionId AS targetTaskDefinitionId",
+        "resultSchema": [
+          {
+            "name": "workflowRunId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "rootIssueId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "sourceTaskId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "routeId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "sourceStepId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "targetStepId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetStepKind",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetTaskDefinitionId",
+            "type": "string",
+            "nullable": true
+          }
+        ]
+      },
+      {
+        "id": "wg-next-141f5bac840ff7bfb615",
+        "kind": "next",
+        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)-[:HAS_TASK]->(definition:TaskDefinition)<-[:INSTANCE_OF]-(task:WorkGraphTask)-[:IN_RUN]->(run)\nMATCH (route:WorkGraphTaskRoute)-[:ROUTES]->(evaluation:WorkGraphTaskEvaluate)-[:EVALUATES]->(result:WorkGraphTaskResult)-[:RESULT_FOR]->(task)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:692a4ff45cfffcf1dc3462fcd3d904656a4c03efe7b598a09acdf368ce0d6645' AND definition.taskKey = 'g' AND route.workflowRunId = run.workflowRunId AND route.taskId = task.taskId AND route.resultId = result.resultId AND route.evaluationId = evaluation.evaluationId AND route.action = 'advance' AND route.transitionKind = 'next' AND route.outcome IS NULL AND route.targetStepId = 'h' AND route.targetStepKind = 'task' AND route.targetTaskDefinitionId = 'wgd-f61134fd0a90a7d569b9e1374ae5b005d924f9a1e95d3eb833979a5a83bc'\nRETURN run.workflowRunId AS workflowRunId, task.rootIssueId AS rootIssueId, task.taskId AS sourceTaskId, route.routeId AS routeId, 'g' AS sourceStepId, 'h' AS targetStepId, route.targetStepKind AS targetStepKind, route.targetTaskDefinitionId AS targetTaskDefinitionId",
+        "resultSchema": [
+          {
+            "name": "workflowRunId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "rootIssueId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "sourceTaskId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "routeId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "sourceStepId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "targetStepId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetStepKind",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetTaskDefinitionId",
+            "type": "string",
+            "nullable": true
+          }
+        ]
+      },
+      {
+        "id": "wg-next-33c92941a2d3c8e0ecac",
+        "kind": "next",
+        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)-[:HAS_TASK]->(definition:TaskDefinition)<-[:INSTANCE_OF]-(task:WorkGraphTask)-[:IN_RUN]->(run)\nMATCH (route:WorkGraphTaskRoute)-[:ROUTES]->(evaluation:WorkGraphTaskEvaluate)-[:EVALUATES]->(result:WorkGraphTaskResult)-[:RESULT_FOR]->(task)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:692a4ff45cfffcf1dc3462fcd3d904656a4c03efe7b598a09acdf368ce0d6645' AND definition.taskKey = 'e' AND route.workflowRunId = run.workflowRunId AND route.taskId = task.taskId AND route.resultId = result.resultId AND route.evaluationId = evaluation.evaluationId AND route.action = 'advance' AND route.transitionKind = 'next' AND route.outcome IS NULL AND route.targetStepId = 'g' AND route.targetStepKind = 'task' AND route.targetTaskDefinitionId = 'wgd-734f5073a8c776d9eb5dd684fabdedfb4b0c0cfb844c93824de81dc31b51'\nRETURN run.workflowRunId AS workflowRunId, task.rootIssueId AS rootIssueId, task.taskId AS sourceTaskId, route.routeId AS routeId, 'e' AS sourceStepId, 'g' AS targetStepId, route.targetStepKind AS targetStepKind, route.targetTaskDefinitionId AS targetTaskDefinitionId",
+        "resultSchema": [
+          {
+            "name": "workflowRunId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "rootIssueId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "sourceTaskId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "routeId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "sourceStepId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "targetStepId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetStepKind",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetTaskDefinitionId",
+            "type": "string",
+            "nullable": true
+          }
+        ]
+      },
+      {
+        "id": "wg-next-a8025dfecf98a9c9e577",
+        "kind": "next",
+        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)-[:HAS_TASK]->(definition:TaskDefinition)<-[:INSTANCE_OF]-(task:WorkGraphTask)-[:IN_RUN]->(run)\nMATCH (route:WorkGraphTaskRoute)-[:ROUTES]->(evaluation:WorkGraphTaskEvaluate)-[:EVALUATES]->(result:WorkGraphTaskResult)-[:RESULT_FOR]->(task)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:692a4ff45cfffcf1dc3462fcd3d904656a4c03efe7b598a09acdf368ce0d6645' AND definition.taskKey = 'h' AND route.workflowRunId = run.workflowRunId AND route.taskId = task.taskId AND route.resultId = result.resultId AND route.evaluationId = evaluation.evaluationId AND route.action = 'advance' AND route.transitionKind = 'next' AND route.outcome IS NULL AND route.targetStepId = 'completed' AND route.targetStepKind = 'terminal' AND route.targetTaskDefinitionId IS NULL\nRETURN run.workflowRunId AS workflowRunId, task.rootIssueId AS rootIssueId, task.taskId AS sourceTaskId, route.routeId AS routeId, 'h' AS sourceStepId, 'completed' AS targetStepId, route.targetStepKind AS targetStepKind, route.targetTaskDefinitionId AS targetTaskDefinitionId",
+        "resultSchema": [
+          {
+            "name": "workflowRunId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "rootIssueId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "sourceTaskId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "routeId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "sourceStepId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "targetStepId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetStepKind",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetTaskDefinitionId",
+            "type": "string",
+            "nullable": true
+          }
+        ]
+      },
+      {
+        "id": "wg-next-bfd3ea117f5824653fa9",
+        "kind": "next",
+        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)-[:HAS_TASK]->(definition:TaskDefinition)<-[:INSTANCE_OF]-(task:WorkGraphTask)-[:IN_RUN]->(run)\nMATCH (route:WorkGraphTaskRoute)-[:ROUTES]->(evaluation:WorkGraphTaskEvaluate)-[:EVALUATES]->(result:WorkGraphTaskResult)-[:RESULT_FOR]->(task)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:692a4ff45cfffcf1dc3462fcd3d904656a4c03efe7b598a09acdf368ce0d6645' AND definition.taskKey = 'f' AND route.workflowRunId = run.workflowRunId AND route.taskId = task.taskId AND route.resultId = result.resultId AND route.evaluationId = evaluation.evaluationId AND route.action = 'advance' AND route.transitionKind = 'next' AND route.outcome IS NULL AND route.targetStepId = 'ignored' AND route.targetStepKind = 'terminal' AND route.targetTaskDefinitionId IS NULL\nRETURN run.workflowRunId AS workflowRunId, task.rootIssueId AS rootIssueId, task.taskId AS sourceTaskId, route.routeId AS routeId, 'f' AS sourceStepId, 'ignored' AS targetStepId, route.targetStepKind AS targetStepKind, route.targetTaskDefinitionId AS targetTaskDefinitionId",
+        "resultSchema": [
+          {
+            "name": "workflowRunId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "rootIssueId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "sourceTaskId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "routeId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "sourceStepId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "targetStepId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetStepKind",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetTaskDefinitionId",
+            "type": "string",
+            "nullable": true
+          }
+        ]
+      },
+      {
+        "id": "wg-next-c6abf06a0eb26e3eb4c5",
+        "kind": "next",
+        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)-[:HAS_TASK]->(definition:TaskDefinition)<-[:INSTANCE_OF]-(task:WorkGraphTask)-[:IN_RUN]->(run)\nMATCH (route:WorkGraphTaskRoute)-[:ROUTES]->(evaluation:WorkGraphTaskEvaluate)-[:EVALUATES]->(result:WorkGraphTaskResult)-[:RESULT_FOR]->(task)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:692a4ff45cfffcf1dc3462fcd3d904656a4c03efe7b598a09acdf368ce0d6645' AND definition.taskKey = 'b' AND route.workflowRunId = run.workflowRunId AND route.taskId = task.taskId AND route.resultId = result.resultId AND route.evaluationId = evaluation.evaluationId AND route.action = 'advance' AND route.transitionKind = 'next' AND route.outcome IS NULL AND route.targetStepId = 'c' AND route.targetStepKind = 'task' AND route.targetTaskDefinitionId = 'wgd-95affedcc9b4f69dc6ac3aa3376245811348b9ee543a5072b44027d2aae1'\nRETURN run.workflowRunId AS workflowRunId, task.rootIssueId AS rootIssueId, task.taskId AS sourceTaskId, route.routeId AS routeId, 'b' AS sourceStepId, 'c' AS targetStepId, route.targetStepKind AS targetStepKind, route.targetTaskDefinitionId AS targetTaskDefinitionId",
+        "resultSchema": [
+          {
+            "name": "workflowRunId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "rootIssueId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "sourceTaskId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "routeId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "sourceStepId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "targetStepId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetStepKind",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetTaskDefinitionId",
+            "type": "string",
+            "nullable": true
+          }
+        ]
+      },
+      {
+        "id": "wg-next-e5e45ac2c2285621076d",
+        "kind": "next",
+        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)-[:HAS_TASK]->(definition:TaskDefinition)<-[:INSTANCE_OF]-(task:WorkGraphTask)-[:IN_RUN]->(run)\nMATCH (route:WorkGraphTaskRoute)-[:ROUTES]->(evaluation:WorkGraphTaskEvaluate)-[:EVALUATES]->(result:WorkGraphTaskResult)-[:RESULT_FOR]->(task)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:692a4ff45cfffcf1dc3462fcd3d904656a4c03efe7b598a09acdf368ce0d6645' AND definition.taskKey = 'a' AND route.workflowRunId = run.workflowRunId AND route.taskId = task.taskId AND route.resultId = result.resultId AND route.evaluationId = evaluation.evaluationId AND route.action = 'advance' AND route.transitionKind = 'next' AND route.outcome IS NULL AND route.targetStepId = 'b' AND route.targetStepKind = 'task' AND route.targetTaskDefinitionId = 'wgd-b48fb3e191ebb3ac4ad937529081620b89964134acd6818a63d4abef4135'\nRETURN run.workflowRunId AS workflowRunId, task.rootIssueId AS rootIssueId, task.taskId AS sourceTaskId, route.routeId AS routeId, 'a' AS sourceStepId, 'b' AS targetStepId, route.targetStepKind AS targetStepKind, route.targetTaskDefinitionId AS targetTaskDefinitionId",
+        "resultSchema": [
+          {
+            "name": "workflowRunId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "rootIssueId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "sourceTaskId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "routeId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "sourceStepId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "targetStepId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetStepKind",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetTaskDefinitionId",
+            "type": "string",
+            "nullable": true
+          }
+        ]
+      },
+      {
+        "id": "wg-next-f8eb33f38446797ee6f7",
+        "kind": "next",
+        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)-[:HAS_TASK]->(definition:TaskDefinition)<-[:INSTANCE_OF]-(task:WorkGraphTask)-[:IN_RUN]->(run)\nMATCH (route:WorkGraphTaskRoute)-[:ROUTES]->(evaluation:WorkGraphTaskEvaluate)-[:EVALUATES]->(result:WorkGraphTaskResult)-[:RESULT_FOR]->(task)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:692a4ff45cfffcf1dc3462fcd3d904656a4c03efe7b598a09acdf368ce0d6645' AND definition.taskKey = 'd' AND route.workflowRunId = run.workflowRunId AND route.taskId = task.taskId AND route.resultId = result.resultId AND route.evaluationId = evaluation.evaluationId AND route.action = 'advance' AND route.transitionKind = 'next' AND route.outcome IS NULL AND route.targetStepId = 'human' AND route.targetStepKind = 'wait' AND route.targetTaskDefinitionId IS NULL\nRETURN run.workflowRunId AS workflowRunId, task.rootIssueId AS rootIssueId, task.taskId AS sourceTaskId, route.routeId AS routeId, 'd' AS sourceStepId, 'human' AS targetStepId, route.targetStepKind AS targetStepKind, route.targetTaskDefinitionId AS targetTaskDefinitionId",
+        "resultSchema": [
+          {
+            "name": "workflowRunId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "rootIssueId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "sourceTaskId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "routeId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "sourceStepId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "targetStepId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetStepKind",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetTaskDefinitionId",
+            "type": "string",
+            "nullable": true
+          }
+        ]
+      },
+      {
+        "id": "wg-outcome-158f40442070fe906435",
+        "kind": "outcome",
+        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)-[:HAS_TASK]->(definition:TaskDefinition)<-[:INSTANCE_OF]-(task:WorkGraphTask)-[:IN_RUN]->(run)\nMATCH (route:WorkGraphTaskRoute)-[:ROUTES]->(evaluation:WorkGraphTaskEvaluate)-[:EVALUATES]->(result:WorkGraphTaskResult)-[:RESULT_FOR]->(task)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:692a4ff45cfffcf1dc3462fcd3d904656a4c03efe7b598a09acdf368ce0d6645' AND definition.taskKey = 'c' AND route.workflowRunId = run.workflowRunId AND route.taskId = task.taskId AND route.resultId = result.resultId AND route.evaluationId = evaluation.evaluationId AND route.action = 'advance' AND route.transitionKind = 'outcome' AND route.outcome = 'continue' AND route.targetStepId = 'e' AND route.targetStepKind = 'task' AND route.targetTaskDefinitionId = 'wgd-ea10f5ea7f9aa52a26597311353535a1788d117410cb8243feae2b52177f'\nRETURN run.workflowRunId AS workflowRunId, task.rootIssueId AS rootIssueId, task.taskId AS sourceTaskId, route.routeId AS routeId, 'c' AS sourceStepId, 'e' AS targetStepId, route.targetStepKind AS targetStepKind, route.targetTaskDefinitionId AS targetTaskDefinitionId",
+        "resultSchema": [
+          {
+            "name": "workflowRunId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "rootIssueId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "sourceTaskId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "routeId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "sourceStepId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "targetStepId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetStepKind",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetTaskDefinitionId",
+            "type": "string",
+            "nullable": true
+          }
+        ]
+      },
+      {
+        "id": "wg-outcome-1e8d97579c37e8a6f3d0",
+        "kind": "outcome",
+        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)-[:HAS_TASK]->(definition:TaskDefinition)<-[:INSTANCE_OF]-(task:WorkGraphTask)-[:IN_RUN]->(run)\nMATCH (route:WorkGraphTaskRoute)-[:ROUTES]->(evaluation:WorkGraphTaskEvaluate)-[:EVALUATES]->(result:WorkGraphTaskResult)-[:RESULT_FOR]->(task)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:692a4ff45cfffcf1dc3462fcd3d904656a4c03efe7b598a09acdf368ce0d6645' AND definition.taskKey = 'c' AND route.workflowRunId = run.workflowRunId AND route.taskId = task.taskId AND route.resultId = result.resultId AND route.evaluationId = evaluation.evaluationId AND route.action = 'advance' AND route.transitionKind = 'outcome' AND route.outcome = 'needs-info' AND route.targetStepId = 'd' AND route.targetStepKind = 'task' AND route.targetTaskDefinitionId = 'wgd-7f3cdeee71f8c43c5f9de62d097e56c652a13de22dee7708992a37b8708c'\nRETURN run.workflowRunId AS workflowRunId, task.rootIssueId AS rootIssueId, task.taskId AS sourceTaskId, route.routeId AS routeId, 'c' AS sourceStepId, 'd' AS targetStepId, route.targetStepKind AS targetStepKind, route.targetTaskDefinitionId AS targetTaskDefinitionId",
+        "resultSchema": [
+          {
+            "name": "workflowRunId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "rootIssueId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "sourceTaskId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "routeId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "sourceStepId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "targetStepId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetStepKind",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetTaskDefinitionId",
+            "type": "string",
+            "nullable": true
+          }
+        ]
+      },
+      {
+        "id": "wg-outcome-7e58b666df0bce20335d",
+        "kind": "outcome",
+        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)-[:HAS_TASK]->(definition:TaskDefinition)<-[:INSTANCE_OF]-(task:WorkGraphTask)-[:IN_RUN]->(run)\nMATCH (route:WorkGraphTaskRoute)-[:ROUTES]->(evaluation:WorkGraphTaskEvaluate)-[:EVALUATES]->(result:WorkGraphTaskResult)-[:RESULT_FOR]->(task)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:692a4ff45cfffcf1dc3462fcd3d904656a4c03efe7b598a09acdf368ce0d6645' AND definition.taskKey = 'c' AND route.workflowRunId = run.workflowRunId AND route.taskId = task.taskId AND route.resultId = result.resultId AND route.evaluationId = evaluation.evaluationId AND route.action = 'advance' AND route.transitionKind = 'outcome' AND route.outcome = 'reject' AND route.targetStepId = 'f' AND route.targetStepKind = 'task' AND route.targetTaskDefinitionId = 'wgd-9c7f10ef0b63f441955abed1427cf7b09e85ffc41af47650dd8eaa6d2507'\nRETURN run.workflowRunId AS workflowRunId, task.rootIssueId AS rootIssueId, task.taskId AS sourceTaskId, route.routeId AS routeId, 'c' AS sourceStepId, 'f' AS targetStepId, route.targetStepKind AS targetStepKind, route.targetTaskDefinitionId AS targetTaskDefinitionId",
+        "resultSchema": [
+          {
+            "name": "workflowRunId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "rootIssueId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "sourceTaskId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "routeId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "sourceStepId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "targetStepId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetStepKind",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetTaskDefinitionId",
+            "type": "string",
+            "nullable": true
+          }
+        ]
+      },
+      {
+        "id": "wg-resume-bd25efc4b887eb6b266f",
+        "kind": "resume",
+        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)\nMATCH (wait:WorkGraphWait)-[:WAIT_IN_RUN]->(run)\nMATCH (comment:WorkGraphRootIssueComment)-[:RESUMES]->(wait)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:692a4ff45cfffcf1dc3462fcd3d904656a4c03efe7b598a09acdf368ce0d6645' AND wait.stepId = 'human' AND wait.event = 'root-issue-commented' AND comment.authorized = true\nRETURN run.workflowRunId AS workflowRunId, wait.rootIssueId AS rootIssueId, wait.sourceTaskId AS sourceTaskId, wait.routeId AS routeId, 'human' AS sourceStepId, 'c' AS targetStepId, 'task' AS targetStepKind, 'wgd-95affedcc9b4f69dc6ac3aa3376245811348b9ee543a5072b44027d2aae1' AS targetTaskDefinitionId, comment.commentId AS commentId, comment.authorId AS authorId, comment.body AS body",
+        "resultSchema": [
+          {
+            "name": "workflowRunId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "rootIssueId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "sourceTaskId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "routeId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "sourceStepId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "targetStepId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetStepKind",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetTaskDefinitionId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "commentId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "authorId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "body",
+            "type": "string",
+            "nullable": false
+          }
+        ]
+      },
+      {
+        "id": "wg-terminal-59bf91f3085b69bedfeb",
+        "kind": "terminal-ignore",
+        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)\nMATCH (route:WorkGraphTaskRoute)-[:CONCLUDES]->(terminal:WorkGraphTerminal)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:692a4ff45cfffcf1dc3462fcd3d904656a4c03efe7b598a09acdf368ce0d6645' AND terminal.workflowRunId = run.workflowRunId AND terminal.stepId = 'ignored' AND terminal.outcome = 'ignored'\nRETURN run.workflowRunId AS workflowRunId, terminal.rootIssueId AS rootIssueId, route.taskId AS sourceTaskId, route.routeId AS routeId, terminal.stepId AS terminalStepId, terminal.outcome AS terminalOutcome",
+        "resultSchema": [
+          {
+            "name": "workflowRunId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "rootIssueId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "sourceTaskId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "routeId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "terminalStepId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "terminalOutcome",
+            "type": "string",
+            "nullable": false
+          }
+        ]
+      },
+      {
+        "id": "wg-terminal-c3654194050ae440d4af",
+        "kind": "terminal-complete",
+        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)\nMATCH (route:WorkGraphTaskRoute)-[:CONCLUDES]->(terminal:WorkGraphTerminal)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:692a4ff45cfffcf1dc3462fcd3d904656a4c03efe7b598a09acdf368ce0d6645' AND terminal.workflowRunId = run.workflowRunId AND terminal.stepId = 'completed' AND terminal.outcome = 'completed'\nRETURN run.workflowRunId AS workflowRunId, terminal.rootIssueId AS rootIssueId, route.taskId AS sourceTaskId, route.routeId AS routeId, terminal.stepId AS terminalStepId, terminal.outcome AS terminalOutcome",
+        "resultSchema": [
+          {
+            "name": "workflowRunId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "rootIssueId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "sourceTaskId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "routeId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "terminalStepId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "terminalOutcome",
+            "type": "string",
+            "nullable": false
+          }
+        ]
+      },
+      {
+        "id": "wg-wait-8ee5283e24d7c97fe1b3",
+        "kind": "wait",
+        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)\nMATCH (wait:WorkGraphWait)-[:WAIT_IN_RUN]->(run)\nMATCH (route:WorkGraphTaskRoute)-[:ENTERS_WAIT]->(wait)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:692a4ff45cfffcf1dc3462fcd3d904656a4c03efe7b598a09acdf368ce0d6645' AND wait.stepId = 'human' AND wait.event = 'root-issue-commented'\nRETURN run.workflowRunId AS workflowRunId, wait.rootIssueId AS rootIssueId, wait.sourceTaskId AS sourceTaskId, route.routeId AS routeId, wait.stepId AS waitStepId, wait.event AS event",
+        "resultSchema": [
+          {
+            "name": "workflowRunId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "rootIssueId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "sourceTaskId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "routeId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "waitStepId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "event",
+            "type": "string",
+            "nullable": false
+          }
+        ]
+      }
+    ],
+    "workgraphReactionQueries": [
+      "wg-entry-1d2c4fab27aa06eb3e3b",
+      "wg-next-141f5bac840ff7bfb615",
+      "wg-next-33c92941a2d3c8e0ecac",
+      "wg-next-a8025dfecf98a9c9e577",
+      "wg-next-bfd3ea117f5824653fa9",
+      "wg-next-c6abf06a0eb26e3eb4c5",
+      "wg-next-e5e45ac2c2285621076d",
+      "wg-next-f8eb33f38446797ee6f7",
+      "wg-outcome-158f40442070fe906435",
+      "wg-outcome-1e8d97579c37e8a6f3d0",
+      "wg-outcome-7e58b666df0bce20335d",
+      "wg-resume-bd25efc4b887eb6b266f",
+      "wg-terminal-59bf91f3085b69bedfeb",
+      "wg-terminal-c3654194050ae440d4af",
+      "wg-wait-8ee5283e24d7c97fe1b3"
+    ],
+    "sseQueries": [
+      "wg-entry-1d2c4fab27aa06eb3e3b",
+      "wg-next-141f5bac840ff7bfb615",
+      "wg-next-33c92941a2d3c8e0ecac",
+      "wg-next-a8025dfecf98a9c9e577",
+      "wg-next-bfd3ea117f5824653fa9",
+      "wg-next-c6abf06a0eb26e3eb4c5",
+      "wg-next-e5e45ac2c2285621076d",
+      "wg-next-f8eb33f38446797ee6f7",
+      "wg-outcome-158f40442070fe906435",
+      "wg-outcome-1e8d97579c37e8a6f3d0",
+      "wg-outcome-7e58b666df0bce20335d",
+      "wg-resume-bd25efc4b887eb6b266f",
+      "wg-terminal-59bf91f3085b69bedfeb",
+      "wg-terminal-c3654194050ae440d4af",
+      "wg-wait-8ee5283e24d7c97fe1b3"
+    ],
+    "canvasInventory": [
+      {
+        "id": "wg-entry-1d2c4fab27aa06eb3e3b",
+        "kind": "workflow-entry",
+        "sha256": "c4a52c4434bb504c416d553104e25ddf8e1a73c8fd721db4ef1419cf823decd1",
+        "fields": [
+          "workflowRunId",
+          "rootIssueId",
+          "sourceTaskId",
+          "routeId",
+          "sourceStepId",
+          "targetStepId",
+          "targetStepKind",
+          "targetTaskDefinitionId"
+        ]
+      },
+      {
+        "id": "wg-next-141f5bac840ff7bfb615",
+        "kind": "next",
+        "sha256": "ee8f81be399132f90ad3d5da142b1aa8a6db8ce83d5235309c03b436f10a2ca3",
+        "fields": [
+          "workflowRunId",
+          "rootIssueId",
+          "sourceTaskId",
+          "routeId",
+          "sourceStepId",
+          "targetStepId",
+          "targetStepKind",
+          "targetTaskDefinitionId"
+        ]
+      },
+      {
+        "id": "wg-next-33c92941a2d3c8e0ecac",
+        "kind": "next",
+        "sha256": "e5e4d6177e60bc486ad85082921416cf260359dc68f8da02a773fa2d3c23ca6a",
+        "fields": [
+          "workflowRunId",
+          "rootIssueId",
+          "sourceTaskId",
+          "routeId",
+          "sourceStepId",
+          "targetStepId",
+          "targetStepKind",
+          "targetTaskDefinitionId"
+        ]
+      },
+      {
+        "id": "wg-next-a8025dfecf98a9c9e577",
+        "kind": "next",
+        "sha256": "134d7f40bb8fa7d8839861ee026a1110f646fb82ac67de578c3d5993ccbc3f1c",
+        "fields": [
+          "workflowRunId",
+          "rootIssueId",
+          "sourceTaskId",
+          "routeId",
+          "sourceStepId",
+          "targetStepId",
+          "targetStepKind",
+          "targetTaskDefinitionId"
+        ]
+      },
+      {
+        "id": "wg-next-bfd3ea117f5824653fa9",
+        "kind": "next",
+        "sha256": "c2f0b52ec5331ade932773e37ce614452c2f8531acdb91fe6862f24d56f46d02",
+        "fields": [
+          "workflowRunId",
+          "rootIssueId",
+          "sourceTaskId",
+          "routeId",
+          "sourceStepId",
+          "targetStepId",
+          "targetStepKind",
+          "targetTaskDefinitionId"
+        ]
+      },
+      {
+        "id": "wg-next-c6abf06a0eb26e3eb4c5",
+        "kind": "next",
+        "sha256": "da314af017ffa94aa94b014d00685b5b7e028dadf9a96dc375c697967c502617",
+        "fields": [
+          "workflowRunId",
+          "rootIssueId",
+          "sourceTaskId",
+          "routeId",
+          "sourceStepId",
+          "targetStepId",
+          "targetStepKind",
+          "targetTaskDefinitionId"
+        ]
+      },
+      {
+        "id": "wg-next-e5e45ac2c2285621076d",
+        "kind": "next",
+        "sha256": "6bcd82480f95df097876514534e9da8ef8bca448eab9744fcdb83adf43178055",
+        "fields": [
+          "workflowRunId",
+          "rootIssueId",
+          "sourceTaskId",
+          "routeId",
+          "sourceStepId",
+          "targetStepId",
+          "targetStepKind",
+          "targetTaskDefinitionId"
+        ]
+      },
+      {
+        "id": "wg-next-f8eb33f38446797ee6f7",
+        "kind": "next",
+        "sha256": "cbd680de8b6ce0880e0a27766e46e7d8b58dc2c5f5c569260beb09a6f0ea9117",
+        "fields": [
+          "workflowRunId",
+          "rootIssueId",
+          "sourceTaskId",
+          "routeId",
+          "sourceStepId",
+          "targetStepId",
+          "targetStepKind",
+          "targetTaskDefinitionId"
+        ]
+      },
+      {
+        "id": "wg-outcome-158f40442070fe906435",
+        "kind": "outcome",
+        "sha256": "8912d898c9f8e54b97104f84a7ceddf4b89a64f3826cc646d30da9907ff88f26",
+        "fields": [
+          "workflowRunId",
+          "rootIssueId",
+          "sourceTaskId",
+          "routeId",
+          "sourceStepId",
+          "targetStepId",
+          "targetStepKind",
+          "targetTaskDefinitionId"
+        ]
+      },
+      {
+        "id": "wg-outcome-1e8d97579c37e8a6f3d0",
+        "kind": "outcome",
+        "sha256": "c2bb300b362e3d13a1532fc6dcdc41427c7884c6f99f1d56f4eb82e0e8a19d37",
+        "fields": [
+          "workflowRunId",
+          "rootIssueId",
+          "sourceTaskId",
+          "routeId",
+          "sourceStepId",
+          "targetStepId",
+          "targetStepKind",
+          "targetTaskDefinitionId"
+        ]
+      },
+      {
+        "id": "wg-outcome-7e58b666df0bce20335d",
+        "kind": "outcome",
+        "sha256": "f263e8f9a3cb64ffb18156c44f83e04b737c3b155fcb6490727bb1f89cf6e637",
+        "fields": [
+          "workflowRunId",
+          "rootIssueId",
+          "sourceTaskId",
+          "routeId",
+          "sourceStepId",
+          "targetStepId",
+          "targetStepKind",
+          "targetTaskDefinitionId"
+        ]
+      },
+      {
+        "id": "wg-resume-bd25efc4b887eb6b266f",
+        "kind": "resume",
+        "sha256": "a791c5fa318110dea1de9ddf5b17b618409a990f1b1c193e7a0272c10b7d323e",
+        "fields": [
+          "workflowRunId",
+          "rootIssueId",
+          "sourceTaskId",
+          "routeId",
+          "sourceStepId",
+          "targetStepId",
+          "targetStepKind",
+          "targetTaskDefinitionId",
+          "commentId",
+          "authorId",
+          "body"
+        ]
+      },
+      {
+        "id": "wg-terminal-59bf91f3085b69bedfeb",
+        "kind": "terminal-ignore",
+        "sha256": "efb7dee21bbc1bc5c526815ea3635e3a5f456dc900bc3796fba73cd0c8a511ad",
+        "fields": [
+          "workflowRunId",
+          "rootIssueId",
+          "sourceTaskId",
+          "routeId",
+          "terminalStepId",
+          "terminalOutcome"
+        ]
+      },
+      {
+        "id": "wg-terminal-c3654194050ae440d4af",
+        "kind": "terminal-complete",
+        "sha256": "886b9e6ab0c82e9b4d42a515c25995e355a502cbc6c0801011114d57959dcb83",
+        "fields": [
+          "workflowRunId",
+          "rootIssueId",
+          "sourceTaskId",
+          "routeId",
+          "terminalStepId",
+          "terminalOutcome"
+        ]
+      },
+      {
+        "id": "wg-wait-8ee5283e24d7c97fe1b3",
+        "kind": "wait",
+        "sha256": "b3b4f09b13da2b6db8de8e390195a5906b596c51929509ed8f0de39304b9f704",
+        "fields": [
+          "workflowRunId",
+          "rootIssueId",
+          "sourceTaskId",
+          "routeId",
+          "waitStepId",
+          "event"
+        ]
       }
     ]
   }
