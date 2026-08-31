@@ -69,6 +69,12 @@ the Root Issue's direct children to verify run and admission integrity. It
 re-reads every referenced object from GitHub; caller-supplied locator values
 are never sufficient proof.
 
+New `WorkGraphTask/v1` Issue bodies also carry `taskKey` and `operation` copied
+from the pinned task definition. These fields make task descriptions and titles
+human-readable; they are validated metadata, not substitutes for
+`taskDefinitionId`, definition version, or digest. Legacy task bodies without
+the fields remain readable during migration.
+
 ## Root Issue reader
 
 `get_root_issue` accepts exactly `taskLocator` and `taskId`. It requires the

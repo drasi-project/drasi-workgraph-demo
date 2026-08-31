@@ -91,6 +91,8 @@ function fixture() {
     workflowDefinitionVersion: "v1",
     workflowDefinitionDigest: DEFINITION_DIGEST,
     taskDefinitionId: "root-v1",
+    taskKey: "root",
+    operation: "coordinate-issue",
     resolvedInputs: {
       proofMode: "isolated",
       rootIssue: {
@@ -112,6 +114,8 @@ function fixture() {
     workflowDefinitionVersion: "v1",
     workflowDefinitionDigest: DEFINITION_DIGEST,
     taskDefinitionId: "validate-v1",
+    taskKey: "validate",
+    operation: "validate-issue",
     resolvedInputs: { validationProfile: "new-issue-default" },
   };
   const identity = (task) => ({
@@ -473,10 +477,15 @@ function lifecycleFixture({
     workflowDefinitionDigest: COMPILED.digest,
     taskDefinitionId,
   });
+  const runtimeIdentity = (taskId, definition) => ({
+    ...identity(taskId, definition.taskDefinitionId),
+    taskKey: definition.taskKey,
+    operation: definition.operation,
+  });
   const rootTask = {
-    ...identity(
+    ...runtimeIdentity(
       deriveWorkGraphRootTaskId(workflowRunId, rootDefinition),
-      rootDefinition,
+      COMPILED.root,
     ),
     rootIssueId,
     resolvedInputs: {
@@ -491,10 +500,11 @@ function lifecycleFixture({
       },
     },
   };
+  const effectiveDefinition = childDefinition ?? sourceDefinition;
   const task = {
-    ...identity(
+    ...runtimeIdentity(
       childKey ? `task-${stepId}-${childKey}` : `task-${stepId}`,
-      taskDefinition,
+      effectiveDefinition,
     ),
     rootIssueId,
     resolvedInputs: structuredClone(
@@ -503,7 +513,7 @@ function lifecycleFixture({
   };
   const parentTask = childKey
     ? {
-        ...identity(`task-${stepId}`, sourceDefinition.taskDefinitionId),
+        ...runtimeIdentity(`task-${stepId}`, sourceDefinition),
         rootIssueId,
         resolvedInputs: structuredClone(sourceDefinition.staticInputs),
       }
@@ -653,6 +663,12 @@ function lifecycleFixture({
 
 async function withFakeLifecycle(options, callback) {
   const data = lifecycleFixture(options);
+  if (options.taskMetadataDrift === true) {
+    data.task.operation = "different-operation";
+  }
+  if (options.rootTaskMetadataDrift === true) {
+    data.rootTask.operation = "different-operation";
+  }
   if (options.omitResult === true) {
     data.comments = data.comments.filter(
       ({ body }) => !body.startsWith("WorkGraphTaskResult/v1\n"),
@@ -1600,6 +1616,21 @@ test("lifecycle reads enforce full Root Issue admission integrity", async () => 
       await assert.rejects(
         callTool("get_task_snapshot", data.input),
         /Root Issue is missing, stale|changed after admission/,
+      );
+      assert.equal(writes.length, 0);
+    });
+  }
+});
+
+test("lifecycle reads reject task metadata that drifts from the definition", async () => {
+  for (const options of [
+    { taskMetadataDrift: true },
+    { rootTaskMetadataDrift: true },
+  ]) {
+    await withFakeLifecycle(options, async ({ data, writes }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", data.input),
+        /taskKey or operation does not match/,
       );
       assert.equal(writes.length, 0);
     });

@@ -16,7 +16,10 @@ The prototype has one protocol:
 - `WorkGraphTaskEvaluate/v1`
 - `WorkGraphTaskRoute/v1`
 
-Every task carries top-level `rootIssueId`. The hierarchy is:
+Every newly generated task carries top-level `rootIssueId`, `taskKey`, and
+`operation`. The latter two are validated against the pinned definition so the
+Issue body and title expose what the task does without replacing its stable
+`taskDefinitionId`. The hierarchy is:
 
 ```text
 Root Issue

@@ -36,6 +36,16 @@ const TASK_DEFINITION_KEYS = [
   "children",
 ];
 const ROUTING_KEYS = ["permittedExecutors"];
+const LEGACY_RUNTIME_TASK_KEYS = [
+  "taskId",
+  "rootIssueId",
+  "workflowRunId",
+  "workflowDefinitionId",
+  "workflowDefinitionVersion",
+  "workflowDefinitionDigest",
+  "taskDefinitionId",
+  "resolvedInputs",
+];
 const RUNTIME_TASK_KEYS = [
   "taskId",
   "rootIssueId",
@@ -44,6 +54,8 @@ const RUNTIME_TASK_KEYS = [
   "workflowDefinitionVersion",
   "workflowDefinitionDigest",
   "taskDefinitionId",
+  "taskKey",
+  "operation",
   "resolvedInputs",
 ];
 
@@ -376,8 +388,20 @@ export function parseCompiledWorkflowDefinition(body) {
   );
 }
 
-export function normalizeRuntimeTask(task) {
-  exactKeys(task, RUNTIME_TASK_KEYS, "runtime task");
+export function normalizeRuntimeTask(task, { allowLegacy = false } = {}) {
+  if (!object(task)) {
+    throw new WorkGraphDefinitionError("runtime task must be an object");
+  }
+  const keys = Object.keys(task).sort();
+  const current = isDeepStrictEqual(keys, [...RUNTIME_TASK_KEYS].sort());
+  const legacy =
+    allowLegacy &&
+    isDeepStrictEqual(keys, [...LEGACY_RUNTIME_TASK_KEYS].sort());
+  if (!current && !legacy) {
+    throw new WorkGraphDefinitionError(
+      `runtime task properties must be exactly ${[...RUNTIME_TASK_KEYS].sort().join(", ")}`,
+    );
+  }
   identifier(task.taskId, "runtime task taskId");
   workflowRunIdentifier(task.rootIssueId, "runtime task rootIssueId");
   workflowRunIdentifier(task.workflowRunId, "runtime task workflowRunId");
@@ -394,6 +418,10 @@ export function normalizeRuntimeTask(task) {
     "runtime task workflowDefinitionDigest",
   );
   identifier(task.taskDefinitionId, "runtime task taskDefinitionId");
+  if (current) {
+    identifier(task.taskKey, "runtime task taskKey");
+    identifier(task.operation, "runtime task operation");
+  }
   return {
     taskId: task.taskId,
     rootIssueId: task.rootIssueId,
@@ -402,12 +430,18 @@ export function normalizeRuntimeTask(task) {
     workflowDefinitionVersion: task.workflowDefinitionVersion,
     workflowDefinitionDigest: task.workflowDefinitionDigest,
     taskDefinitionId: task.taskDefinitionId,
+    ...(current
+      ? {
+          taskKey: task.taskKey,
+          operation: task.operation,
+        }
+      : {}),
     resolvedInputs: dataMap(task.resolvedInputs, "runtime task resolvedInputs"),
   };
 }
 
-export function formatRuntimeTask(task) {
-  const normalized = normalizeRuntimeTask(task);
+function renderRuntimeTask(task, allowLegacy) {
+  const normalized = normalizeRuntimeTask(task, { allowLegacy });
   const body = `${RUNTIME_TASK_MARKER}\n\n\`\`\`json\n${prettyJson(normalized)}\n\`\`\`\n`;
   if (new TextEncoder().encode(body).length > MAX_WORKGRAPH_BODY_BYTES) {
     throw new WorkGraphDefinitionError(
@@ -417,8 +451,14 @@ export function formatRuntimeTask(task) {
   return body;
 }
 
+export function formatRuntimeTask(task) {
+  return renderRuntimeTask(task, false);
+}
+
 export function parseRuntimeTask(body) {
-  return parseCanonicalBody(body, RUNTIME_TASK_MARKER, formatRuntimeTask);
+  return parseCanonicalBody(body, RUNTIME_TASK_MARKER, (task) =>
+    renderRuntimeTask(task, true),
+  );
 }
 
 export function validateRootRuntimeTask(definition, task) {
@@ -426,12 +466,18 @@ export function validateRootRuntimeTask(definition, task) {
     "steps" in definition
       ? normalizeCompiledWorkflowDefinition(definition)
       : normalizeWorkflowDefinition(definition);
-  const normalizedTask = normalizeRuntimeTask(task);
+  const normalizedTask = normalizeRuntimeTask(task, { allowLegacy: true });
   const expected = {
     workflowDefinitionId: normalizedDefinition.workflowDefinitionId,
     workflowDefinitionVersion: normalizedDefinition.version,
     workflowDefinitionDigest: normalizedDefinition.digest,
     taskDefinitionId: normalizedDefinition.root.taskDefinitionId,
+    ...(normalizedTask.taskKey === undefined
+      ? {}
+      : {
+          taskKey: normalizedDefinition.root.taskKey,
+          operation: normalizedDefinition.root.operation,
+        }),
   };
   for (const [field, value] of Object.entries(expected)) {
     if (normalizedTask[field] !== value) {

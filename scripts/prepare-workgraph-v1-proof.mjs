@@ -192,6 +192,8 @@ export async function buildWorkGraphV1Proof() {
     workflowDefinitionVersion: definition.version,
     workflowDefinitionDigest: definition.digest,
     taskDefinitionId: definition.root.taskDefinitionId,
+    taskKey: definition.root.taskKey,
+    operation: definition.root.operation,
     resolvedInputs: {
       ...definition.root.staticInputs,
       rootIssue: {
@@ -211,6 +213,8 @@ export async function buildWorkGraphV1Proof() {
     inputs.expectedRootTask.rootIssueId !== rootTask.rootIssueId ||
     inputs.expectedRootTask.workflowRunId !== workflowRunId ||
     inputs.expectedRootTask.taskDefinitionId !== rootTask.taskDefinitionId ||
+    inputs.expectedRootTask.taskKey !== rootTask.taskKey ||
+    inputs.expectedRootTask.operation !== rootTask.operation ||
     inputs.expectedRootTask.firstLifecycleState !== "FORK" ||
     inputs.expectedRootTask.precreatedChildCount !== 0
   ) {

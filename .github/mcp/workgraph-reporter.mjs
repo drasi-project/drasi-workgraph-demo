@@ -854,6 +854,11 @@ function validateTaskContract(task, label) {
       `${label} does not belong to the pinned v1 workflow`,
     );
   }
+  const expectedMetadata =
+    task.taskDefinitionId === ROOT_TASK_DEFINITION_ID
+      ? { taskKey: "root", operation: "coordinate-issue" }
+      : { taskKey: "validate", operation: "validate-issue" };
+  validateTaskMetadata(task, expectedMetadata, label);
   if (task.taskDefinitionId === ROOT_TASK_DEFINITION_ID) {
     exact(task.resolvedInputs, ["proofMode", "rootIssue"], `${label} resolvedInputs`);
     if (task.resolvedInputs.proofMode !== "isolated") {
@@ -1120,6 +1125,7 @@ async function loadTaskContext(locator, taskId, github, config, includeComments)
       );
     }
     const [{ issue: rootTaskIssue, task: rootTask }] = initialTasks;
+    validateTaskMetadata(rootTask, COMPILED_WORKFLOW.root, "Root Task");
     const admission = validateRootAdmission(
       rootTask,
       rootIssue,
@@ -1516,9 +1522,11 @@ function compiledSource(taskDefinitionId) {
   }
   const [sourceStepId, source] = matches[0];
   let parentTaskDefinitionId = null;
+  let taskDefinition = null;
   const findParent = (task, parentId = null) => {
     if (task.taskDefinitionId === taskDefinitionId) {
       parentTaskDefinitionId = parentId;
+      taskDefinition = task;
       return true;
     }
     return task.children.some((child) =>
@@ -1532,7 +1540,20 @@ function compiledSource(taskDefinitionId) {
     policy: source.executionPolicies[taskDefinitionId],
     isStepRoot: source.taskDefinition.taskDefinitionId === taskDefinitionId,
     parentTaskDefinitionId,
+    taskDefinition,
   };
+}
+
+function validateTaskMetadata(task, definition, label) {
+  if (task.taskKey === undefined) return;
+  if (
+    task.taskKey !== definition.taskKey ||
+    task.operation !== definition.operation
+  ) {
+    throw new WorkGraphReporterError(
+      `${label} taskKey or operation does not match the pinned task definition`,
+    );
+  }
 }
 
 function validateLifecycleTask(task, label) {
@@ -1545,7 +1566,9 @@ function validateLifecycleTask(task, label) {
       `${label} does not belong to the pinned compiled workflow`,
     );
   }
-  return compiledSource(task.taskDefinitionId);
+  const context = compiledSource(task.taskDefinitionId);
+  validateTaskMetadata(task, context.taskDefinition, label);
+  return context;
 }
 
 function validateLifecycleContextInput(input, extraKeys = []) {
@@ -1757,6 +1780,7 @@ async function loadLifecycleAncestry(
   ) {
     throw new WorkGraphReporterError("Initial Task direct identities do not match");
   }
+  validateTaskMetadata(rootTask, COMPILED_WORKFLOW.root, "Root Task");
   const admission = validateRootAdmission(
     rootTask,
     rootIssue,

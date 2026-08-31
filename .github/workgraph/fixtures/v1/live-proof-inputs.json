@@ -57,6 +57,8 @@
     "rootIssueId": "I_workgraph_root_issue",
     "workflowRunId": "workgraph-v1:run:sha256:1cb0cca12c477296d36277433d7c42f34f918e27a435cd6208c95c74599df6cd",
     "taskDefinitionId": "wgd-2ce0abc2104478fd27e0edeec7173ad089f6f2fb72c02694bc2525146cfe",
+    "taskKey": "a",
+    "operation": "intake-issue",
     "firstLifecycleState": "FORK",
     "precreatedChildCount": 0
   },

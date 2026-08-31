@@ -5,6 +5,7 @@ import test from "node:test";
 import {
   DEFAULT_MAX_REWORK_ATTEMPTS,
   MAX_TASK_DEFINITION_CHILDREN,
+  RUNTIME_TASK_MARKER,
   formatTaskEvaluation,
   formatTaskRoute,
   formatCompiledWorkflowDefinition,
@@ -220,6 +221,8 @@ test("runtime tasks require top-level Root Issue identity and exact definition p
   const body = proof.expectedRootTask.body;
   const root = parseRuntimeTask(body);
   assert.equal(root.rootIssueId, "I_workgraph_root_issue");
+  assert.equal(root.taskKey, "a");
+  assert.equal(root.operation, "intake-issue");
   assert.equal(formatRuntimeTask(root), body);
   assert.deepEqual(validateRootRuntimeTask(definition, root), root);
 
@@ -228,6 +231,8 @@ test("runtime tasks require top-level Root Issue identity and exact definition p
     ["workflowDefinitionVersion", "different-version"],
     ["workflowDefinitionDigest", `sha256:${"b".repeat(64)}`],
     ["taskDefinitionId", "different-root"],
+    ["taskKey", "different-key"],
+    ["operation", "different-operation"],
   ]) {
     assert.throws(
       () => validateRootRuntimeTask(definition, { ...root, [field]: value }),
@@ -240,6 +245,12 @@ test("runtime tasks require top-level Root Issue identity and exact definition p
     () => formatRuntimeTask(missingRootIssue),
     /properties must be exactly/,
   );
+  const legacy = { ...root };
+  delete legacy.taskKey;
+  delete legacy.operation;
+  const legacyBody = `${RUNTIME_TASK_MARKER}\n\n\`\`\`json\n${JSON.stringify(legacy, null, 2)}\n\`\`\`\n`;
+  assert.deepEqual(parseRuntimeTask(legacyBody), legacy);
+  assert.throws(() => formatRuntimeTask(legacy), /properties must be exactly/);
 });
 
 test("proof inputs pin 26 wg- queries and remain fully inactive", async () => {
