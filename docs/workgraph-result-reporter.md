@@ -21,14 +21,16 @@ Lifecycle tools pin
 `.github/workgraph/fixtures/v1/issue-lifecycle.expected.json`. They resolve the
 task's source step and effective evaluator, orchestrator, and rework maximum
 from that compiled definition. They require the latest immutable Dispatch and
-its exact canonical Result, derive the Result body digest, and verify direct
+its exact canonical Result, derive the compact normalized Result value digest,
+and verify direct
 Root Issue, run, task, Result, and Evaluation identities. Accepted Evaluations
 have empty feedback; rejected Evaluations require actionable feedback. The
 Evaluation and Route carry the same one-based attempt; `reworkCount` is
 `attempt - 1`.
 
-The Route writer accepts only the verdict/action matrix and exact compiled
-edge returned by the snapshot. Advance carries the transition kind and target
+The Route writer accepts only actions enabled by the verdict, rework bound,
+fixed runtime exclusion policy, and exact compiled transition resolved from
+the Result. Advance carries the transition kind and target
 step/kind, outcome only for an outcome edge, and a hashed task-definition ID
 only for task targets. Rework returns the same task and assignment with the
 next bounded attempt and the Evaluation feedback. No lifecycle tool mutates the
@@ -60,9 +62,12 @@ All tools receive an opaque `taskLocator` from the Reaction execution context:
 }
 ```
 
-For a child task, the parent is its WorkGraph parent. For the Root Task, the
-parent is the ordinary Root Issue. The reporter re-reads every referenced
-object from GitHub; caller-supplied locator values are never sufficient proof.
+Every top-level compiled task is a direct child of the ordinary Root Issue.
+Recursive tasks follow their declared task-definition parent chain to that
+top-level task. The reporter separately finds the unique initial task among
+the Root Issue's direct children to verify run and admission integrity. It
+re-reads every referenced object from GitHub; caller-supplied locator values
+are never sufficient proof.
 
 ## Root Issue reader
 
@@ -100,6 +105,9 @@ title or body change after admission fails closed.
 
 The reporter requires every Dispatch attempt to be a unique, canonical,
 assignment-reporter-authored, never-edited `WorkGraphTaskDispatch/v1` comment,
+with exactly `dispatchId`, `launchId`, `rootIssueId`, `workflowRunId`, `taskId`,
+`task`, and `lease`. All three top-level identities must match the task and its
+nested identity. It
 then selects the one exact `dispatchId` and `leaseId` supplied by the current
 Agent Task. The profile-local executor ID must also match that Dispatch.
 This lets an expired attempt remain as immutable history without authorizing it.
@@ -164,6 +172,10 @@ output domain is bounded graph-safe JSON: strings, booleans, null, arrays,
 objects, and JavaScript-safe integers only. The
 reporter never closes tasks, evaluates Results, allocates Leases, or mutates the
 Root Issue.
+
+Evaluation `resultDigest` is SHA-256 over compact `serde_json` serialization of
+the normalized Result payload. Markdown marker, fence, indentation, and trailing
+newline bytes are not part of the digest.
 
 ## Configuration
 

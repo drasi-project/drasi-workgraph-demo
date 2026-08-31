@@ -22,8 +22,9 @@ import {
   deriveWorkGraphWorkflowRunId,
   formatTaskDispatch,
   formatTaskResult,
+  parseTaskDispatch,
   parseTaskResult,
-  resultBodyDigest,
+  resultValueDigest,
   tools,
   validateLeaseValidationUrl,
 } from "../.github/mcp/workgraph-reporter.mjs";
@@ -121,6 +122,9 @@ function fixture() {
   const dispatch = (task, executorId) => ({
     dispatchId: `dispatch-${task.taskId}`,
     launchId: `launch-${task.taskId}`,
+    rootIssueId: task.rootIssueId,
+    workflowRunId: task.workflowRunId,
+    taskId: task.taskId,
     task: identity(task),
     lease: {
       leaseId: `lease-${task.taskId}`,
@@ -500,6 +504,9 @@ function lifecycleFixture({
   const dispatches = Array.from({ length: attempt }, (_, index) => ({
     dispatchId: `dispatch-${stepId}-${index}`,
     launchId: `launch-${stepId}-${index}`,
+    rootIssueId,
+    workflowRunId,
+    taskId: task.taskId,
     task: identity(task.taskId, taskDefinition),
     lease: {
       leaseId: `lease-${stepId}-${index}`,
@@ -536,7 +543,7 @@ function lifecycleFixture({
         resultId: staleEvaluation ? "result-stale" : result.resultId,
         resultDigest: staleEvaluation
           ? `sha256:${"f".repeat(64)}`
-          : resultBodyDigest(resultBody),
+          : resultValueDigest(result),
         evaluatorId: policy.evaluatorId,
         attempt,
         verdict,
@@ -616,7 +623,15 @@ function lifecycleFixture({
             parentIssueNumber: CHILD_TASK_NUMBER,
             parentIssueNodeId: CHILD_TASK_NODE_ID,
           }
-        : childLocator(),
+        : {
+            repositoryOwner: OWNER,
+            repositoryName: REPO,
+            repositoryNodeId: REPOSITORY_NODE_ID,
+            issueNumber: CHILD_TASK_NUMBER,
+            issueNodeId: CHILD_TASK_NODE_ID,
+            parentIssueNumber: ROOT_ISSUE_NUMBER,
+            parentIssueNodeId: ROOT_ISSUE_ID,
+          },
       rootIssueId,
       workflowRunId,
       taskId: task.taskId,
@@ -630,6 +645,20 @@ function lifecycleFixture({
 
 async function withFakeLifecycle(options, callback) {
   const data = lifecycleFixture(options);
+  if (options.topLevelParentIsInitial === true && !data.parentTask) {
+    data.input.taskLocator.parentIssueNumber = ROOT_TASK_NUMBER;
+    data.input.taskLocator.parentIssueNodeId = ROOT_TASK_NODE_ID;
+  }
+  if (options.dispatchIdentityDrift === true) {
+    const entry = data.comments.find(({ body }) =>
+      body.startsWith("WorkGraphTaskDispatch/v1\n"),
+    );
+    const dispatch = parseTaskDispatch(entry.body);
+    entry.body = formatTaskDispatch({
+      ...dispatch,
+      rootIssueId: "I_wrong_root",
+    });
+  }
   const root = rootIssue({ stale: options.staleRootIssue === true });
   if (options.rootAdmitted === false) root.labels = [];
   const rootTask = taskIssue(ROOT_TASK_NUMBER, ROOT_TASK_NODE_ID, data.rootTask);
@@ -642,6 +671,9 @@ async function withFakeLifecycle(options, callback) {
     data.task,
   );
   if (options.taskClosed === true) task.state = "closed";
+  if (options.parentTaskClosed === true && parentTask) {
+    parentTask.state = "closed";
+  }
   if (options.rootTaskClosed === true) rootTask.state = "closed";
   const taskNumber = data.parentTask
     ? RECURSIVE_TASK_NUMBER
@@ -693,10 +725,22 @@ async function withFakeLifecycle(options, callback) {
       const parent =
         number === RECURSIVE_TASK_NUMBER
           ? parentTask
-          : number === CHILD_TASK_NUMBER
+          : options.topLevelParentIsInitial === true &&
+              number === CHILD_TASK_NUMBER
             ? rootTask
-            : root;
+          : root;
       return send(200, parent);
+    }
+    const subIssuesMatch = url.pathname.match(
+      new RegExp(`^/repos/${OWNER}/${REPO}/issues/(\\d+)/sub_issues$`),
+    );
+    if (request.method === "GET" && subIssuesMatch) {
+      return send(
+        200,
+        Number(subIssuesMatch[1]) === ROOT_ISSUE_NUMBER
+          ? [rootTask, parentTask ?? task]
+          : [],
+      );
     }
     const commentsMatch = url.pathname.match(
       new RegExp(`^/repos/${OWNER}/${REPO}/issues/(\\d+)/comments$`),
@@ -717,6 +761,27 @@ async function withFakeLifecycle(options, callback) {
       };
       comments.get(number).push(comment);
       writes.push({ number, body });
+      if (
+        options.dispatchAfterReworkPost === true &&
+        parseTaskRoute(body)?.action === "rework"
+      ) {
+        comments.get(number).push({
+          id: 400,
+          node_id: "IC_dispatch_after_rework",
+          body: formatTaskDispatch({
+            ...data.dispatch,
+            dispatchId: `${data.dispatch.dispatchId}-rework`,
+            launchId: `${data.dispatch.launchId}-rework`,
+            lease: {
+              ...data.dispatch.lease,
+              leaseId: `${data.dispatch.lease.leaseId}-rework`,
+            },
+          }),
+          user: { id: ASSIGNMENT_ID, login: "assigner" },
+          created_at: "2026-08-29T21:01:00Z",
+          updated_at: "2026-08-29T21:01:00Z",
+        });
+      }
       if (options.closeAfterPost === true) {
         task.state = "closed";
         rootTask.state = "closed";
@@ -758,7 +823,7 @@ async function withFakeLifecycle(options, callback) {
   }
 }
 
-test("v1 Result identity and body match the kernel vector", () => {
+test("v1 Result identity, body, and value digest match Rust vectors", () => {
   const resultId = deriveWorkGraphTaskResultId(
     "task-1",
     "dispatch-1",
@@ -779,6 +844,7 @@ test("v1 Result identity and body match the kernel vector", () => {
     outcome: "succeeded",
     output: { z: 1, a: true },
   });
+
   assert.equal(
     body,
     `WorkGraphTaskResult/v1
@@ -812,8 +878,42 @@ test("v1 Result identity and body match the kernel vector", () => {
     outcome: "succeeded",
     output: { a: true, z: 1 },
   });
+
+  assert.equal(
+    resultValueDigest(parseTaskResult(body)),
+    "sha256:3a83dbf5db0f97b49d293a652761744dd240fec552a4db24a8e150785f5217d3",
+  );
   assert.equal(parseTaskResult(body.replace('  "taskId"', ' "taskId"')), null);
   assert.equal(parseTaskResult(body.replace("/v1", "/v2")), null);
+});
+
+test("Dispatch uses the exact seven-field schema and direct task identities", async () => {
+  const data = fixture();
+  const parsed = parseTaskDispatch(formatTaskDispatch(data.childDispatch));
+  assert.deepEqual(Object.keys(parsed), [
+    "dispatchId",
+    "launchId",
+    "rootIssueId",
+    "workflowRunId",
+    "taskId",
+    "task",
+    "lease",
+  ]);
+  const { rootIssueId: _removed, ...oldShape } = data.childDispatch;
+  assert.throws(() => formatTaskDispatch(oldShape));
+  assert.throws(() =>
+    formatTaskDispatch({ ...data.childDispatch, taskId: "task-mismatch" }),
+  );
+  await withFakeLifecycle(
+    { dispatchIdentityDrift: true },
+    async ({ data: lifecycle, writes }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", lifecycle.input),
+        /malformed, foreign, or duplicate Dispatch/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
 });
 
 test("Result output enforces the kernel JSON data domain", () => {
@@ -1200,7 +1300,7 @@ test("Evaluation snapshot and writer cover accepted and rejected verdicts", asyn
       const snapshot = await callTool("get_task_snapshot", data.input);
       assert.equal(snapshot.evaluatorId, data.policy.evaluatorId);
       assert.deepEqual(snapshot.authorizedVerdicts, ["accepted", "rejected"]);
-      assert.equal(snapshot.resultDigest, resultBodyDigest(data.resultBody));
+      assert.equal(snapshot.resultDigest, resultValueDigest(data.result));
       const created = await callTool(
         "submit_task_evaluation",
         evaluationInput(data, verdict),
@@ -1213,7 +1313,7 @@ test("Evaluation snapshot and writer cover accepted and rejected verdicts", asyn
       assert.equal(payload.workflowRunId, data.input.workflowRunId);
       assert.equal(payload.taskId, data.input.taskId);
       assert.equal(payload.resultId, data.input.resultId);
-      assert.equal(payload.resultDigest, resultBodyDigest(data.resultBody));
+      assert.equal(payload.resultDigest, resultValueDigest(data.result));
       assert.equal(payload.attempt, 1);
       const retried = await callTool(
         "submit_task_evaluation",
@@ -1250,11 +1350,13 @@ test("deterministic lifecycle claims make concurrent identical writes idempotent
   await withFakeLifecycle(
     { role: "orchestrator", verdict: "accepted" },
     async ({ data, writes }) => {
+      const snapshot = await callTool("get_task_snapshot", data.input);
       const input = {
         ...data.input,
         evaluationId: data.evaluation.evaluationId,
         routeId: "route-concurrent",
-        action: "complete",
+        action: "advance",
+        ...snapshot.authorizedTransitions[0],
       };
       const settled = await Promise.all([
         callTool("submit_task_route", input),
@@ -1271,6 +1373,28 @@ test("deterministic lifecycle claims make concurrent identical writes idempotent
       );
     },
   );
+  await withFakeLifecycle({}, async ({ data, writes }) => {
+    const settled = await Promise.allSettled([
+      callTool(
+        "submit_task_evaluation",
+        evaluationInput(data, "accepted"),
+      ),
+      callTool("submit_task_evaluation", {
+        ...evaluationInput(data, "accepted"),
+        evaluationId: "evaluation-conflicting-concurrent",
+        summary: "Different immutable evaluation.",
+      }),
+    ]);
+    assert.equal(writes.length, 1);
+    assert.equal(
+      settled.filter(({ status }) => status === "fulfilled").length,
+      1,
+    );
+    assert.equal(
+      settled.filter(({ status }) => status === "rejected").length,
+      1,
+    );
+  });
 });
 
 test("existing lifecycle artifacts reconcile across closure races", async () => {
@@ -1283,6 +1407,23 @@ test("existing lifecycle artifacts reconcile across closure races", async () => 
       );
       assert.equal(created.reconciled, false);
       assert.equal(writes.length, 1);
+    },
+  );
+  await withFakeLifecycle(
+    {
+      stepId: "g",
+      childKey: "title",
+      verdict: "accepted",
+      taskClosed: true,
+      parentTaskClosed: true,
+    },
+    async ({ data, writes }) => {
+      const reconciled = await callTool(
+        "submit_task_evaluation",
+        evaluationInput(data, "accepted"),
+      );
+      assert.equal(reconciled.reconciled, true);
+      assert.equal(writes.length, 0);
     },
   );
   await withFakeLifecycle(
@@ -1324,6 +1465,28 @@ test("lifecycle reads enforce full Root Issue admission integrity", async () => 
       assert.equal(writes.length, 0);
     });
   }
+});
+
+test("later top-level tasks are direct Root Issue children", async () => {
+  await withFakeLifecycle(
+    { stepId: "h", rootTaskClosed: true },
+    async ({ data, writes }) => {
+      const snapshot = await callTool("get_task_snapshot", data.input);
+      assert.equal(snapshot.sourceStepId, "h");
+      assert.equal(snapshot.taskId, data.task.taskId);
+      assert.equal(writes.length, 0);
+    },
+  );
+  await withFakeLifecycle(
+    { stepId: "h", topLevelParentIsInitial: true },
+    async ({ data, writes }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", data.input),
+        /Root Issue is missing, stale|ordinary Root Issue/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
 });
 
 test("Evaluation fails closed on conflicting duplicates and direct identity drift", async () => {
@@ -1396,7 +1559,7 @@ test("Route advances through next and outcome edges to task, wait, and terminal"
     },
   );
   for (const [stepId, choiceIndex, expectedKind] of [
-    ["c", 1, "task"],
+    ["c", 0, "task"],
     ["d", 0, "wait"],
     ["h", 0, "terminal"],
   ]) {
@@ -1404,6 +1567,14 @@ test("Route advances through next and outcome edges to task, wait, and terminal"
       { stepId, role: "orchestrator", verdict: "accepted" },
       async ({ data, writes }) => {
         const snapshot = await callTool("get_task_snapshot", data.input);
+        if (stepId === "c") {
+          assert.deepEqual(snapshot.authorizedActions, [
+            "advance",
+            "error",
+            "ignore",
+          ]);
+          assert.equal(snapshot.authorizedTransitions[0].outcome, "continue");
+        }
         const choice = snapshot.authorizedTransitions[choiceIndex];
         await callTool("submit_task_route", {
           ...data.input,
@@ -1515,6 +1686,33 @@ test("existing Routes are revalidated against attempt and recursive policy", asy
       assert.equal(writes.length, 0);
     },
   );
+  const topLevel = lifecycleFixture({ stepId: "c", verdict: "accepted" });
+  await withFakeLifecycle(
+    {
+      stepId: "c",
+      role: "orchestrator",
+      verdict: "accepted",
+      route: {
+        routeId: "route-existing-complete",
+        rootIssueId: topLevel.input.rootIssueId,
+        workflowRunId: topLevel.input.workflowRunId,
+        taskId: topLevel.input.taskId,
+        resultId: topLevel.input.resultId,
+        evaluationId: topLevel.evaluation.evaluationId,
+        evaluationVerdict: "accepted",
+        orchestratorId: topLevel.policy.orchestratorId,
+        action: "complete",
+        attempt: 1,
+      },
+    },
+    async ({ data, writes }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", data.input),
+        /conflicting Route/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
 });
 
 test("Route rejects wrong compiled mapping and wrong orchestrator", async () => {
@@ -1555,7 +1753,13 @@ test("Route rejects wrong compiled mapping and wrong orchestrator", async () => 
 
 test("Rejected Route reworks the same task and assignment within the limit", async () => {
   await withFakeLifecycle(
-    { stepId: "g", attempt: 2, role: "orchestrator", verdict: "rejected" },
+    {
+      stepId: "g",
+      attempt: 2,
+      role: "orchestrator",
+      verdict: "rejected",
+      dispatchAfterReworkPost: true,
+    },
     async ({ data, writes }) => {
       const snapshot = await callTool("get_task_snapshot", data.input);
       assert.deepEqual(snapshot.authorizedActions, ["rework", "error", "ignore"]);
@@ -1572,6 +1776,14 @@ test("Rejected Route reworks the same task and assignment within the limit", asy
         feedback: data.evaluation.feedback,
       });
       assert.equal(parseTaskRoute(writes[0].body).attempt, 2);
+      const retried = await callTool("submit_task_route", {
+        ...data.input,
+        evaluationId: data.evaluation.evaluationId,
+        routeId: "route-rework",
+        action: "rework",
+      });
+      assert.equal(retried.reconciled, true);
+      assert.equal(writes.length, 1);
     },
   );
   await withFakeLifecycle(

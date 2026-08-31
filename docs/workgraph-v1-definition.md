@@ -46,8 +46,10 @@ or `rejected`; rejected Evaluations require actionable feedback.
 `WorkGraphTaskRoute/v1` directly records the Root Issue, run, task, Result, and
 Evaluation IDs, plus `evaluationVerdict`, `orchestratorId`, `action`, and the
 same one-based `attempt`. Its `reworkCount` is `attempt - 1`. Accepted Results
-may advance or complete;
-rejected Results may rework. `error` and `ignore` are universal exclusions.
+may follow their exact resolved transition; recursive children complete to
+release their join. Rejected Results may rework within their effective bound.
+The runtime route policy additionally permits its `error` and `ignore`
+exclusions.
 Advance alone carries `transitionKind` (`next` or `outcome`),
 `targetStepId`, and `targetStepKind`. `outcome` is present only for an outcome
 transition. `targetTaskDefinitionId` is present
@@ -59,7 +61,8 @@ and the source transition supplies the only valid advance edge. Recursive
 `executionPolicies` must exactly cover every task definition and each worker
 must match its task's routing executor. Recursive child tasks use their own
 effective policy but have no top-level transition: accepted children may
-complete, error, or ignore; rejected children may rework, error, or ignore.
+complete, and rejected children may rework within their bound. Runtime-policy
+exclusion actions use the same authorization logic.
 
 Evaluate summary and feedback are lifecycle text rather than static data-map
 text, so protocol marker names are allowed. They remain well-formed LF text,

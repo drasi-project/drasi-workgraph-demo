@@ -34,6 +34,10 @@ const TASK_RESULT_MARKER = "WorkGraphTaskResult/v1";
 const LEASE_VALIDATION_PATH = "/github/workgraph-v1/lease/validate";
 const MAX_ID_BYTES = 256;
 const MAX_BODY_BYTES = 64 * 1024;
+const RUNTIME_ROUTE_POLICY = Object.freeze({
+  error: true,
+  ignore: true,
+});
 const TASK_IDENTITY_KEYS = [
   "taskId",
   "workflowRunId",
@@ -275,16 +279,42 @@ function normalizeTaskIdentity(value, label = "task identity") {
 }
 
 function normalizeTaskDispatch(value) {
-  exact(value, ["dispatchId", "launchId", "task", "lease"], "Dispatch");
+  exact(
+    value,
+    [
+      "dispatchId",
+      "launchId",
+      "rootIssueId",
+      "workflowRunId",
+      "taskId",
+      "task",
+      "lease",
+    ],
+    "Dispatch",
+  );
   exact(
     value.lease,
     ["leaseId", "assignmentId", "executorId", "slotId"],
     "Dispatch.lease",
   );
+  const task = normalizeTaskIdentity(value.task, "Dispatch.task");
+  const workflowRunId = opaque(
+    value.workflowRunId,
+    "Dispatch.workflowRunId",
+  );
+  const taskId = opaque(value.taskId, "Dispatch.taskId");
+  if (workflowRunId !== task.workflowRunId || taskId !== task.taskId) {
+    throw new WorkGraphReporterError(
+      "Dispatch top-level identities must match Dispatch.task",
+    );
+  }
   return {
     dispatchId: opaque(value.dispatchId, "Dispatch.dispatchId"),
     launchId: opaque(value.launchId, "Dispatch.launchId"),
-    task: normalizeTaskIdentity(value.task, "Dispatch.task"),
+    rootIssueId: opaque(value.rootIssueId, "Dispatch.rootIssueId"),
+    workflowRunId,
+    taskId,
+    task,
     lease: {
       leaseId: opaque(value.lease.leaseId, "Dispatch.lease.leaseId"),
       assignmentId: opaque(
@@ -458,8 +488,11 @@ export function deriveWorkGraphRootTaskId(workflowRunId, rootTaskDefinitionId) {
   return `wgt-${framedSha256([workflowRunId, rootTaskDefinitionId]).slice(0, 60)}`;
 }
 
-export function resultBodyDigest(body) {
-  return `sha256:${createHash("sha256").update(body, "utf8").digest("hex")}`;
+export function resultValueDigest(value) {
+  const normalized = normalizeTaskResult(value);
+  return `sha256:${createHash("sha256")
+    .update(JSON.stringify(normalized), "utf8")
+    .digest("hex")}`;
 }
 
 function validateTaskLocator(value) {
@@ -682,6 +715,26 @@ class GitHub {
     return this.request(
       "GET",
       `/repos/${OWNER}/${REPO}/issues/${number}/parent`,
+    );
+  }
+
+  async subIssues(number) {
+    const issues = [];
+    for (let page = 1; page <= 100; page += 1) {
+      const batch = await this.request(
+        "GET",
+        `/repos/${OWNER}/${REPO}/issues/${number}/sub_issues?per_page=100&page=${page}`,
+      );
+      if (!Array.isArray(batch)) {
+        throw new WorkGraphReporterError(
+          "paginated GitHub sub-issues response must be an array",
+        );
+      }
+      issues.push(...batch);
+      if (batch.length < 100) return issues;
+    }
+    throw new WorkGraphReporterError(
+      "GitHub sub-issues pagination exceeded 100 pages",
     );
   }
 
@@ -1063,9 +1116,7 @@ function resultContext(context, input, config, expectedBody) {
       ({ comment, payload }) =>
         !payload ||
         comment.user?.id !== config.assignmentId ||
-        TASK_IDENTITY_KEYS.some(
-          (key) => payload.task[key] !== context.task[key],
-        ) ||
+        !dispatchMatchesTask(payload, context.task) ||
         payload.lease.executorId !== expectedExecutor,
     ) ||
     new Set(dispatches.map(({ payload }) => payload.dispatchId)).size !==
@@ -1083,7 +1134,7 @@ function resultContext(context, input, config, expectedBody) {
   const matchingDispatches = dispatches.filter(
     ({ payload }) =>
       payload.dispatchId === input.dispatchId &&
-      payload.task.taskId === input.taskId &&
+      payload.taskId === input.taskId &&
       payload.lease.leaseId === input.leaseId,
   );
   if (matchingDispatches.length !== 1) {
@@ -1193,7 +1244,7 @@ function now() {
 
 async function validateActiveLease(dispatch, claimId, config) {
   const expected = {
-    taskId: dispatch.task.taskId,
+    taskId: dispatch.taskId,
     leaseId: dispatch.lease.leaseId,
     assignmentId: dispatch.lease.assignmentId,
     executorId: dispatch.lease.executorId,
@@ -1286,6 +1337,15 @@ const LIFECYCLE_CONTEXT_KEYS = [
 
 function sameTaskIdentity(left, right) {
   return TASK_IDENTITY_KEYS.every((key) => left[key] === right[key]);
+}
+
+function dispatchMatchesTask(dispatch, task) {
+  return (
+    dispatch.rootIssueId === task.rootIssueId &&
+    dispatch.workflowRunId === task.workflowRunId &&
+    dispatch.taskId === task.taskId &&
+    sameTaskIdentity(dispatch.task, task)
+  );
 }
 
 function compiledSource(taskDefinitionId) {
@@ -1421,100 +1481,126 @@ async function loadLifecycleAncestry(
     "task native parent",
   );
 
-  let ancestorIssue = await github.issue(locator.parentIssueNumber);
-  let ancestorLink = parentLink;
-  let rootTask = null;
-  let rootTaskIssue = null;
-  let immediateParentTask = null;
-  for (let depth = 0; depth <= 5; depth += 1) {
+  let rootIssueCandidate;
+  if (compiled.isStepRoot) {
+    rootIssueCandidate = await github.issue(parentLink.number);
     linkedIssue(
-      ancestorIssue,
-      ancestorLink.number,
-      ancestorLink.node_id,
-      "task ancestor",
+      rootIssueCandidate,
+      parentLink.number,
+      parentLink.node_id,
+      "top-level task Root Issue parent",
     );
-    if (ancestorIssue.type?.name !== TASK_TYPE_NAME) break;
-    if (requireOpen && ancestorIssue.state !== "open") {
-      throw new WorkGraphReporterError(
-        "lifecycle reporting requires an open Root Task ancestry",
+  } else {
+    let expectedParentDefinitionId = compiled.parentTaskDefinitionId;
+    let ancestorLink = parentLink;
+    for (let depth = 0; depth <= 5; depth += 1) {
+      const ancestorIssue = await github.issue(ancestorLink.number);
+      linkedIssue(
+        ancestorIssue,
+        ancestorLink.number,
+        ancestorLink.node_id,
+        "recursive task ancestor",
       );
-    }
-    const ancestor = taskIssue(
-      ancestorIssue,
-      {
-        issueNumber: ancestorIssue.number,
-        issueNodeId: ancestorIssue.node_id,
-      },
-      config,
-      "Task ancestor",
-    );
-    validateLifecycleTask(ancestor, "Task ancestor");
-    if (depth === 0) immediateParentTask = ancestor;
-    if (
-      ancestor.rootIssueId !== task.rootIssueId ||
-      ancestor.workflowRunId !== task.workflowRunId ||
-      ancestor.workflowDefinitionId !== task.workflowDefinitionId ||
-      ancestor.workflowDefinitionVersion !== task.workflowDefinitionVersion ||
-      ancestor.workflowDefinitionDigest !== task.workflowDefinitionDigest
-    ) {
-      throw new WorkGraphReporterError(
-        "Task ancestor direct identities do not match the routed Task",
+      if (ancestorIssue.type?.name !== TASK_TYPE_NAME) {
+        throw new WorkGraphReporterError(
+          "recursive task ancestry ended before its compiled step root",
+        );
+      }
+      if (requireOpen && ancestorIssue.state !== "open") {
+        throw new WorkGraphReporterError(
+          "lifecycle reporting requires an open recursive task ancestry",
+        );
+      }
+      const ancestor = taskIssue(
+        ancestorIssue,
+        {
+          issueNumber: ancestorIssue.number,
+          issueNodeId: ancestorIssue.node_id,
+        },
+        config,
+        "Recursive task ancestor",
       );
+      const ancestorCompiled = validateLifecycleTask(
+        ancestor,
+        "Recursive task ancestor",
+      );
+      if (
+        ancestor.taskDefinitionId !== expectedParentDefinitionId ||
+        ancestor.rootIssueId !== task.rootIssueId ||
+        ancestor.workflowRunId !== task.workflowRunId ||
+        ancestor.workflowDefinitionId !== task.workflowDefinitionId ||
+        ancestor.workflowDefinitionVersion !==
+          task.workflowDefinitionVersion ||
+        ancestor.workflowDefinitionDigest !== task.workflowDefinitionDigest
+      ) {
+        throw new WorkGraphReporterError(
+          "recursive task ancestry does not match its compiled parent chain",
+        );
+      }
+      const nextLink = await github.parent(ancestorIssue.number);
+      if (ancestorCompiled.isStepRoot) {
+        rootIssueCandidate = await github.issue(nextLink.number);
+        linkedIssue(
+          rootIssueCandidate,
+          nextLink.number,
+          nextLink.node_id,
+          "top-level task Root Issue parent",
+        );
+        break;
+      }
+      expectedParentDefinitionId = ancestorCompiled.parentTaskDefinitionId;
+      ancestorLink = nextLink;
     }
-    if (
-      ancestor.taskDefinitionId ===
-      COMPILED_WORKFLOW.root.taskDefinitionId
-    ) {
-      rootTask = ancestor;
-      rootTaskIssue = ancestorIssue;
-      ancestorLink = await github.parent(ancestorIssue.number);
-      ancestorIssue = await github.issue(ancestorLink.number);
-      break;
-    }
-    ancestorLink = await github.parent(ancestorIssue.number);
-    ancestorIssue = await github.issue(ancestorLink.number);
   }
-  if (
-    task.taskDefinitionId === COMPILED_WORKFLOW.root.taskDefinitionId
-  ) {
-    rootTask = task;
-    rootTaskIssue = issue;
-    ancestorIssue = await github.issue(parentLink.number);
-  }
-  if (
-    !rootTask ||
-    !rootTaskIssue ||
-    ancestorIssue?.node_id !== task.rootIssueId ||
-    ancestorIssue?.repository_url !== REPOSITORY_URL ||
-    ancestorIssue?.pull_request ||
-    ancestorIssue?.type?.name === TASK_TYPE_NAME
-  ) {
+  if (!rootIssueCandidate) {
     throw new WorkGraphReporterError(
-      "Task ancestry does not reach its open ordinary Root Issue",
+      "Task ancestry does not reach its ordinary Root Issue",
     );
   }
+  const rootIssue = ordinaryRootIssue(
+    rootIssueCandidate,
+    rootIssueCandidate.number,
+    task.rootIssueId,
+    config,
+  );
+  const rootChildren = await github.subIssues(rootIssue.number);
+  const initialTasks = [];
+  for (const child of rootChildren) {
+    if (
+      child?.type?.name !== TASK_TYPE_NAME ||
+      child?.type?.node_id !== config.taskTypeId ||
+      child?.user?.id !== config.launcherId
+    ) {
+      continue;
+    }
+    const candidate = taskIssue(
+      child,
+      { issueNumber: child.number, issueNodeId: child.node_id },
+      config,
+      "Initial Task candidate",
+    );
+    if (
+      candidate.taskDefinitionId ===
+        COMPILED_WORKFLOW.root.taskDefinitionId &&
+      candidate.rootIssueId === task.rootIssueId &&
+      candidate.workflowRunId === task.workflowRunId
+    ) {
+      initialTasks.push({ issue: child, task: candidate });
+    }
+  }
+  if (initialTasks.length !== 1) {
+    throw new WorkGraphReporterError(
+      "Root Issue must have exactly one matching initial Task",
+    );
+  }
+  const [{ issue: rootTaskIssue, task: rootTask }] = initialTasks;
   if (
     rootTask.taskDefinitionId !== COMPILED_WORKFLOW.root.taskDefinitionId ||
     rootTask.rootIssueId !== input.rootIssueId ||
     rootTask.workflowRunId !== input.workflowRunId
   ) {
-    throw new WorkGraphReporterError("Root Task direct identities do not match");
+    throw new WorkGraphReporterError("Initial Task direct identities do not match");
   }
-  if (
-    !compiled.isStepRoot &&
-    immediateParentTask?.taskDefinitionId !==
-      compiled.parentTaskDefinitionId
-  ) {
-    throw new WorkGraphReporterError(
-      "recursive task native parent does not match its compiled parent",
-    );
-  }
-  const rootIssue = ordinaryRootIssue(
-    ancestorIssue,
-    ancestorIssue.number,
-    ancestorIssue.node_id,
-    config,
-  );
   const admission = validateRootAdmission(
     rootTask,
     rootIssue,
@@ -1553,7 +1639,7 @@ async function loadLifecycleAncestry(
   };
 }
 
-function lifecycleArtifacts(context, input, config) {
+function lifecycleArtifacts(context, input, config, requireCurrent = true) {
   const dispatches = markedComments(
     context.comments,
     TASK_DISPATCH_MARKER,
@@ -1565,7 +1651,7 @@ function lifecycleArtifacts(context, input, config) {
     dispatches.length === 0 ||
     dispatches.some(
       ({ payload }) =>
-        !sameTaskIdentity(payload.task, context.task) ||
+        !dispatchMatchesTask(payload, context.task) ||
         payload.lease.executorId !== context.policy.workerId,
     ) ||
     new Set(dispatches.map(({ payload }) => payload.dispatchId)).size !==
@@ -1580,17 +1666,26 @@ function lifecycleArtifacts(context, input, config) {
   dispatches.sort((left, right) =>
     commentOrder(left.comment, right.comment),
   );
-  const currentDispatch = dispatches.at(-1).payload;
+  const selectedDispatches = dispatches.filter(
+    ({ payload }) =>
+      payload.dispatchId === input.dispatchId &&
+      payload.lease.leaseId === input.leaseId,
+  );
   if (
-    currentDispatch.dispatchId !== input.dispatchId ||
-    currentDispatch.lease.leaseId !== input.leaseId
+    selectedDispatches.length !== 1 ||
+    (requireCurrent &&
+      selectedDispatches[0] !== dispatches.at(-1))
   ) {
     throw new WorkGraphReporterError(
       "Dispatch and Lease are stale or not the current selected attempt",
     );
   }
-  const attempt =
-    dispatches.filter(
+  const selectedEntry = selectedDispatches[0];
+  const selectedIndex = dispatches.indexOf(selectedEntry);
+  const currentDispatch = selectedEntry.payload;
+  const attempt = dispatches
+    .slice(0, selectedIndex + 1)
+    .filter(
       ({ payload }) =>
         payload.lease.assignmentId === currentDispatch.lease.assignmentId,
     ).length;
@@ -1665,7 +1760,7 @@ function lifecycleArtifacts(context, input, config) {
     );
   }
   const result = currentResults[0];
-  const resultDigest = resultBodyDigest(result.comment.body);
+  const resultDigest = resultValueDigest(result.payload);
 
   const evaluations = markedComments(
     context.comments,
@@ -1692,7 +1787,7 @@ function lifecycleArtifacts(context, input, config) {
         !referenced ||
         payload.attempt !==
           dispatchAttempts.get(referenced?.payload.dispatchId) ||
-        payload.resultDigest !== resultBodyDigest(referenced.comment.body)
+        payload.resultDigest !== resultValueDigest(referenced.payload)
       );
     }) ||
     new Set(evaluations.map(({ payload }) => payload.evaluationId)).size !==
@@ -1721,8 +1816,12 @@ function lifecycleArtifacts(context, input, config) {
   if (
     routes.some(({ payload }) => {
       const evaluation = evaluationById.get(payload.evaluationId);
+      const referenced = evaluation
+        ? evaluationResults.get(evaluation.resultId)
+        : null;
       if (
         !evaluation ||
+        !referenced ||
         payload.rootIssueId !== context.task.rootIssueId ||
         payload.workflowRunId !== context.task.workflowRunId ||
         payload.taskId !== context.task.taskId ||
@@ -1739,6 +1838,32 @@ function lifecycleArtifacts(context, input, config) {
           taskDefinitionId: context.task.taskDefinitionId,
         });
       } catch {
+        return true;
+      }
+      const plan = authorizedRoutePlan(
+        context,
+        referenced.payload,
+        evaluation.verdict,
+        evaluation.attempt,
+      );
+      if (!plan.actions.includes(payload.action)) return true;
+      if (
+        payload.action === "advance" &&
+        !plan.transitions.some((choice) =>
+          isDeepStrictEqual(choice, {
+            transitionKind: payload.transitionKind,
+            ...("outcome" in payload ? { outcome: payload.outcome } : {}),
+            targetStepId: payload.targetStepId,
+            targetStepKind: payload.targetStepKind,
+            ...("targetTaskDefinitionId" in payload
+              ? {
+                  targetTaskDefinitionId:
+                    payload.targetTaskDefinitionId,
+                }
+              : {}),
+          }),
+        )
+      ) {
         return true;
       }
       return false;
@@ -1774,6 +1899,7 @@ async function readLifecycleContext(
   config,
   extraKeys = [],
   requireOpen = true,
+  requireCurrent = true,
 ) {
   const locator = validateLifecycleContextInput(input, extraKeys);
   const context = await loadLifecycleAncestry(
@@ -1786,19 +1912,26 @@ async function readLifecycleContext(
   return {
     locator,
     context,
-    artifacts: lifecycleArtifacts(context, input, config),
+    artifacts: lifecycleArtifacts(context, input, config, requireCurrent),
   };
 }
 
-function transitionChoices(context) {
+function transitionChoices(context, result) {
   if (!context.isStepRoot) return [];
   const transition = context.source.transition;
   if (transition.type === "next") {
     return [routeTarget("next", null, transition.targetStepId)];
   }
-  return Object.entries(transition.targets).map(([outcome, targetStepId]) =>
-    routeTarget("outcome", outcome, targetStepId),
-  );
+  const outcome = result.output?.outcome;
+  if (
+    typeof outcome !== "string" ||
+    !(outcome in transition.targets)
+  ) {
+    return [];
+  }
+  return [
+    routeTarget("outcome", outcome, transition.targets[outcome]),
+  ];
 }
 
 function routeTarget(transitionKind, outcome, targetStepId) {
@@ -1813,6 +1946,30 @@ function routeTarget(transitionKind, outcome, targetStepId) {
     choice.targetTaskDefinitionId = target.taskDefinition.taskDefinitionId;
   }
   return choice;
+}
+
+function authorizedRoutePlan(context, result, verdict, attempt) {
+  const transitions =
+    verdict === "accepted" ? transitionChoices(context, result) : [];
+  const actions = [];
+  if (verdict === "accepted") {
+    if (transitions.length > 0) actions.push("advance");
+    if (
+      !context.isStepRoot ||
+      transitions.some(
+        ({ targetStepId }) =>
+          COMPILED_WORKFLOW.steps[targetStepId]?.type === "terminal" &&
+          COMPILED_WORKFLOW.steps[targetStepId].outcome === "completed",
+      )
+    ) {
+      actions.push("complete");
+    }
+  } else if (attempt - 1 < context.policy.maxReworkAttempts) {
+    actions.push("rework");
+  }
+  if (RUNTIME_ROUTE_POLICY.error) actions.push("error");
+  if (RUNTIME_ROUTE_POLICY.ignore) actions.push("ignore");
+  return { actions, transitions };
 }
 
 function lifecycleSnapshot(context, artifacts, config) {
@@ -1845,28 +2002,18 @@ function lifecycleSnapshot(context, artifacts, config) {
     );
   }
   const verdict = artifacts.currentEvaluation.payload.verdict;
-  const actions =
-    verdict === "accepted"
-      ? [
-          ...(context.isStepRoot ? ["advance"] : []),
-          "complete",
-          "error",
-          "ignore",
-        ]
-      : [
-          ...(artifacts.reworkCount < context.policy.maxReworkAttempts
-            ? ["rework"]
-            : []),
-          "error",
-          "ignore",
-        ];
+  const plan = authorizedRoutePlan(
+    context,
+    artifacts.result.payload,
+    verdict,
+    artifacts.attempt,
+  );
   return {
     ...common,
     evaluation: artifacts.currentEvaluation.payload,
     orchestratorId: context.policy.orchestratorId,
-    authorizedActions: actions,
-    authorizedTransitions:
-      verdict === "accepted" ? transitionChoices(context) : [],
+    authorizedActions: plan.actions,
+    authorizedTransitions: plan.transitions,
     existingRoute: artifacts.currentRoute?.payload ?? null,
   };
 }
@@ -1920,51 +2067,6 @@ async function reconcileLifecycleComment({
     taskId,
     subjectId,
   );
-  const initial = await readAny();
-  const found = existing(initial);
-  if (found) {
-    if (found.comment.body !== body) {
-      throw new WorkGraphReporterError(
-        `task has a conflicting canonical ${kind}`,
-      );
-    }
-    return {
-      commentNodeId: found.comment.node_id,
-      [`${id}Id`]: found.payload[`${id}Id`],
-      reconciled: true,
-      claimId,
-    };
-  }
-  const before = await readAny();
-  const raced = existing(before);
-  if (raced) {
-    if (raced.comment.body !== body) {
-      throw new WorkGraphReporterError(
-        `task has a conflicting canonical ${kind}`,
-      );
-    }
-    return {
-      commentNodeId: raced.comment.node_id,
-      [`${id}Id`]: raced.payload[`${id}Id`],
-      reconciled: true,
-      claimId,
-    };
-  }
-  const writable = await readOpen();
-  const appeared = existing(writable);
-  if (appeared) {
-    if (appeared.comment.body !== body) {
-      throw new WorkGraphReporterError(
-        `task has a conflicting canonical ${kind}`,
-      );
-    }
-    return {
-      commentNodeId: appeared.comment.node_id,
-      [`${id}Id`]: appeared.payload[`${id}Id`],
-      reconciled: true,
-      claimId,
-    };
-  }
   const pending = lifecycleClaims.get(claimId);
   if (pending) {
     if (pending.body !== body) {
@@ -1976,6 +2078,22 @@ async function reconcileLifecycleComment({
     return { ...claimed, reconciled: true };
   }
   const promise = (async () => {
+    for (const read of [readAny, readAny, readOpen]) {
+      const state = await read();
+      const found = existing(state);
+      if (!found) continue;
+      if (found.comment.body !== body) {
+        throw new WorkGraphReporterError(
+          `task has a conflicting canonical ${kind}`,
+        );
+      }
+      return {
+        commentNodeId: found.comment.node_id,
+        [`${id}Id`]: found.payload[`${id}Id`],
+        reconciled: true,
+        claimId,
+      };
+    }
     const posted = verifiedComment(
       await github.postComment(number, body),
       body,
@@ -2011,7 +2129,7 @@ async function reconcileLifecycleComment({
 async function submitTaskEvaluation(input, github, config) {
   const extra = ["evaluationId", "verdict", "summary", "feedback"];
   const readAny = () =>
-    readLifecycleContext(input, github, config, extra, false);
+    readLifecycleContext(input, github, config, extra, false, false);
   const readOpen = () =>
     readLifecycleContext(input, github, config, extra, true);
   const initial = await readAny();
@@ -2098,7 +2216,7 @@ async function submitTaskRoute(input, github, config) {
       : [];
   const extra = ["evaluationId", "routeId", "action", ...transitionKeys];
   const readAny = () =>
-    readLifecycleContext(input, github, config, extra, false);
+    readLifecycleContext(input, github, config, extra, false, false);
   const readOpen = () =>
     readLifecycleContext(input, github, config, extra, true);
   const initial = await readAny();
@@ -2283,7 +2401,7 @@ async function submitTaskResult(input, github, config) {
     return {
       commentNodeId: initial.existing.node_id,
       resultId: result.resultId,
-      resultBodyDigest: resultBodyDigest(body),
+      resultDigest: resultValueDigest(result),
       reconciled: true,
     };
   }
@@ -2292,7 +2410,7 @@ async function submitTaskResult(input, github, config) {
     return {
       commentNodeId: before.existing.node_id,
       resultId: result.resultId,
-      resultBodyDigest: resultBodyDigest(body),
+      resultDigest: resultValueDigest(result),
       reconciled: true,
     };
   }
@@ -2314,7 +2432,7 @@ async function submitTaskResult(input, github, config) {
   return {
     commentNodeId: posted.node_id,
     resultId: result.resultId,
-    resultBodyDigest: resultBodyDigest(body),
+    resultDigest: resultValueDigest(result),
     reconciled: false,
   };
 }

@@ -20,8 +20,10 @@ Every task carries top-level `rootIssueId`. The hierarchy is:
 
 ```text
 Root Issue
-└── Root Task
-    └── child task
+├── initial Root Task
+├── later top-level task
+└── recursive stage task
+    └── declared recursive child
 ```
 
 Rich generic authoring lives in
