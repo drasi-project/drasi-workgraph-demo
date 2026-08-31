@@ -47,6 +47,17 @@ const TASK_IDENTITY_KEYS = [
   "workflowDefinitionDigest",
   "taskDefinitionId",
 ];
+const TASK_RESULT_KEYS = [
+  "resultId",
+  "rootIssueId",
+  "workflowRunId",
+  "taskId",
+  "dispatchId",
+  "leaseId",
+  "attempt",
+  "outcome",
+  "output",
+];
 const COMPILED_FIXTURE = JSON.parse(
   readFileSync(
     new URL("../workgraph/fixtures/v1/issue-lifecycle.expected.json", import.meta.url),
@@ -354,17 +365,7 @@ export function deriveWorkGraphTaskResultId(taskId, dispatchId, leaseId) {
 function normalizeTaskResult(value) {
   exact(
     value,
-    [
-      "resultId",
-      "rootIssueId",
-      "workflowRunId",
-      "taskId",
-      "dispatchId",
-      "leaseId",
-      "attempt",
-      "outcome",
-      "output",
-    ],
+    TASK_RESULT_KEYS,
     "Result",
   );
   for (const key of [
@@ -491,7 +492,10 @@ export function deriveWorkGraphRootTaskId(workflowRunId, rootTaskDefinitionId) {
 
 export function canonicalResultJson(value) {
   const normalized = normalizeTaskResult(value);
-  return compactCanonicalJson(normalized);
+  return `{${TASK_RESULT_KEYS.map(
+    (key) =>
+      `${JSON.stringify(key)}:${compactCanonicalJson(normalized[key])}`,
+  ).join(",")}}`;
 }
 
 export function resultValueDigest(value) {

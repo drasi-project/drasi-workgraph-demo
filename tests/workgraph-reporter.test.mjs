@@ -887,7 +887,7 @@ test("v1 Result identity, body, and value digest match Rust vectors", () => {
 
   assert.equal(
     resultValueDigest(parseTaskResult(body)),
-    "sha256:83721a06232a82c4f08928eba8af4cc3729beabdd723004a9efd1741b88162e0",
+    "sha256:3a83dbf5db0f97b49d293a652761744dd240fec552a4db24a8e150785f5217d3",
   );
   const integerKeys = {
     ...parseTaskResult(body),
@@ -895,11 +895,11 @@ test("v1 Result identity, body, and value digest match Rust vectors", () => {
   };
   assert.equal(
     canonicalResultJson(integerKeys),
-    `{"attempt":1,"dispatchId":"dispatch-1","leaseId":"lease-1","outcome":"succeeded","output":{"10":"ten","2":"two"},"resultId":"${resultId}","rootIssueId":"root-1","taskId":"task-1","workflowRunId":"run-1"}`,
+    `{"resultId":"${resultId}","rootIssueId":"root-1","workflowRunId":"run-1","taskId":"task-1","dispatchId":"dispatch-1","leaseId":"lease-1","attempt":1,"outcome":"succeeded","output":{"10":"ten","2":"two"}}`,
   );
   assert.equal(
     resultValueDigest(integerKeys),
-    "sha256:1ab7320ad495334a20a26189c5229a45725f1ca895f8cc2e2b3dad904d20df63",
+    "sha256:34610cfcaa001b167605187c1e29edfb5ff86ef538c5ff6b626a36a19c3bc961",
   );
   assert.equal(parseTaskResult(body.replace('  "taskId"', ' "taskId"')), null);
   assert.equal(parseTaskResult(body.replace("/v1", "/v2")), null);
