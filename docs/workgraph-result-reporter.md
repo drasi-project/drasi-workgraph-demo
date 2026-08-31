@@ -133,12 +133,14 @@ with exactly:
 ```
 
 The Source atomically reserves the active Lease for `claimId`; a competing claim
-fails closed. Its response must repeat those six fields and provide a valid,
-unexpired `acquiredAt`/`expiresAt` interval.
+fails closed. Its exact response repeats those six fields, adds the
+authoritative one-based `attempt`, and provides a valid, unexpired
+`acquiredAt`/`expiresAt` interval.
 
 The caller never supplies `resultId`, `rootIssueId`, `workflowRunId`, or
 `attempt`. The reporter derives the direct identities from the verified task
-and the one-based attempt from the selected Dispatch history. `resultId` is
+and takes the attempt only from the validated active-Lease response. Dispatch
+comment count is not attempt evidence. `resultId` is
 derived from the length-framed UTF-8 values of `taskId`, `dispatchId`, and
 `leaseId`:
 
@@ -174,8 +176,10 @@ reporter never closes tasks, evaluates Results, allocates Leases, or mutates the
 Root Issue.
 
 Evaluation `resultDigest` is SHA-256 over compact `serde_json` serialization of
-the normalized Result payload. Markdown marker, fence, indentation, and trailing
-newline bytes are not part of the digest.
+the normalized Result payload. The reporter emits this digest input explicitly,
+sorting every object key by UTF-8 bytes (including integer-like keys); it does
+not rely on JavaScript object enumeration. Markdown marker, fence, indentation,
+and trailing newline bytes are not part of the digest.
 
 ## Configuration
 

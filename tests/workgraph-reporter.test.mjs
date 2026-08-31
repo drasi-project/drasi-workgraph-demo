@@ -15,6 +15,7 @@ import {
   parseTaskRoute,
 } from "../.github/mcp/workgraph-v1-definition.mjs";
 import {
+  canonicalResultJson,
   callTool,
   deriveWorkGraphRootIssueContentDigest,
   deriveWorkGraphRootTaskId,
@@ -355,12 +356,16 @@ async function withFakeRuntime(options, callback) {
         return send(409, { error: "lease already claimed" });
       }
       state.claims.set(value.leaseId, value.claimId);
-      return send(200, {
+      const snapshot = {
         ...value,
+        attempt:
+          options.leaseAttempt ?? (options.staleDispatch === true ? 2 : 1),
         ...(options.leaseResponse ?? {}),
         acquiredAt: "2026-08-29T20:00:00Z",
         expiresAt: "2026-08-29T22:00:00Z",
-      });
+      };
+      if (options.omitLeaseAttempt === true) delete snapshot.attempt;
+      return send(200, snapshot);
     }
     return send(404, { message: `Unhandled ${request.method} ${url.pathname}` });
   });
@@ -431,6 +436,7 @@ function lifecycleFixture({
   stepId = "c",
   childKey = null,
   attempt = 1,
+  dispatchCount = attempt,
   verdict = null,
   route = null,
   conflictingEvaluation = false,
@@ -501,7 +507,7 @@ function lifecycleFixture({
       }
     : null;
   const policy = COMPILED.steps[stepId].executionPolicies[taskDefinition];
-  const dispatches = Array.from({ length: attempt }, (_, index) => ({
+  const dispatches = Array.from({ length: dispatchCount }, (_, index) => ({
     dispatchId: `dispatch-${stepId}-${index}`,
     launchId: `launch-${stepId}-${index}`,
     rootIssueId,
@@ -881,7 +887,19 @@ test("v1 Result identity, body, and value digest match Rust vectors", () => {
 
   assert.equal(
     resultValueDigest(parseTaskResult(body)),
-    "sha256:3a83dbf5db0f97b49d293a652761744dd240fec552a4db24a8e150785f5217d3",
+    "sha256:83721a06232a82c4f08928eba8af4cc3729beabdd723004a9efd1741b88162e0",
+  );
+  const integerKeys = {
+    ...parseTaskResult(body),
+    output: { 2: "two", 10: "ten" },
+  };
+  assert.equal(
+    canonicalResultJson(integerKeys),
+    `{"attempt":1,"dispatchId":"dispatch-1","leaseId":"lease-1","outcome":"succeeded","output":{"10":"ten","2":"two"},"resultId":"${resultId}","rootIssueId":"root-1","taskId":"task-1","workflowRunId":"run-1"}`,
+  );
+  assert.equal(
+    resultValueDigest(integerKeys),
+    "sha256:1ab7320ad495334a20a26189c5229a45725f1ca895f8cc2e2b3dad904d20df63",
   );
   assert.equal(parseTaskResult(body.replace('  "taskId"', ' "taskId"')), null);
   assert.equal(parseTaskResult(body.replace("/v1", "/v2")), null);
@@ -1147,6 +1165,19 @@ test("concurrent Result submissions create at most one comment", async () => {
   });
 });
 
+test("Core attempt 2 is authoritative when the first Dispatch follows an undispatched expiry", async () => {
+  await withFakeRuntime({ leaseAttempt: 2 }, async ({ data, state }) => {
+    const created = await callTool(
+      "submit_task_result",
+      resultInput(data.childTask, data.childDispatch, childLocator()),
+    );
+    assert.equal(created.reconciled, false);
+    assert.equal(state.writes.length, 1);
+    assert.equal(parseTaskResult(state.writes[0].body).attempt, 2);
+    assert.equal(state.leaseRequests.length, 1);
+  });
+});
+
 test("submit_task_result selects the current Dispatch after an expired attempt", async () => {
   await withFakeRuntime({ staleDispatch: true }, async ({ data, state }) => {
     const created = await callTool(
@@ -1254,6 +1285,24 @@ test("a mismatched lease response is rejected before any Result write", async ()
       assert.equal(state.writes.length, 0);
     },
   );
+  for (const options of [
+    { leaseResponse: { attempt: 0 } },
+    { leaseResponse: { attempt: 18 } },
+    { leaseResponse: { attempt: 1.5 } },
+    { omitLeaseAttempt: true },
+    { leaseResponse: { unexpected: true } },
+  ]) {
+    await withFakeRuntime(options, async ({ data, state }) => {
+      await assert.rejects(
+        callTool(
+          "submit_task_result",
+          resultInput(data.childTask, data.childDispatch, childLocator()),
+        ),
+        /Source Lease (attempt|validation response)/,
+      );
+      assert.equal(state.writes.length, 0);
+    });
+  }
 });
 
 test("alternate Result fields are rejected before GitHub reads", async () => {
@@ -1323,6 +1372,40 @@ test("Evaluation snapshot and writer cover accepted and rejected verdicts", asyn
       assert.equal(writes.length, 1);
     });
   }
+});
+
+test("Evaluation and Route bind the authoritative Result attempt", async () => {
+  await withFakeLifecycle(
+    { attempt: 2, dispatchCount: 1 },
+    async ({ data, writes }) => {
+      const snapshot = await callTool("get_task_snapshot", data.input);
+      assert.equal(snapshot.attempt, 2);
+      await callTool(
+        "submit_task_evaluation",
+        evaluationInput(data, "accepted"),
+      );
+      assert.equal(parseTaskEvaluation(writes[0].body).attempt, 2);
+    },
+  );
+  await withFakeLifecycle(
+    {
+      attempt: 2,
+      dispatchCount: 1,
+      role: "orchestrator",
+      verdict: "accepted",
+    },
+    async ({ data, writes }) => {
+      const snapshot = await callTool("get_task_snapshot", data.input);
+      await callTool("submit_task_route", {
+        ...data.input,
+        evaluationId: data.evaluation.evaluationId,
+        routeId: "route-authoritative-attempt",
+        action: "advance",
+        ...snapshot.authorizedTransitions[0],
+      });
+      assert.equal(parseTaskRoute(writes[0].body).attempt, 2);
+    },
+  );
 });
 
 test("deterministic lifecycle claims make concurrent identical writes idempotent", async () => {
@@ -1829,13 +1912,13 @@ test("Route rejects stale Result, Evaluation, and attempt identities", async () 
   );
 });
 
-test("lifecycle reads reject a Result attempt that does not match its Dispatch", async () => {
+test("lifecycle reads reject a caller attempt that does not match Result", async () => {
   await withFakeLifecycle(
     { attempt: 2, resultAttempt: 1 },
     async ({ data, writes }) => {
       await assert.rejects(
         callTool("get_task_snapshot", data.input),
-        /malformed, foreign, duplicate, or conflicting Result/,
+        /authoritative current Result attempt/,
       );
       assert.equal(writes.length, 0);
     },

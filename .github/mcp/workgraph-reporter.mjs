@@ -34,6 +34,7 @@ const TASK_RESULT_MARKER = "WorkGraphTaskResult/v1";
 const LEASE_VALIDATION_PATH = "/github/workgraph-v1/lease/validate";
 const MAX_ID_BYTES = 256;
 const MAX_BODY_BYTES = 64 * 1024;
+const MAX_ATTEMPT = 17;
 const RUNTIME_ROUTE_POLICY = Object.freeze({
   error: true,
   ignore: true,
@@ -379,10 +380,10 @@ function normalizeTaskResult(value) {
   if (
     !Number.isSafeInteger(value.attempt) ||
     value.attempt < 1 ||
-    value.attempt > 17
+    value.attempt > MAX_ATTEMPT
   ) {
     throw new WorkGraphReporterError(
-      "Result.attempt must be an integer from 1 through 17",
+      `Result.attempt must be an integer from 1 through ${MAX_ATTEMPT}`,
     );
   }
   if (!["succeeded", "failed", "cancelled"].includes(value.outcome)) {
@@ -488,11 +489,36 @@ export function deriveWorkGraphRootTaskId(workflowRunId, rootTaskDefinitionId) {
   return `wgt-${framedSha256([workflowRunId, rootTaskDefinitionId]).slice(0, 60)}`;
 }
 
-export function resultValueDigest(value) {
+export function canonicalResultJson(value) {
   const normalized = normalizeTaskResult(value);
+  return compactCanonicalJson(normalized);
+}
+
+export function resultValueDigest(value) {
   return `sha256:${createHash("sha256")
-    .update(JSON.stringify(normalized), "utf8")
+    .update(canonicalResultJson(value), "utf8")
     .digest("hex")}`;
+}
+
+function compactCanonicalJson(value) {
+  if (
+    value === null ||
+    typeof value === "boolean" ||
+    typeof value === "number" ||
+    typeof value === "string"
+  ) {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(compactCanonicalJson).join(",")}]`;
+  }
+  return `{${Object.keys(value)
+    .sort(utf8Compare)
+    .map(
+      (key) =>
+        `${JSON.stringify(key)}:${compactCanonicalJson(value[key])}`,
+    )
+    .join(",")}}`;
 }
 
 function validateTaskLocator(value) {
@@ -1148,24 +1174,6 @@ function resultContext(context, input, config, expectedBody) {
       "Dispatch and Lease are not the current selected attempt",
     );
   }
-  const attempt = dispatches.filter(
-    ({ payload }) =>
-      payload.lease.assignmentId === dispatch.lease.assignmentId,
-  ).length;
-  const dispatchAttempts = new Map();
-  for (let index = 0; index < dispatches.length; index += 1) {
-    const candidate = dispatches[index].payload;
-    dispatchAttempts.set(
-      candidate.dispatchId,
-      dispatches
-        .slice(0, index + 1)
-        .filter(
-          ({ payload }) =>
-            payload.lease.assignmentId === candidate.lease.assignmentId,
-        ).length,
-    );
-  }
-
   const results = markedComments(
     context.comments,
     TASK_RESULT_MARKER,
@@ -1179,7 +1187,12 @@ function resultContext(context, input, config, expectedBody) {
         payload.rootIssueId !== context.task.rootIssueId ||
         payload.workflowRunId !== context.task.workflowRunId ||
         payload.taskId !== context.task.taskId ||
-        payload.attempt !== dispatchAttempts.get(payload.dispatchId) ||
+        payload.resultId !==
+          deriveWorkGraphTaskResultId(
+            payload.taskId,
+            payload.dispatchId,
+            payload.leaseId,
+          ) ||
         !dispatches.some(
           ({ payload: candidate }) =>
             candidate.dispatchId === payload.dispatchId &&
@@ -1209,7 +1222,11 @@ function resultContext(context, input, config, expectedBody) {
         "task has a malformed, foreign, duplicate, or conflicting Result",
       );
     }
-    return { dispatch, attempt, existing: matchingResults[0].comment };
+    return {
+      dispatch,
+      existing: matchingResults[0].comment,
+      existingResult: matchingResults[0].payload,
+    };
   }
   if (
     context.issue.state !== "open" ||
@@ -1219,7 +1236,7 @@ function resultContext(context, input, config, expectedBody) {
       "a new Result requires open task and Root Task Issues",
     );
   }
-  return { dispatch, attempt, existing: null };
+  return { dispatch, existing: null, existingResult: null };
 }
 
 function timestamp(value, label) {
@@ -1282,7 +1299,7 @@ async function validateActiveLease(dispatch, claimId, config) {
   }
   exact(
     snapshot,
-    [...Object.keys(expected), "acquiredAt", "expiresAt"],
+    [...Object.keys(expected), "attempt", "acquiredAt", "expiresAt"],
     "Source Lease validation response",
   );
   if (Object.entries(expected).some(([key, value]) => snapshot[key] !== value)) {
@@ -1293,6 +1310,15 @@ async function validateActiveLease(dispatch, claimId, config) {
   timestamp(snapshot.acquiredAt, "Source Lease acquiredAt");
   timestamp(snapshot.expiresAt, "Source Lease expiresAt");
   if (
+    !Number.isSafeInteger(snapshot.attempt) ||
+    snapshot.attempt < 1 ||
+    snapshot.attempt > MAX_ATTEMPT
+  ) {
+    throw new WorkGraphReporterError(
+      `Source Lease attempt must be an integer from 1 through ${MAX_ATTEMPT}`,
+    );
+  }
+  if (
     Date.parse(snapshot.acquiredAt) >= Date.parse(snapshot.expiresAt) ||
     now() >= Date.parse(snapshot.expiresAt)
   ) {
@@ -1300,6 +1326,7 @@ async function validateActiveLease(dispatch, claimId, config) {
       "Source Lease is expired or has an invalid interval",
     );
   }
+  return snapshot.attempt;
 }
 
 function verifiedComment(
@@ -1408,10 +1435,10 @@ function validateLifecycleContextInput(input, extraKeys = []) {
   if (
     !Number.isSafeInteger(input.attempt) ||
     input.attempt < 1 ||
-    input.attempt > 17
+    input.attempt > MAX_ATTEMPT
   ) {
     throw new WorkGraphReporterError(
-      "arguments.attempt must be an integer from 1 through 17",
+      `arguments.attempt must be an integer from 1 through ${MAX_ATTEMPT}`,
     );
   }
   return locator;
@@ -1681,37 +1708,7 @@ function lifecycleArtifacts(context, input, config, requireCurrent = true) {
     );
   }
   const selectedEntry = selectedDispatches[0];
-  const selectedIndex = dispatches.indexOf(selectedEntry);
   const currentDispatch = selectedEntry.payload;
-  const attempt = dispatches
-    .slice(0, selectedIndex + 1)
-    .filter(
-      ({ payload }) =>
-        payload.lease.assignmentId === currentDispatch.lease.assignmentId,
-    ).length;
-  if (attempt > context.policy.maxReworkAttempts + 1) {
-    throw new WorkGraphReporterError(
-      "current attempt exceeds the effective compiled rework policy",
-    );
-  }
-  if (input.attempt !== attempt) {
-    throw new WorkGraphReporterError(
-      "attempt does not match the current same-task assignment attempt",
-    );
-  }
-  const dispatchAttempts = new Map();
-  for (let index = 0; index < dispatches.length; index += 1) {
-    const dispatch = dispatches[index].payload;
-    dispatchAttempts.set(
-      dispatch.dispatchId,
-      dispatches
-        .slice(0, index + 1)
-        .filter(
-          ({ payload }) =>
-            payload.lease.assignmentId === dispatch.lease.assignmentId,
-        ).length,
-    );
-  }
 
   const results = markedComments(
     context.comments,
@@ -1726,7 +1723,12 @@ function lifecycleArtifacts(context, input, config, requireCurrent = true) {
         payload.rootIssueId !== context.task.rootIssueId ||
         payload.workflowRunId !== context.task.workflowRunId ||
         payload.taskId !== context.task.taskId ||
-        payload.attempt !== dispatchAttempts.get(payload.dispatchId) ||
+        payload.resultId !==
+          deriveWorkGraphTaskResultId(
+            payload.taskId,
+            payload.dispatchId,
+            payload.leaseId,
+          ) ||
         !dispatches.some(
           ({ payload: dispatch }) =>
             dispatch.dispatchId === payload.dispatchId &&
@@ -1760,6 +1762,17 @@ function lifecycleArtifacts(context, input, config, requireCurrent = true) {
     );
   }
   const result = currentResults[0];
+  const attempt = result.payload.attempt;
+  if (attempt > context.policy.maxReworkAttempts + 1) {
+    throw new WorkGraphReporterError(
+      "current Result attempt exceeds the effective compiled rework policy",
+    );
+  }
+  if (input.attempt !== attempt) {
+    throw new WorkGraphReporterError(
+      "attempt does not match the authoritative current Result attempt",
+    );
+  }
   const resultDigest = resultValueDigest(result.payload);
 
   const evaluations = markedComments(
@@ -1785,8 +1798,7 @@ function lifecycleArtifacts(context, input, config, requireCurrent = true) {
         payload.taskId !== context.task.taskId ||
         payload.evaluatorId !== context.policy.evaluatorId ||
         !referenced ||
-        payload.attempt !==
-          dispatchAttempts.get(referenced?.payload.dispatchId) ||
+        payload.attempt !== referenced?.payload.attempt ||
         payload.resultDigest !== resultValueDigest(referenced.payload)
       );
     }) ||
@@ -2354,6 +2366,7 @@ async function submitTaskResult(input, github, config) {
       "arguments.outcome must be succeeded or failed",
     );
   }
+  const output = canonicalJsonValue(input.output);
   const initialContext = await loadTaskContext(
     locator,
     input.taskId,
@@ -2367,6 +2380,28 @@ async function submitTaskResult(input, github, config) {
     config,
     null,
   );
+  if (selected.existing) {
+    if (
+      selected.existingResult.outcome !== input.outcome ||
+      !isDeepStrictEqual(selected.existingResult.output, output)
+    ) {
+      throw new WorkGraphReporterError(
+        "task has a conflicting canonical Result",
+      );
+    }
+    return {
+      commentNodeId: selected.existing.node_id,
+      resultId: selected.existingResult.resultId,
+      resultDigest: resultValueDigest(selected.existingResult),
+      reconciled: true,
+    };
+  }
+  const claimId = randomUUID();
+  const attempt = await validateActiveLease(
+    selected.dispatch,
+    claimId,
+    config,
+  );
   const result = {
     resultId: deriveWorkGraphTaskResultId(
       input.taskId,
@@ -2378,12 +2413,11 @@ async function submitTaskResult(input, github, config) {
     taskId: input.taskId,
     dispatchId: input.dispatchId,
     leaseId: input.leaseId,
-    attempt: selected.attempt,
+    attempt,
     outcome: input.outcome,
-    output: canonicalJsonValue(input.output),
+    output,
   };
   const body = formatTaskResult(result);
-  const claimId = randomUUID();
 
   const read = async () => {
     const context = await loadTaskContext(
@@ -2396,15 +2430,6 @@ async function submitTaskResult(input, github, config) {
     return { context, ...resultContext(context, input, config, body) };
   };
 
-  const initial = await read();
-  if (initial.existing) {
-    return {
-      commentNodeId: initial.existing.node_id,
-      resultId: result.resultId,
-      resultDigest: resultValueDigest(result),
-      reconciled: true,
-    };
-  }
   const before = await read();
   if (before.existing) {
     return {
@@ -2414,7 +2439,6 @@ async function submitTaskResult(input, github, config) {
       reconciled: true,
     };
   }
-  await validateActiveLease(before.dispatch, claimId, config);
   const posted = verifiedComment(
     await github.postComment(locator.issueNumber, body),
     body,
@@ -2464,7 +2488,7 @@ const lifecycleContextProperties = {
   dispatchId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
   leaseId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
   resultId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
-  attempt: { type: "integer", minimum: 1, maximum: 17 },
+  attempt: { type: "integer", minimum: 1, maximum: MAX_ATTEMPT },
 };
 
 export const tools = [
