@@ -5,7 +5,7 @@ worker and lifecycle reporting. It exposes exactly five tools:
 
 | Tool | Purpose | GitHub write |
 |---|---|---|
-| `get_root_issue` | Verify a validator child, its Root Task, and the immutable Root Issue snapshot | No |
+| `get_root_issue` | Verify a worker task, its Root Task, and the immutable Root Issue snapshot | No |
 | `submit_task_result` | Verify a task, Dispatch, and active Lease, then create or reconcile its Result | One comment when absent |
 | `get_task_snapshot` | Verify the current Dispatch, Result, direct identities, attempt, and effective compiled lifecycle policy | No |
 | `submit_task_evaluation` | Create or reconcile the current Result's canonical Evaluation | One comment when absent |
@@ -72,13 +72,13 @@ are never sufficient proof.
 ## Root Issue reader
 
 `get_root_issue` accepts exactly `taskLocator` and `taskId`. It requires the
-validator task to be a canonical `WorkGraphTask/v1` created by the configured
-launcher. It follows native GitHub parent links from the validator to the Root
-Task and from the Root Task to the Root Issue.
+worker task to be a canonical `WorkGraphTask/v1` created by the configured
+launcher. It follows native GitHub parent links from the worker to the Root Task
+and from the Root Task to the Root Issue.
 
 The Root Task must:
 
-- carry the same top-level `rootIssueId` and workflow run as the validator;
+- carry the same top-level `rootIssueId` and workflow run as the worker;
 - use task definition `root-v1`;
 - contain only `proofMode` and `rootIssue` in `resolvedInputs`;
 - bind the Root Issue's repository, Issue identity, admission generation, and
@@ -126,8 +126,8 @@ with exactly:
   "taskId": "task-id",
   "leaseId": "lease-id",
   "assignmentId": "assignment-id",
-  "executorId": "issue-validator",
-  "slotId": "issue-validator-slot-1",
+  "executorId": "issue-worker",
+  "slotId": "issue-worker-slot-1",
   "claimId": "per-invocation UUID"
 }
 ```

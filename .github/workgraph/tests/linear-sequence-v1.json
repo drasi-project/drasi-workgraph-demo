@@ -1,0 +1,64 @@
+{
+  "apiVersion": "drasi.io/v1",
+  "kind": "WorkGraphTestCase",
+  "metadata": {
+    "id": "linear-sequence"
+  },
+  "spec": {
+    "workflowDefinitionId": "issue-lifecycle",
+    "rootIssue": {
+      "title": "Linear WorkGraph proof",
+      "body": "Exercise the four-stage issue lifecycle.",
+      "labels": [
+        "workgraph"
+      ]
+    },
+    "steps": {
+      "a": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "step": "a"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "b": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "step": "b"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "c": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "step": "c"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "d": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "step": "d"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      }
+    },
+    "expected": {
+      "topLevelTaskKeys": [
+        "a",
+        "b",
+        "c",
+        "d"
+      ],
+      "terminalOutcome": "completed"
+    }
+  }
+}

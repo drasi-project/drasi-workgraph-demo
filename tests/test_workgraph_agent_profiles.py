@@ -130,29 +130,31 @@ class WorkGraphProfilesTest(unittest.TestCase):
                     self.agents[name], r"workgraph/(?:create|assign|dispatch)_task"
                 )
 
-    def test_workflow_reuses_profiles_and_declares_both_overrides(self):
-        for profile in set(EXPECTED_TOOLS) - {"issue-coordinator"}:
+    def test_linear_workflow_uses_only_default_lifecycle_profiles(self):
+        for profile in (
+            "issue-worker",
+            "result-evaluator",
+            "workflow-coordinator",
+        ):
             self.assertIn(profile, self.workflow)
+        for profile in set(EXPECTED_TOOLS) - {
+            "issue-worker",
+            "result-evaluator",
+            "workflow-coordinator",
+        }:
+            self.assertNotIn(profile, self.workflow)
         self.assertRegex(
             self.workflow,
             r"(?m)^    evaluator: result-evaluator$",
         )
         self.assertRegex(
             self.workflow,
-            r"(?m)^      evaluator: issue-validation-evaluator$",
-        )
-        self.assertRegex(
-            self.workflow,
             r"(?m)^    orchestrator: workflow-coordinator$",
         )
-        self.assertRegex(
-            self.workflow,
-            r"(?m)^      orchestrator: validation-stage-coordinator$",
-        )
         self.assertNotIn("agent:", self.workflow)
-        self.assertEqual(self.workflow.count("worker: issue-worker"), 6)
-        self.assertEqual(self.workflow.count("worker: issue-validator"), 4)
-        self.assertIn("maxReworkAttempts: 3", self.workflow)
+        self.assertEqual(self.workflow.count("worker: issue-worker"), 4)
+        self.assertNotIn("worker: issue-validator", self.workflow)
+        self.assertEqual(self.workflow.count("maxReworkAttempts: 3"), 1)
         self.assertNotRegex(self.workflow, r"(?m)^\s+maxRework:")
 
     def test_contract_surfaces_use_only_clean_v1_terms(self):

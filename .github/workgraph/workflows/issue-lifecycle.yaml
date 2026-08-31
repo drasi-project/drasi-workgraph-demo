@@ -25,65 +25,11 @@ spec:
       next: c
     c:
       type: task
-      operation: validate-issue
-      worker: issue-validator
-      inputs:
-        profile: new-issue-default
-      evaluator: issue-validation-evaluator
-      outcomes:
-        needs-info: d
-        continue: e
-        reject: f
+      operation: inspect-issue
+      worker: issue-worker
+      inputs: {}
+      next: d
     d:
-      type: task
-      operation: request-information
-      worker: issue-info-requester
-      inputs:
-        source: c
-      next: human
-    human:
-      type: wait
-      event: root-issue-commented
-      next: c
-    e:
-      type: task
-      operation: triage-issue
-      worker: issue-worker
-      inputs: {}
-      next: g
-    f:
-      type: task
-      operation: record-rejection
-      worker: issue-worker
-      inputs: {}
-      next: ignored
-    g:
-      type: task
-      operation: coordinate-validation
-      worker: issue-worker
-      inputs: {}
-      orchestrator: validation-stage-coordinator
-      maxReworkAttempts: 2
-      children:
-        join: all
-        tasks:
-          title:
-            operation: validate-title
-            worker: issue-validator
-            inputs:
-              field: title
-          body:
-            operation: validate-body
-            worker: issue-validator
-            inputs:
-              field: body
-          reproduction:
-            operation: validate-reproduction
-            worker: issue-validator
-            inputs:
-              section: reproduction
-      next: h
-    h:
       type: task
       operation: finalize-issue
       worker: issue-worker
@@ -92,6 +38,3 @@ spec:
     completed:
       type: terminal
       outcome: completed
-    ignored:
-      type: terminal
-      outcome: ignored

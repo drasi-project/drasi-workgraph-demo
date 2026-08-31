@@ -26,6 +26,7 @@ import { buildWorkGraphV1Proof } from "../scripts/prepare-workgraph-v1-proof.mjs
 const DEFINITION_PATH = ".github/workgraph/workflows/issue-lifecycle-v1.body";
 const INPUTS_PATH = ".github/workgraph/fixtures/v1/live-proof-inputs.json";
 const AUTHORING_PATH = ".github/workgraph/workflows/issue-lifecycle.yaml";
+const TEST_CASE_PATH = ".github/workgraph/tests/linear-sequence-v1.json";
 const EXPECTED_PATH =
   ".github/workgraph/fixtures/v1/issue-lifecycle.expected.json";
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
@@ -91,8 +92,13 @@ test("the v1 workflow definition remains byte exact", async () => {
   assert.equal(formatCompiledWorkflowDefinition(definition), body);
   assert.equal(definition.version, "v1");
   assert.equal(definition.digest, COMPILED_OUTPUT.definitionDigest);
-  assert.equal(Object.keys(definition.steps).length, 11);
-  assert.equal(taskDefinitions(definition.steps.g.taskDefinition).length, 4);
+  assert.equal(Object.keys(definition.steps).length, 5);
+  assert.deepEqual(
+    Object.values(definition.steps)
+      .filter(({ type }) => type === "task")
+      .map(({ taskDefinition }) => taskDefinition.taskKey),
+    ["a", "b", "c", "d"],
+  );
 });
 
 test("recursive definitions preserve deterministic global task identities", () => {
@@ -236,10 +242,10 @@ test("runtime tasks require top-level Root Issue identity and exact definition p
   );
 });
 
-test("proof inputs pin 35 wg- queries and remain fully inactive", async () => {
+test("proof inputs pin 26 wg- queries and remain fully inactive", async () => {
   const inputs = JSON.parse(await read(INPUTS_PATH));
-  assert.equal(inputs.runtimeContract.queryIds.length, 35);
-  assert.equal(new Set(inputs.runtimeContract.queryIds).size, 35);
+  assert.equal(inputs.runtimeContract.queryIds.length, 26);
+  assert.equal(new Set(inputs.runtimeContract.queryIds).size, 26);
   assert.ok(inputs.runtimeContract.queryIds.every((id) => id.startsWith("wg-")));
   assert.equal(inputs.runtimeContract.stateStorePath, "data/workgraph-v1.redb");
   assert.deepEqual(inputs.activation, {
@@ -276,11 +282,11 @@ test("offline proof derives the Root Task from Root Issue admission", async () =
   });
   assert.equal(
     proof.expectedRootTask.value.taskId,
-    "wgt-89e891aace2b7472ee8ddaaeb6130b229e2175c91052444162e316b49447",
+    "wgt-a417c7051894a093f13e1e06c212d0bd740d608bbc75513b28aa61aad87e",
   );
   assert.equal(
     proof.expectedRootTask.value.workflowRunId,
-    "workgraph-v1:run:sha256:3996958fa103bff842e1424716b18603927af5830bf3064b58e24476e550da0e",
+    "workgraph-v1:run:sha256:1cb0cca12c477296d36277433d7c42f34f918e27a435cd6208c95c74599df6cd",
   );
   assert.equal(
     proof.expectedRootTask.value.resolvedInputs.rootIssue.issueNodeId,
@@ -289,7 +295,38 @@ test("offline proof derives the Root Task from Root Issue admission", async () =
   assert.equal(proof.expectedRootTask.firstLifecycleState, "FORK");
 });
 
-function richWorkflow() {
+function linearWorkflow() {
+  const task = (operation, next) => ({
+    type: "task",
+    operation,
+    worker: "issue-worker",
+    inputs: {},
+    next,
+  });
+  return {
+    apiVersion: "workgraph.drasi.io/v1",
+    kind: "IssueWorkflow",
+    metadata: { id: "issue-lifecycle" },
+    spec: {
+      trigger: "workgraph",
+      initial: "a",
+      defaults: {
+        evaluator: "result-evaluator",
+        orchestrator: "workflow-coordinator",
+        maxReworkAttempts: 3,
+      },
+      steps: {
+        a: task("intake-issue", "b"),
+        b: task("normalize-issue", "c"),
+        c: task("inspect-issue", "d"),
+        d: task("finalize-issue", "completed"),
+        completed: { type: "terminal", outcome: "completed" },
+      },
+    },
+  };
+}
+
+function complexWorkflow() {
   const task = (operation, worker, transition, inputs = {}) => {
     const value = { type: "task", operation, worker, inputs };
     if (typeof transition === "string") value.next = transition;
@@ -373,16 +410,19 @@ function richWorkflow() {
   };
 }
 
-test("rich v1 authoring preserves the branch, wait loop, recursion, and overrides", async () => {
-  const [yaml, expected] = await Promise.all([
+test("linear v1 authoring and test case match the compiled sequence", async () => {
+  const [yaml, expected, testCase] = await Promise.all([
     read(AUTHORING_PATH),
     read(EXPECTED_PATH).then(JSON.parse),
+    read(TEST_CASE_PATH).then(JSON.parse),
   ]);
   assert.match(yaml, /^apiVersion: workgraph\.drasi\.io\/v1$/m);
   assert.match(yaml, /^  trigger: workgraph$/m);
   assert.match(yaml, /^  initial: a$/m);
   assert.match(yaml, /^    maxReworkAttempts: 3$/m);
   assert.doesNotMatch(yaml, /\bagent:|\bmaxRework:|waitFor:|^\s+[A-H]:/m);
+  assert.doesNotMatch(yaml, /^\s+(?:children|outcomes):/m);
+  assert.doesNotMatch(yaml, /^\s+type: wait$/m);
   assert.doesNotMatch(yaml, /status:\s*new/i);
   assert.deepEqual(
     normalizeCompiledWorkflowDefinition(expected.workgraphDefinition),
@@ -402,67 +442,129 @@ test("rich v1 authoring preserves the branch, wait loop, recursion, and override
     expected.workgraphDefinition.defaults.maxReworkAttempts,
     DEFAULT_MAX_REWORK_ATTEMPTS,
   );
-  assert.deepEqual(
-    expected.workgraphDefinition.steps.g.taskDefinition.children.map(
-      ({ taskKey }) => taskKey,
-    ),
-    ["body", "reproduction", "title"],
+  const definition = expected.workgraphDefinition;
+  const taskEntries = Object.entries(definition.steps).filter(
+    ([, step]) => step.type === "task",
   );
-  const g = expected.workgraphDefinition.steps.g;
-  const parentPolicy =
-    g.executionPolicies[g.taskDefinition.taskDefinitionId];
-  assert.equal(parentPolicy.orchestratorId, "validation-stage-coordinator");
-  assert.equal(parentPolicy.maxReworkAttempts, 2);
-  for (const child of g.taskDefinition.children) {
-    const policy = g.executionPolicies[child.taskDefinitionId];
-    assert.equal(policy.evaluatorId, "result-evaluator");
-    assert.equal(policy.orchestratorId, "workflow-coordinator");
-    assert.equal(policy.maxReworkAttempts, 3);
+  const taskKeys = taskEntries.map(([stepId]) => stepId);
+  assert.deepEqual(taskKeys, ["a", "b", "c", "d"]);
+  for (const [stepId, step] of taskEntries) {
+    assert.equal(step.taskDefinition.taskKey, stepId);
+    assert.deepEqual(step.taskDefinition.children, []);
+    assert.deepEqual(step.taskDefinition.routing.permittedExecutors, [
+      "issue-worker",
+    ]);
+    assert.equal(step.transition.type, "next");
+    assert.deepEqual(Object.values(step.executionPolicies), [
+      {
+        workerId: "issue-worker",
+        evaluatorId: "result-evaluator",
+        orchestratorId: "workflow-coordinator",
+        maxReworkAttempts: 3,
+      },
+    ]);
   }
+  assert.equal(
+    Object.values(definition.steps).some(({ type }) => type === "wait"),
+    false,
+  );
   assert.deepEqual(
-    Object.values(expected.workgraphDefinition.steps)
+    Object.values(definition.steps)
       .filter(({ type }) => type === "terminal")
       .map(({ outcome }) => outcome),
-    ["completed", "ignored"],
+    ["completed"],
   );
-  assert.deepEqual(expected.workgraphDefinition.steps.human, {
-    type: "wait",
-    event: "root-issue-commented",
-    nextStepId: "c",
-  });
+  const generatedQueryIds = expected.queryBundle.queries.map(({ id }) => id);
   assert.deepEqual(
-    expected.workgraphDefinition.steps.c.transition,
-    {
-      type: "outcomes",
-      targets: { continue: "e", "needs-info": "d", reject: "f" },
-    },
+    generatedQueryIds,
+    [
+      "wg-entry-9fa7c23308acc6f2f663",
+      "wg-next-36052ed88c92f5b5cd29",
+      "wg-next-7b7e3f4ef615e40fac55",
+      "wg-next-81d9671b0d5b83db2a14",
+      "wg-next-d9777655870aa7254c3f",
+      "wg-terminal-8f328a93bc2ba9c6d49d",
+    ],
+  );
+  assert.equal(
+    generatedQueryIds.some((id) =>
+      /(?:fork|join|outcome|resume|wait)/.test(id),
+    ),
+    false,
   );
 
-  const wrongWait = clone(expected.workgraphDefinition);
-  wrongWait.steps.human.nextStepId = "missing";
-  assert.throws(
-    () => normalizeCompiledWorkflowDefinition(wrongWait),
-    /reference a compiled step/,
+  assert.deepEqual(Object.keys(testCase), [
+    "apiVersion",
+    "kind",
+    "metadata",
+    "spec",
+  ]);
+  assert.equal(testCase.apiVersion, "drasi.io/v1");
+  assert.equal(testCase.kind, "WorkGraphTestCase");
+  assert.deepEqual(testCase.metadata, { id: "linear-sequence" });
+  assert.deepEqual(Object.keys(testCase.spec), [
+    "workflowDefinitionId",
+    "rootIssue",
+    "steps",
+    "expected",
+  ]);
+  assert.equal(
+    testCase.spec.workflowDefinitionId,
+    definition.workflowDefinitionId,
+  );
+  assert.deepEqual(Object.keys(testCase.spec.rootIssue), [
+    "title",
+    "body",
+    "labels",
+  ]);
+  assert.equal(typeof testCase.spec.rootIssue.title, "string");
+  assert.equal(typeof testCase.spec.rootIssue.body, "string");
+  assert.deepEqual(testCase.spec.rootIssue.labels, ["workgraph"]);
+  assert.deepEqual(Object.keys(testCase.spec.steps), taskKeys);
+  for (const stepId of taskKeys) {
+    const step = testCase.spec.steps[stepId];
+    assert.deepEqual(Object.keys(step), ["result", "evaluationVerdict"]);
+    assert.deepEqual(Object.keys(step.result), ["outcome", "output"]);
+    assert.equal(step.result.outcome, "succeeded");
+    assert.deepEqual(step.result.output, { step: stepId });
+    assert.equal(step.evaluationVerdict, "accepted");
+  }
+  assert.deepEqual(Object.keys(testCase.spec.expected), [
+    "topLevelTaskKeys",
+    "terminalOutcome",
+  ]);
+  assert.deepEqual(testCase.spec.expected.topLevelTaskKeys, taskKeys);
+  const traversed = [];
+  let stepId = definition.initialStepId;
+  while (definition.steps[stepId].type === "task") {
+    assert.equal(traversed.includes(stepId), false);
+    traversed.push(stepId);
+    stepId = definition.steps[stepId].transition.targetStepId;
+  }
+  assert.deepEqual(traversed, taskKeys);
+  assert.equal(definition.steps[stepId].type, "terminal");
+  assert.equal(
+    definition.steps[stepId].outcome,
+    testCase.spec.expected.terminalOutcome,
   );
 
-  const wrongTerminal = clone(expected.workgraphDefinition);
+  const wrongTerminal = clone(definition);
   wrongTerminal.steps.completed.outcome = "done";
   assert.throws(
     () => normalizeCompiledWorkflowDefinition(wrongTerminal),
     /invalid terminal outcome/,
   );
 
-  const missingChildPolicy = clone(expected.workgraphDefinition);
-  const childId =
-    missingChildPolicy.steps.g.taskDefinition.children[0].taskDefinitionId;
-  delete missingChildPolicy.steps.g.executionPolicies[childId];
+  const missingPolicy = clone(definition);
+  const cId = missingPolicy.steps.c.taskDefinition.taskDefinitionId;
+  delete missingPolicy.steps.c.executionPolicies[cId];
   assert.throws(
-    () => normalizeCompiledWorkflowDefinition(missingChildPolicy),
-    /exactly match all recursive taskDefinitionIds/,
+    () => normalizeCompiledWorkflowDefinition(missingPolicy),
+    /non-empty map|exactly match all recursive taskDefinitionIds/,
   );
 
-  const extraPolicy = clone(expected.workgraphDefinition);
-  extraPolicy.steps.g.executionPolicies["extra-policy"] = {
+  const extraPolicy = clone(definition);
+  extraPolicy.steps.c.executionPolicies["extra-policy"] = {
     workerId: "issue-worker",
     evaluatorId: "result-evaluator",
     orchestratorId: "workflow-coordinator",
@@ -473,9 +575,8 @@ test("rich v1 authoring preserves the branch, wait loop, recursion, and override
     /exactly match all recursive taskDefinitionIds/,
   );
 
-  const wrongWorker = clone(expected.workgraphDefinition);
-  const gId = wrongWorker.steps.g.taskDefinition.taskDefinitionId;
-  wrongWorker.steps.g.executionPolicies[gId].workerId = "other-worker";
+  const wrongWorker = clone(definition);
+  wrongWorker.steps.c.executionPolicies[cId].workerId = "other-worker";
   assert.throws(
     () => normalizeCompiledWorkflowDefinition(wrongWorker),
     /must match the task routing executor/,
@@ -483,7 +584,7 @@ test("rich v1 authoring preserves the branch, wait loop, recursion, and override
 });
 
 test("high-level IssueWorkflow shape is strict and resolves all graph references", () => {
-  const workflow = richWorkflow();
+  const workflow = linearWorkflow();
   assert.deepEqual(normalizeIssueWorkflow(workflow), COMPILED_OUTPUT.definition);
 
   const wrongTrigger = clone(workflow);
@@ -491,8 +592,7 @@ test("high-level IssueWorkflow shape is strict and resolves all graph references
   assert.throws(() => normalizeIssueWorkflow(wrongTrigger), /must be workgraph/);
 
   const inlineWait = clone(workflow);
-  delete inlineWait.spec.steps.d.outcomes;
-  inlineWait.spec.steps.d.next = {
+  inlineWait.spec.steps.b.next = {
     event: "root-issue-commented",
     next: "c",
   };
@@ -502,15 +602,16 @@ test("high-level IssueWorkflow shape is strict and resolves all graph references
   );
 
   const missingTarget = clone(workflow);
-  missingTarget.spec.steps.e.next = "missing";
+  missingTarget.spec.steps.c.next = "missing";
   assert.throws(
     () => normalizeIssueWorkflow(missingTarget),
     /declared workflow step/,
   );
 
   const outcomeList = clone(workflow);
+  delete outcomeList.spec.steps.c.next;
   outcomeList.spec.steps.c.outcomes = [
-    { outcome: "continue", target: "e" },
+    { outcome: "continue", target: "d" },
   ];
   assert.throws(
     () => normalizeIssueWorkflow(outcomeList),
@@ -518,14 +619,14 @@ test("high-level IssueWorkflow shape is strict and resolves all graph references
   );
 
   const bothTransitions = clone(workflow);
-  bothTransitions.spec.steps.c.next = "e";
+  bothTransitions.spec.steps.c.outcomes = { continue: "d" };
   assert.throws(
     () => normalizeIssueWorkflow(bothTransitions),
     /exactly one of next or outcomes/,
   );
 
   const unsafeRework = clone(workflow);
-  unsafeRework.spec.steps.g.maxReworkAttempts = Number.MAX_SAFE_INTEGER + 1;
+  unsafeRework.spec.steps.c.maxReworkAttempts = Number.MAX_SAFE_INTEGER + 1;
   assert.throws(
     () => normalizeIssueWorkflow(unsafeRework),
     /safe integer/,
@@ -533,16 +634,13 @@ test("high-level IssueWorkflow shape is strict and resolves all graph references
 
   const omittedInputs = clone(workflow);
   delete omittedInputs.spec.steps.a.inputs;
-  delete omittedInputs.spec.steps.g.children.tasks.title.inputs;
   const normalized = normalizeIssueWorkflow(omittedInputs);
   assert.deepEqual(normalized.spec.steps.a.inputs, {});
-  assert.deepEqual(
-    normalized.spec.steps.g.children.tasks.title.inputs,
-    {},
-  );
 
   for (const type of ["wait", "terminal"]) {
-    const invalidInitial = clone(workflow);
+    const invalidInitial = clone(
+      type === "wait" ? complexWorkflow() : workflow,
+    );
     invalidInitial.spec.initial = type === "wait" ? "human" : "completed";
     assert.throws(
       () => normalizeIssueWorkflow(invalidInitial),
@@ -559,7 +657,7 @@ test("high-level IssueWorkflow shape is strict and resolves all graph references
 });
 
 test("recursive child namespaces and overrides are independent at every depth", () => {
-  const workflow = richWorkflow();
+  const workflow = complexWorkflow();
   workflow.spec.steps.g.children.tasks.title = {
     ...workflow.spec.steps.g.children.tasks.title,
     evaluator: "issue-validation-evaluator",
@@ -587,7 +685,7 @@ test("recursive child namespaces and overrides are independent at every depth", 
 });
 
 test("graph validation rejects unreachable work and cycles without waits", () => {
-  const unreachable = richWorkflow();
+  const unreachable = complexWorkflow();
   unreachable.spec.steps.orphan = {
     type: "task",
     operation: "orphan",
@@ -600,7 +698,7 @@ test("graph validation rejects unreachable work and cycles without waits", () =>
     /unreachable steps: orphan/,
   );
 
-  const noTerminal = richWorkflow();
+  const noTerminal = complexWorkflow();
   noTerminal.spec.steps.c.outcomes = { continue: "e" };
   delete noTerminal.spec.steps.h.outcomes;
   noTerminal.spec.steps.h.next = "e";
@@ -609,14 +707,14 @@ test("graph validation rejects unreachable work and cycles without waits", () =>
     /cycle without a wait|reach at least one terminal/,
   );
 
-  const unconditionalCycle = richWorkflow();
+  const unconditionalCycle = complexWorkflow();
   unconditionalCycle.spec.steps.e.next = "a";
   assert.throws(
     () => normalizeIssueWorkflow(unconditionalCycle),
     /cycle without a wait/,
   );
 
-  assert.doesNotThrow(() => normalizeIssueWorkflow(richWorkflow()));
+  assert.doesNotThrow(() => normalizeIssueWorkflow(complexWorkflow()));
 });
 
 function evaluation(verdict = "accepted") {
@@ -627,7 +725,7 @@ function evaluation(verdict = "accepted") {
     taskId: "task-c",
     resultId: "result-1",
     resultDigest: `sha256:${"a".repeat(64)}`,
-    evaluatorId: "issue-validation-evaluator",
+    evaluatorId: "result-evaluator",
     attempt: 1,
     verdict,
     summary: "The Result satisfies the evaluation contract.",
@@ -649,12 +747,11 @@ function route(action, verdict = "accepted") {
     attempt: 1,
   };
   if (action === "advance") {
-    value.transitionKind = "outcome";
-    value.outcome = "continue";
-    value.targetStepId = "e";
+    value.transitionKind = "next";
+    value.targetStepId = "d";
     value.targetStepKind = "task";
     value.targetTaskDefinitionId =
-      COMPILED_FIXTURE.steps.e.taskDefinition.taskDefinitionId;
+      COMPILED_FIXTURE.steps.d.taskDefinition.taskDefinitionId;
   }
   return value;
 }
@@ -769,11 +866,9 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
   );
   const terminalRoute = {
     ...route("advance"),
-    transitionKind: "next",
     targetStepId: "completed",
     targetStepKind: "terminal",
   };
-  delete terminalRoute.outcome;
   delete terminalRoute.targetTaskDefinitionId;
   assert.deepEqual(
     parseTaskRoute(formatTaskRoute(terminalRoute)),
@@ -797,36 +892,16 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
     validateTaskRouteAgainstDefinition(
       terminalRoute,
       definition,
-      sourceContext("h"),
-    ),
-    terminalRoute,
-  );
-  const waitRoute = {
-    ...route("advance"),
-    transitionKind: "next",
-    targetStepId: "human",
-    targetStepKind: "wait",
-  };
-  delete waitRoute.outcome;
-  delete waitRoute.targetTaskDefinitionId;
-  assert.deepEqual(
-    validateTaskRouteAgainstDefinition(
-      waitRoute,
-      definition,
       sourceContext("d"),
     ),
-    waitRoute,
+    terminalRoute,
   );
   assert.throws(
     () => {
       const invalid = {
-        ...route("advance"),
-        transitionKind: "next",
-        targetStepId: "human",
-        targetStepKind: "wait",
-        targetTaskDefinitionId: "human",
+        ...terminalRoute,
+        targetTaskDefinitionId: "completed",
       };
-      delete invalid.outcome;
       return validateTaskRouteAgainstDefinition(
         invalid,
         definition,
@@ -856,47 +931,30 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
       ),
     /source task's compiled transition/,
   );
-  const gRework = {
+  const overLimit = {
     ...route("rework", "rejected"),
-    orchestratorId: "validation-stage-coordinator",
-    attempt: 3,
+    attempt: 4,
   };
   assert.throws(
     () =>
       validateTaskRouteAgainstDefinition(
-        gRework,
+        overLimit,
         definition,
-        sourceContext("g"),
+        sourceContext("c"),
       ),
     /exceeds the source task policy/,
   );
   assert.throws(
     () =>
       validateTaskRouteAgainstDefinition(
-        route("ignore", "accepted"),
+        {
+          ...route("ignore", "accepted"),
+          orchestratorId: "other-coordinator",
+        },
         definition,
-        sourceContext("g"),
+        sourceContext("c"),
       ),
     /orchestratorId must match the source task policy/,
-  );
-  const childId =
-    definition.steps.g.taskDefinition.children[0].taskDefinitionId;
-  assert.deepEqual(
-    validateTaskRouteAgainstDefinition(
-      route("complete"),
-      definition,
-      { sourceStepId: "g", taskDefinitionId: childId },
-    ),
-    route("complete"),
-  );
-  assert.throws(
-    () =>
-      validateTaskRouteAgainstDefinition(
-        route("advance"),
-        definition,
-        { sourceStepId: "g", taskDefinitionId: childId },
-      ),
-    /recursive child task routes cannot advance/,
   );
   assert.throws(
     () => formatTaskRoute({ ...route("advance"), attempt: 18 }),
@@ -906,7 +964,7 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
   assert.equal(formatTaskRoute(reversed), formatTaskRoute(route("advance")));
 
   const first = {
-    taskId: "task-g-title",
+    taskId: "task-c",
     assignmentId: "assignment-1",
     attempt: 1,
   };

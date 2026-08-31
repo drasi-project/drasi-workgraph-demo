@@ -537,7 +537,7 @@ function lifecycleFixture({
     leaseId: dispatch.lease.leaseId,
     attempt: resultAttempt,
     outcome: "succeeded",
-    output: { outcome: "continue", summary: "done" },
+    output: { summary: "done" },
   };
   const resultBody = formatTaskResult(result);
   const evaluation = verdict
@@ -1566,23 +1566,6 @@ test("existing lifecycle artifacts reconcile across closure races", async () => 
     },
   );
   await withFakeLifecycle(
-    {
-      stepId: "g",
-      childKey: "title",
-      verdict: "accepted",
-      taskClosed: true,
-      parentTaskClosed: true,
-    },
-    async ({ data, writes }) => {
-      const reconciled = await callTool(
-        "submit_task_evaluation",
-        evaluationInput(data, "accepted"),
-      );
-      assert.equal(reconciled.reconciled, true);
-      assert.equal(writes.length, 0);
-    },
-  );
-  await withFakeLifecycle(
     { verdict: "accepted", taskClosed: true, rootTaskClosed: true },
     async ({ data, writes }) => {
       const reconciled = await callTool(
@@ -1625,16 +1608,16 @@ test("lifecycle reads enforce full Root Issue admission integrity", async () => 
 
 test("later top-level tasks are direct Root Issue children", async () => {
   await withFakeLifecycle(
-    { stepId: "h", rootTaskClosed: true },
+    { stepId: "d", rootTaskClosed: true },
     async ({ data, writes }) => {
       const snapshot = await callTool("get_task_snapshot", data.input);
-      assert.equal(snapshot.sourceStepId, "h");
+      assert.equal(snapshot.sourceStepId, "d");
       assert.equal(snapshot.taskId, data.task.taskId);
       assert.equal(writes.length, 0);
     },
   );
   await withFakeLifecycle(
-    { stepId: "h", topLevelParentIsInitial: true },
+    { stepId: "d", topLevelParentIsInitial: true },
     async ({ data, writes }) => {
       await assert.rejects(
         callTool("get_task_snapshot", data.input),
@@ -1694,7 +1677,7 @@ test("Evaluation fails closed on conflicting duplicates and direct identity drif
     assert.equal(writes.length, 0);
   });
   await withFakeLifecycle(
-    { evaluatorId: "result-evaluator" },
+    { evaluatorId: "issue-validation-evaluator" },
     async ({ data, writes }) => {
       await assert.rejects(
         callTool("get_task_snapshot", data.input),
@@ -1705,7 +1688,7 @@ test("Evaluation fails closed on conflicting duplicates and direct identity drif
   );
 });
 
-test("Route advances through next and outcome edges to task, wait, and terminal", async () => {
+test("Route advances through linear next edges to task and terminal", async () => {
   await withFakeLifecycle(
     { stepId: "b", role: "orchestrator", verdict: "accepted" },
     async ({ data, writes }) => {
@@ -1743,24 +1726,21 @@ test("Route advances through next and outcome edges to task, wait, and terminal"
       assert.equal(writes.length, 1);
     },
   );
-  for (const [stepId, choiceIndex, expectedKind] of [
-    ["c", 0, "task"],
-    ["d", 0, "wait"],
-    ["h", 0, "terminal"],
+  for (const [stepId, expectedKind] of [
+    ["c", "task"],
+    ["d", "terminal"],
   ]) {
     await withFakeLifecycle(
       { stepId, role: "orchestrator", verdict: "accepted" },
       async ({ data, writes }) => {
         const snapshot = await callTool("get_task_snapshot", data.input);
-        if (stepId === "c") {
-          assert.deepEqual(snapshot.authorizedActions, [
-            "advance",
-            "error",
-            "ignore",
-          ]);
-          assert.equal(snapshot.authorizedTransitions[0].outcome, "continue");
-        }
-        const choice = snapshot.authorizedTransitions[choiceIndex];
+        assert.deepEqual(
+          snapshot.authorizedActions,
+          expectedKind === "terminal"
+            ? ["advance", "complete", "error", "ignore"]
+            : ["advance", "error", "ignore"],
+        );
+        const choice = snapshot.authorizedTransitions[0];
         await callTool("submit_task_route", {
           ...data.input,
           evaluationId: data.evaluation.evaluationId,
@@ -1770,7 +1750,7 @@ test("Route advances through next and outcome edges to task, wait, and terminal"
         });
         const payload = parseTaskRoute(writes[0].body);
         assert.equal(payload.targetStepKind, expectedKind);
-        assert.equal("outcome" in payload, stepId === "c");
+        assert.equal("outcome" in payload, false);
         assert.equal(
           "targetTaskDefinitionId" in payload,
           expectedKind === "task",
@@ -1780,63 +1760,9 @@ test("Route advances through next and outcome edges to task, wait, and terminal"
   }
 });
 
-test("recursive child policy permits completion but no workflow advance", async () => {
-  await withFakeLifecycle(
-    {
-      stepId: "g",
-      childKey: "title",
-      role: "orchestrator",
-      verdict: "accepted",
-    },
-    async ({ data, writes }) => {
-      const snapshot = await callTool("get_task_snapshot", data.input);
-      assert.equal(snapshot.orchestratorId, "workflow-coordinator");
-      assert.deepEqual(snapshot.authorizedActions, [
-        "complete",
-        "error",
-        "ignore",
-      ]);
-      assert.deepEqual(snapshot.authorizedTransitions, []);
-      await callTool("submit_task_route", {
-        ...data.input,
-        evaluationId: data.evaluation.evaluationId,
-        routeId: "route-child-complete",
-        action: "complete",
-      });
-      assert.equal(parseTaskRoute(writes[0].body).action, "complete");
-    },
-  );
-  await withFakeLifecycle(
-    {
-      stepId: "g",
-      childKey: "body",
-      role: "orchestrator",
-      verdict: "accepted",
-    },
-    async ({ data, writes }) => {
-      await assert.rejects(
-        callTool("submit_task_route", {
-          ...data.input,
-          evaluationId: data.evaluation.evaluationId,
-          routeId: "route-child-advance",
-          action: "advance",
-          transitionKind: "next",
-          targetStepId: "h",
-          targetStepKind: "task",
-          targetTaskDefinitionId:
-            COMPILED.steps.h.taskDefinition.taskDefinitionId,
-        }),
-        /recursive child task routes cannot advance/,
-      );
-      assert.equal(writes.length, 0);
-    },
-  );
-});
-
-test("existing Routes are revalidated against attempt and recursive policy", async () => {
+test("existing Routes are revalidated against the compiled linear policy", async () => {
   const seed = lifecycleFixture({
-    stepId: "g",
-    childKey: "title",
+    stepId: "c",
     verdict: "accepted",
   });
   const invalidRoute = {
@@ -1850,15 +1776,14 @@ test("existing Routes are revalidated against attempt and recursive policy", asy
     orchestratorId: seed.policy.orchestratorId,
     action: "advance",
     transitionKind: "next",
-    targetStepId: "h",
+    targetStepId: "b",
     targetStepKind: "task",
-    targetTaskDefinitionId: COMPILED.steps.h.taskDefinition.taskDefinitionId,
+    targetTaskDefinitionId: COMPILED.steps.b.taskDefinition.taskDefinitionId,
     attempt: 1,
   };
   await withFakeLifecycle(
     {
-      stepId: "g",
-      childKey: "title",
+      stepId: "c",
       role: "orchestrator",
       verdict: "accepted",
       route: invalidRoute,
@@ -1912,7 +1837,7 @@ test("Route rejects wrong compiled mapping and wrong orchestrator", async () => 
           routeId: "route-wrong",
           action: "advance",
           ...snapshot.authorizedTransitions[0],
-          targetStepId: "h",
+          targetStepId: "b",
         }),
         /compiled transition|bounded compiled choices|targetTaskDefinitionId/,
       );
@@ -1921,10 +1846,10 @@ test("Route rejects wrong compiled mapping and wrong orchestrator", async () => 
   );
   await withFakeLifecycle(
     {
-      stepId: "g",
+      stepId: "c",
       role: "orchestrator",
       verdict: "accepted",
-      orchestratorId: "workflow-coordinator",
+      orchestratorId: "validation-stage-coordinator",
     },
     async ({ data, writes }) => {
       await assert.rejects(
@@ -1939,8 +1864,8 @@ test("Route rejects wrong compiled mapping and wrong orchestrator", async () => 
 test("Rejected Route reworks the same task and assignment within the limit", async () => {
   await withFakeLifecycle(
     {
-      stepId: "g",
-      attempt: 2,
+      stepId: "c",
+      attempt: 3,
       role: "orchestrator",
       verdict: "rejected",
       dispatchAfterReworkPost: true,
@@ -1957,10 +1882,10 @@ test("Rejected Route reworks the same task and assignment within the limit", asy
       assert.deepEqual(routed.rework, {
         taskId: data.task.taskId,
         assignmentId: data.dispatch.lease.assignmentId,
-        attempt: 3,
+        attempt: 4,
         feedback: data.evaluation.feedback,
       });
-      assert.equal(parseTaskRoute(writes[0].body).attempt, 2);
+      assert.equal(parseTaskRoute(writes[0].body).attempt, 3);
       const retried = await callTool("submit_task_route", {
         ...data.input,
         evaluationId: data.evaluation.evaluationId,
@@ -1972,7 +1897,7 @@ test("Rejected Route reworks the same task and assignment within the limit", asy
     },
   );
   await withFakeLifecycle(
-    { stepId: "g", attempt: 3, role: "orchestrator", verdict: "rejected" },
+    { stepId: "c", attempt: 4, role: "orchestrator", verdict: "rejected" },
     async ({ data, writes }) => {
       const snapshot = await callTool("get_task_snapshot", data.input);
       assert.deepEqual(snapshot.authorizedActions, ["error", "ignore"]);

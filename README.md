@@ -21,20 +21,17 @@ Every task carries top-level `rootIssueId`. The hierarchy is:
 ```text
 Root Issue
 ├── initial Root Task
-├── later top-level task
-└── recursive stage task
-    └── declared recursive child
+└── later top-level tasks
 ```
 
-Rich generic authoring lives in
+The staged linear authoring source lives in
 [`issue-lifecycle.yaml`](.github/workgraph/workflows/issue-lifecycle.yaml).
-It defines intake, normalization, accepted business-outcome branching, a
-standalone Root Issue comment wait loop, triage, rejection, recursive
-three-child validation, and finalization. Lowercase step IDs, worker inputs,
-defaults, and task/stage overrides follow the compiler's v1 YAML schema.
+It defines four `issue-worker` tasks: intake, normalization, inspection, and
+finalization. Each task follows one `next` edge to the sole `completed`
+terminal; there are no branches, waits, or recursive children.
 
 Dogfooding's Rust `workgraph-compile` turns that YAML into the canonical
-`WorkGraphWorkflowDefinition/v1` body and a deterministic 15-query workflow
+`WorkGraphWorkflowDefinition/v1` body and a deterministic 6-query workflow
 bundle. The committed
 [`issue-lifecycle-v1.body`](.github/workgraph/workflows/issue-lifecycle-v1.body)
 is that canonical body, and
@@ -46,13 +43,11 @@ Evaluator and orchestrator profiles are lifecycle roles. Through the narrow
 reporter they read a verified current task snapshot and write one canonical
 Evaluate or Route comment on that existing task. The snapshot exposes only the
 effective compiled policy and bounded verdict, action, and transition choices.
-These roles cannot create or close tasks or mutate the Root Issue. Existing
-proof worker profiles remain intact until generated runtime replacement is
-atomic. Lifecycle artifacts use one-based attempts and deterministic claim
-identities so concurrent retries in one reporter process reconcile one
-immutable comment.
+These roles cannot create or close tasks or mutate the Root Issue. The shared `issue-worker` profile handles all four stages. Lifecycle artifacts
+use one-based attempts and deterministic claim identities so concurrent retries
+in one reporter process reconcile one immutable comment.
 
-The offline proof fixture pins all 35 `wg-*` Drasi queries and derives the Root
+The offline proof fixture pins all 26 `wg-*` Drasi queries and derives the Root
 Task from a Root Issue admission:
 
 ```bash

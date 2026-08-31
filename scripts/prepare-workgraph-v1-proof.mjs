@@ -26,7 +26,7 @@ const COMPILED_PATH = resolve(
   WORKGRAPH_ROOT,
   "fixtures/v1/issue-lifecycle.expected.json",
 );
-const QUERY_COUNT = 35;
+const QUERY_COUNT = 26;
 
 function exact(value, keys, label) {
   if (
@@ -102,7 +102,7 @@ export async function buildWorkGraphV1Proof() {
     new Set(queryIds).size !== QUERY_COUNT ||
     queryIds.some((id) => typeof id !== "string" || !id.startsWith("wg-"))
   ) {
-    throw new Error("proof must pin exactly 35 unique wg- query IDs");
+    throw new Error("proof must pin exactly 26 unique wg- query IDs");
   }
   if (
     inputs.runtimeContract.sourceId !== "github-workgraph-v1" ||
