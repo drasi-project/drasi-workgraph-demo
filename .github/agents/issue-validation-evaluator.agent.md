@@ -30,10 +30,11 @@ mcp-servers:
 # Issue validation evaluator
 
 This is the evaluator override for step C. Use only the direct identities and
-attempt in the trusted execution prompt. Read `get_task_snapshot` and use its
-exact Result and bounded `authorizedVerdicts`. Write
-`WorkGraphTaskEvaluate/v1` on the existing task with the returned one-based
-attempt. A well-formed Result is
+attempt in the trusted execution prompt. You must call `get_task_snapshot`,
+copy its `evaluationId` exactly, and use its exact Result and bounded
+`authorizedVerdicts`. Then call `submit_task_evaluation` and do not finish
+until the tool succeeds. Write `WorkGraphTaskEvaluate/v1` on the existing task
+with the returned one-based attempt. A well-formed Result is
 `accepted` even when its business outcome is `needs-info` or `reject`;
 rejection is reserved for unusable work and requires actionable feedback.
 Accepted feedback is empty. The business outcomes are exactly `needs-info`,

@@ -2132,6 +2132,11 @@ function lifecycleSnapshot(context, artifacts, config) {
   if (config.role === "evaluator") {
     return {
       ...common,
+      evaluationId: deriveWorkGraphTaskEvaluationId(
+        context.task.taskId,
+        artifacts.result.payload.resultId,
+        artifacts.resultDigest,
+      ),
       evaluatorId: context.policy.evaluatorId,
       authorizedVerdicts: ["accepted", "rejected"],
       existingEvaluation: artifacts.currentEvaluation?.payload ?? null,
@@ -2152,6 +2157,10 @@ function lifecycleSnapshot(context, artifacts, config) {
   return {
     ...common,
     evaluation: artifacts.currentEvaluation.payload,
+    routeId: deriveWorkGraphTaskRouteId(
+      context.task.taskId,
+      artifacts.currentEvaluation.payload.evaluationId,
+    ),
     orchestratorId: context.policy.orchestratorId,
     authorizedActions: plan.actions,
     authorizedTransitions: plan.transitions,
@@ -2184,6 +2193,30 @@ export function deriveWorkGraphArtifactClaimId(
     artifactKind,
     taskId,
     subjectId,
+  ])}`;
+}
+
+export function deriveWorkGraphTaskEvaluationId(
+  taskId,
+  resultId,
+  resultDigest,
+) {
+  opaque(taskId, "evaluation taskId");
+  opaque(resultId, "evaluation resultId");
+  digest(resultDigest, "evaluation resultDigest");
+  return `workgraph-v1:evaluation-artifact:sha256:${framedSha256([
+    taskId,
+    resultId,
+    resultDigest,
+  ])}`;
+}
+
+export function deriveWorkGraphTaskRouteId(taskId, evaluationId) {
+  opaque(taskId, "route taskId");
+  opaque(evaluationId, "route evaluationId");
+  return `workgraph-v1:route-artifact:sha256:${framedSha256([
+    taskId,
+    evaluationId,
   ])}`;
 }
 
@@ -2661,7 +2694,7 @@ export const tools = [
   {
     name: "submit_task_evaluation",
     description:
-      "Create or reconcile one canonical WorkGraphTaskEvaluate/v1 for the exact current Result.",
+      "Create or reconcile one canonical WorkGraphTaskEvaluate/v1 for the exact current Result using the evaluationId returned by get_task_snapshot.",
     inputSchema: schema({
       ...lifecycleContextProperties,
       evaluationId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
@@ -2673,7 +2706,7 @@ export const tools = [
   {
     name: "submit_task_route",
     description:
-      "Create or reconcile one canonical WorkGraphTaskRoute/v1 from the current Evaluation and a bounded compiled choice.",
+      "Create or reconcile one canonical WorkGraphTaskRoute/v1 from the current Evaluation and a bounded compiled choice using the routeId returned by get_task_snapshot.",
     inputSchema: {
       type: "object",
       additionalProperties: false,

@@ -19,7 +19,9 @@ import {
   callTool,
   deriveWorkGraphRootIssueContentDigest,
   deriveWorkGraphRootTaskId,
+  deriveWorkGraphTaskEvaluationId,
   deriveWorkGraphTaskResultId,
+  deriveWorkGraphTaskRouteId,
   deriveWorkGraphWorkflowRunId,
   formatTaskDispatch,
   formatTaskResult,
@@ -1357,6 +1359,14 @@ test("Evaluation snapshot and writer cover accepted and rejected verdicts", asyn
       assert.equal(snapshot.evaluatorId, data.policy.evaluatorId);
       assert.deepEqual(snapshot.authorizedVerdicts, ["accepted", "rejected"]);
       assert.equal(snapshot.resultDigest, resultValueDigest(data.result));
+      assert.equal(
+        snapshot.evaluationId,
+        deriveWorkGraphTaskEvaluationId(
+          data.input.taskId,
+          data.input.resultId,
+          snapshot.resultDigest,
+        ),
+      );
       const created = await callTool(
         "submit_task_evaluation",
         evaluationInput(data, verdict),
@@ -1624,6 +1634,13 @@ test("Route advances through next and outcome edges to task, wait, and terminal"
     { stepId: "b", role: "orchestrator", verdict: "accepted" },
     async ({ data, writes }) => {
       const snapshot = await callTool("get_task_snapshot", data.input);
+      assert.equal(
+        snapshot.routeId,
+        deriveWorkGraphTaskRouteId(
+          data.input.taskId,
+          data.evaluation.evaluationId,
+        ),
+      );
       assert.deepEqual(snapshot.authorizedTransitions, [
         {
           transitionKind: "next",
