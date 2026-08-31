@@ -534,12 +534,21 @@ function nonEmptyText(value, context) {
   if (
     typeof value !== "string" ||
     value.trim() === "" ||
-    !ordinaryText(value)
+    !lifecycleText(value)
   ) {
     throw new WorkGraphDefinitionError(
       `${context} must be non-empty ordinary text`,
     );
   }
+}
+
+function lifecycleText(value) {
+  return (
+    typeof value === "string" &&
+    wellFormedUnicode(value) &&
+    !value.includes("\r") &&
+    !value.includes("```")
+  );
 }
 
 function directId(value, context) {
@@ -590,7 +599,7 @@ function normalizeChildren(value, workflowDefaults, context, depth) {
 function normalizeChildTask(value, workflowDefaults, context, depth) {
   exactAllowedKeys(
     value,
-    ["operation", "worker", "inputs"],
+    ["operation", "worker"],
     CHILD_TASK_KEYS,
     context,
   );
@@ -599,7 +608,11 @@ function normalizeChildTask(value, workflowDefaults, context, depth) {
   const normalized = {
     operation: value.operation,
     worker: value.worker,
-    inputs: dataMap(value.inputs, `${context}.inputs`),
+    inputs: dataMap(value.inputs ?? {}, `${context}.inputs`),
+    evaluator: null,
+    orchestrator: null,
+    maxReworkAttempts: null,
+    children: null,
   };
   for (const role of ["evaluator", "orchestrator"]) {
     if (role in value) {
@@ -655,7 +668,7 @@ function normalizeWorkflowStep(id, value, stepIds) {
   }
   exactAllowedKeys(
     value,
-    ["type", "operation", "worker", "inputs"],
+    ["type", "operation", "worker"],
     TASK_STEP_KEYS,
     context,
   );
@@ -665,7 +678,13 @@ function normalizeWorkflowStep(id, value, stepIds) {
     type: value.type,
     operation: value.operation,
     worker: value.worker,
-    inputs: dataMap(value.inputs, `${context}.inputs`),
+    inputs: dataMap(value.inputs ?? {}, `${context}.inputs`),
+    evaluator: null,
+    orchestrator: null,
+    maxReworkAttempts: null,
+    children: null,
+    next: null,
+    outcomes: {},
   };
   if (!("next" in value) && !("outcomes" in value)) {
     throw new WorkGraphDefinitionError(
@@ -721,8 +740,8 @@ function normalizeWorkflowStep(id, value, stepIds) {
 }
 
 function workflowTargets(step) {
-  if ("next" in step) return [step.next];
-  if ("outcomes" in step) return Object.values(step.outcomes);
+  if (step.next) return [step.next];
+  if (step.outcomes) return Object.values(step.outcomes);
   return [];
 }
 
@@ -765,9 +784,7 @@ function validateWorkflowGraph(initial, steps) {
   };
   detectCycle(initial);
   const unreachable = Object.keys(steps).filter(
-    (id) =>
-      !reachable.has(id) &&
-      !(steps[id].type === "terminal" && steps[id].outcome === "error"),
+    (id) => !reachable.has(id),
   );
   if (unreachable.length > 0) {
     throw new WorkGraphDefinitionError(
@@ -826,6 +843,11 @@ export function normalizeIssueWorkflow(workflow) {
       normalizeWorkflowStep(id, step, tracking),
     ]),
   );
+  if (normalizedSteps[workflow.spec.initial].type !== "task") {
+    throw new WorkGraphDefinitionError(
+      "issue workflow initial step must be a task",
+    );
+  }
   for (const [target, context] of tracking.references) {
     if (!tracking.ids.has(target)) {
       throw new WorkGraphDefinitionError(
@@ -930,6 +952,38 @@ function normalizeExecutionPolicies(value, context) {
   );
 }
 
+function collectCompiledTasks(task, tasks = new Map()) {
+  if (tasks.has(task.taskDefinitionId)) {
+    throw new WorkGraphDefinitionError(
+      `compiled definition repeats taskDefinitionId '${task.taskDefinitionId}'`,
+    );
+  }
+  tasks.set(task.taskDefinitionId, task);
+  for (const child of task.children) collectCompiledTasks(child, tasks);
+  return tasks;
+}
+
+function validateCompiledPolicies(taskDefinition, policies, context) {
+  const tasks = collectCompiledTasks(taskDefinition);
+  const taskIds = [...tasks.keys()].sort();
+  const policyIds = Object.keys(policies).sort();
+  if (!isDeepStrictEqual(taskIds, policyIds)) {
+    throw new WorkGraphDefinitionError(
+      `${context} keys must exactly match all recursive taskDefinitionIds`,
+    );
+  }
+  for (const [taskDefinitionId, task] of tasks) {
+    const policy = policies[taskDefinitionId];
+    if (
+      !isDeepStrictEqual(task.routing.permittedExecutors, [policy.workerId])
+    ) {
+      throw new WorkGraphDefinitionError(
+        `${context}.${taskDefinitionId}.workerId must match the task routing executor`,
+      );
+    }
+  }
+}
+
 function normalizeCompiledTransition(value, context, steps) {
   if (value.type === "next") {
     exactKeys(value, ["type", "targetStepId"], context);
@@ -1012,6 +1066,11 @@ export function normalizeCompiledWorkflowDefinition(definition) {
         ),
         transition: step.transition,
       };
+      validateCompiledPolicies(
+        steps[id].taskDefinition,
+        steps[id].executionPolicies,
+        `compiled step '${id}'.executionPolicies`,
+      );
     } else if (step.type === "wait") {
       exactKeys(step, ["type", "event", "nextStepId"], `compiled step '${id}'`);
       if (step.event !== "root-issue-commented") {
@@ -1118,7 +1177,7 @@ export function normalizeTaskEvaluation(value) {
       "task evaluation summary must not exceed 4096 bytes",
     );
   }
-  if (typeof value.feedback !== "string" || !ordinaryText(value.feedback)) {
+  if (!lifecycleText(value.feedback)) {
     throw new WorkGraphDefinitionError(
       "task evaluation feedback must be ordinary text",
     );
@@ -1284,9 +1343,46 @@ export function parseTaskRoute(body) {
   return parseCanonicalBody(body, TASK_ROUTE_MARKER, formatTaskRoute);
 }
 
-export function validateTaskRouteAgainstDefinition(value, definition) {
+export function validateTaskRouteAgainstDefinition(
+  value,
+  definition,
+  sourceContext,
+) {
   const route = normalizeTaskRoute(value);
   const workflow = normalizeCompiledWorkflowDefinition(definition);
+  exactKeys(
+    sourceContext,
+    ["sourceStepId", "taskDefinitionId"],
+    "task route source context",
+  );
+  stepId(sourceContext.sourceStepId, "task route sourceStepId");
+  identifier(
+    sourceContext.taskDefinitionId,
+    "task route source taskDefinitionId",
+  );
+  const source = workflow.steps[sourceContext.sourceStepId];
+  if (
+    source?.type !== "task" ||
+    source.taskDefinition.taskDefinitionId !== sourceContext.taskDefinitionId
+  ) {
+    throw new WorkGraphDefinitionError(
+      "task route source context must identify the routed compiled task step",
+    );
+  }
+  const policy = source.executionPolicies[sourceContext.taskDefinitionId];
+  if (route.orchestratorId !== policy.orchestratorId) {
+    throw new WorkGraphDefinitionError(
+      "task route orchestratorId must match the source task policy",
+    );
+  }
+  if (
+    route.action === "rework" &&
+    route.attempt > policy.maxReworkAttempts
+  ) {
+    throw new WorkGraphDefinitionError(
+      "rework task route attempt exceeds the source task policy",
+    );
+  }
   if (route.action !== "advance") return route;
   const target = workflow.steps[route.targetStepId];
   if (!target) {
@@ -1313,22 +1409,15 @@ export function validateTaskRouteAgainstDefinition(value, definition) {
       "task route targetTaskDefinitionId is forbidden for wait and terminal steps",
     );
   }
-  const matchingTransitions = Object.values(workflow.steps).filter((step) => {
-    if (step.type !== "task") return false;
-    if (route.transitionKind === "next") {
-      return (
-        step.transition.type === "next" &&
-        step.transition.targetStepId === route.targetStepId
-      );
-    }
-    return (
-      step.transition.type === "outcomes" &&
-      step.transition.targets[route.outcome] === route.targetStepId
-    );
-  });
-  if (matchingTransitions.length === 0) {
+  const transitionMatches =
+    route.transitionKind === "next"
+      ? source.transition.type === "next" &&
+        source.transition.targetStepId === route.targetStepId
+      : source.transition.type === "outcomes" &&
+        source.transition.targets[route.outcome] === route.targetStepId;
+  if (!transitionMatches) {
     throw new WorkGraphDefinitionError(
-      "task route transition must match the compiled definition",
+      "task route transition must match the source task's compiled transition",
     );
   }
   return route;

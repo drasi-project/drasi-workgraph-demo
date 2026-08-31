@@ -29,9 +29,13 @@ const EXPECTED_PATH =
   ".github/workgraph/fixtures/v1/issue-lifecycle.expected.json";
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 const clone = (value) => structuredClone(value);
-const COMPILED_FIXTURE = JSON.parse(
-  await read(EXPECTED_PATH),
-).workgraphDefinition;
+const COMPILED_OUTPUT = JSON.parse(await read(EXPECTED_PATH));
+const COMPILED_FIXTURE = COMPILED_OUTPUT.workgraphDefinition;
+const sourceContext = (stepId) => ({
+  sourceStepId: stepId,
+  taskDefinitionId:
+    COMPILED_FIXTURE.steps[stepId].taskDefinition.taskDefinitionId,
+});
 
 function nestedDefinition() {
   return {
@@ -451,11 +455,40 @@ test("rich v1 authoring preserves the branch, wait loop, recursion, and override
     () => normalizeCompiledWorkflowDefinition(wrongTerminal),
     /invalid terminal outcome/,
   );
+
+  const missingChildPolicy = clone(expected.workgraphDefinition);
+  const childId =
+    missingChildPolicy.steps.g.taskDefinition.children[0].taskDefinitionId;
+  delete missingChildPolicy.steps.g.executionPolicies[childId];
+  assert.throws(
+    () => normalizeCompiledWorkflowDefinition(missingChildPolicy),
+    /exactly match all recursive taskDefinitionIds/,
+  );
+
+  const extraPolicy = clone(expected.workgraphDefinition);
+  extraPolicy.steps.g.executionPolicies["extra-policy"] = {
+    workerId: "issue-worker",
+    evaluatorId: "result-evaluator",
+    orchestratorId: "workflow-coordinator",
+    maxReworkAttempts: 3,
+  };
+  assert.throws(
+    () => normalizeCompiledWorkflowDefinition(extraPolicy),
+    /exactly match all recursive taskDefinitionIds/,
+  );
+
+  const wrongWorker = clone(expected.workgraphDefinition);
+  const gId = wrongWorker.steps.g.taskDefinition.taskDefinitionId;
+  wrongWorker.steps.g.executionPolicies[gId].workerId = "other-worker";
+  assert.throws(
+    () => normalizeCompiledWorkflowDefinition(wrongWorker),
+    /must match the task routing executor/,
+  );
 });
 
 test("high-level IssueWorkflow shape is strict and resolves all graph references", () => {
   const workflow = richWorkflow();
-  assert.deepEqual(normalizeIssueWorkflow(workflow), workflow);
+  assert.deepEqual(normalizeIssueWorkflow(workflow), COMPILED_OUTPUT.definition);
 
   const wrongTrigger = clone(workflow);
   wrongTrigger.spec.trigger = "new";
@@ -501,6 +534,32 @@ test("high-level IssueWorkflow shape is strict and resolves all graph references
     () => normalizeIssueWorkflow(unsafeRework),
     /safe integer/,
   );
+
+  const omittedInputs = clone(workflow);
+  delete omittedInputs.spec.steps.a.inputs;
+  delete omittedInputs.spec.steps.g.children.tasks.title.inputs;
+  const normalized = normalizeIssueWorkflow(omittedInputs);
+  assert.deepEqual(normalized.spec.steps.a.inputs, {});
+  assert.deepEqual(
+    normalized.spec.steps.g.children.tasks.title.inputs,
+    {},
+  );
+
+  for (const type of ["wait", "terminal"]) {
+    const invalidInitial = clone(workflow);
+    invalidInitial.spec.initial = type === "wait" ? "human" : "completed";
+    assert.throws(
+      () => normalizeIssueWorkflow(invalidInitial),
+      /initial step must be a task/,
+    );
+  }
+
+  const unreachableError = clone(workflow);
+  unreachableError.spec.steps.error = { type: "terminal", outcome: "error" };
+  assert.throws(
+    () => normalizeIssueWorkflow(unreachableError),
+    /unreachable steps: error/,
+  );
 });
 
 test("recursive child namespaces and overrides are independent at every depth", () => {
@@ -527,7 +586,7 @@ test("recursive child namespaces and overrides are independent at every depth", 
   assert.equal(title.evaluator, "issue-validation-evaluator");
   assert.equal(title.maxReworkAttempts, 1);
   assert.equal(title.children.tasks.a.maxReworkAttempts, 0);
-  assert.equal(title.children.tasks.a.orchestrator, undefined);
+  assert.equal(title.children.tasks.a.orchestrator, null);
   assert.ok(normalized.spec.steps.a);
 });
 
@@ -652,6 +711,12 @@ test("Evaluate artifacts have exact direct bindings and accepted or rejected ver
       }),
     /4096 bytes/,
   );
+  assert.doesNotThrow(() =>
+    formatTaskEvaluation({
+      ...evaluation(),
+      summary: "Reviewed WorkGraphTaskResult/v1 successfully.",
+    }),
+  );
   const reversed = Object.fromEntries(
     Object.entries(evaluation()).reverse(),
   );
@@ -676,7 +741,11 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
     assert.deepEqual(parseTaskRoute(formatTaskRoute(value)), value);
   }
   assert.deepEqual(
-    validateTaskRouteAgainstDefinition(route("advance"), definition),
+    validateTaskRouteAgainstDefinition(
+      route("advance"),
+      definition,
+      sourceContext("c"),
+    ),
     route("advance"),
   );
   assert.throws(
@@ -724,7 +793,11 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
     },
   );
   assert.deepEqual(
-    validateTaskRouteAgainstDefinition(terminalRoute, definition),
+    validateTaskRouteAgainstDefinition(
+      terminalRoute,
+      definition,
+      sourceContext("h"),
+    ),
     terminalRoute,
   );
   const waitRoute = {
@@ -736,7 +809,11 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
   delete waitRoute.outcome;
   delete waitRoute.targetTaskDefinitionId;
   assert.deepEqual(
-    validateTaskRouteAgainstDefinition(waitRoute, definition),
+    validateTaskRouteAgainstDefinition(
+      waitRoute,
+      definition,
+      sourceContext("d"),
+    ),
     waitRoute,
   );
   assert.throws(
@@ -749,7 +826,11 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
         targetTaskDefinitionId: "human",
       };
       delete invalid.outcome;
-      return validateTaskRouteAgainstDefinition(invalid, definition);
+      return validateTaskRouteAgainstDefinition(
+        invalid,
+        definition,
+        sourceContext("d"),
+      );
     },
     /wait or terminal target must not include/,
   );
@@ -761,8 +842,41 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
           targetTaskDefinitionId: "different-task",
         },
         definition,
+        sourceContext("c"),
       ),
     /requires its targetTaskDefinitionId/,
+  );
+  assert.throws(
+    () =>
+      validateTaskRouteAgainstDefinition(
+        route("advance"),
+        definition,
+        sourceContext("a"),
+      ),
+    /source task's compiled transition/,
+  );
+  const gRework = {
+    ...route("rework", "rejected"),
+    orchestratorId: "validation-stage-coordinator",
+    attempt: 3,
+  };
+  assert.throws(
+    () =>
+      validateTaskRouteAgainstDefinition(
+        gRework,
+        definition,
+        sourceContext("g"),
+      ),
+    /exceeds the source task policy/,
+  );
+  assert.throws(
+    () =>
+      validateTaskRouteAgainstDefinition(
+        route("ignore", "accepted"),
+        definition,
+        sourceContext("g"),
+      ),
+    /orchestratorId must match the source task policy/,
   );
   assert.throws(
     () => formatTaskRoute({ ...route("advance"), attempt: 17 }),

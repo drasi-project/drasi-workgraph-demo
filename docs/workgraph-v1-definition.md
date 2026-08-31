@@ -51,9 +51,17 @@ Advance alone carries `transitionKind` (`next` or `outcome`),
 `targetStepId`, and `targetStepKind`. `outcome` is present only for an outcome
 transition. `targetTaskDefinitionId` is present
 only for a task target and equals that target's compiler-derived hashed ID.
-Non-advance routes carry no transition or target fields. A later reporter wave
-must verify the recorded Result/Evaluation mapping and compiled transition
-before writing.
+Non-advance routes carry no transition or target fields. Definition-aware
+validation binds every route to its source step and task-definition ID. The
+source execution policy supplies the required orchestrator and rework limit,
+and the source transition supplies the only valid advance edge. Recursive
+`executionPolicies` must exactly cover every task definition and each worker
+must match its task's routing executor.
+
+Evaluate summary and feedback are lifecycle text rather than static data-map
+text, so protocol marker names are allowed. They remain well-formed LF text,
+with 4096-byte and 16384-byte limits respectively; accepted feedback is empty
+and rejected feedback is non-empty.
 
 ## Admission-first proof
 
