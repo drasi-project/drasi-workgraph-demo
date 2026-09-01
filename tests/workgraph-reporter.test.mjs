@@ -10,11 +10,16 @@ import test from "node:test";
 
 import {
   formatRuntimeTask,
+  formatTaskAssignment,
   formatTaskEvaluation,
+  formatTaskFork,
+  formatTaskJoin,
   formatTaskRoute,
   parseTaskEvaluation,
   parseTaskRoute,
   deriveWorkGraphProtocolId,
+  deriveWorkGraphTaskForkId,
+  deriveWorkGraphTaskJoinId,
 } from "../.github/mcp/workgraph-v1-definition.mjs";
 import {
   canonicalTaskResultEnvelopeJson,
@@ -173,13 +178,69 @@ function fixture() {
       slotId: `${executorId}-slot-1`,
     },
   });
+  const assignment = (task, executorId, joinId = null) => ({
+    assignmentId: protocolId("assignment", task.taskId),
+    rootIssueId: task.rootIssueId,
+    workflowRunId: task.workflowRunId,
+    taskId: task.taskId,
+    task: identity(task),
+    joinId,
+    permittedExecutors: [executorId],
+  });
+  const rootDispatch = dispatch(rootTask, "issue-coordinator");
+  const childDispatch = dispatch(childTask, "issue-validator");
+  const forkChildren = [
+    {
+      taskDefinitionId: childTask.taskDefinitionId,
+      taskId: childTask.taskId,
+    },
+  ];
+  const forkId = deriveWorkGraphTaskForkId(rootTask.taskId, forkChildren);
+  const rootFork = {
+    forkId,
+    rootIssueId: rootTask.rootIssueId,
+    workflowRunId,
+    taskId: rootTask.taskId,
+    task: identity(rootTask),
+    children: forkChildren,
+  };
+  const joinChildren = [
+    {
+      ...forkChildren[0],
+      resultId: deriveWorkGraphTaskResultId(
+        childTask.taskId,
+        childDispatch.dispatchId,
+        childDispatch.lease.leaseId,
+      ),
+      evaluationId: protocolId("evaluation", childTask.taskId),
+    },
+  ];
+  const joinId = deriveWorkGraphTaskJoinId(
+    rootTask.taskId,
+    forkId,
+    joinChildren,
+  );
+  const rootJoin = {
+    joinId,
+    rootIssueId: rootTask.rootIssueId,
+    workflowRunId,
+    taskId: rootTask.taskId,
+    task: identity(rootTask),
+    forkId,
+    strategy: "all",
+    children: joinChildren,
+  };
   return {
     contentDigest,
     workflowRunId,
     rootTask,
     childTask,
-    rootDispatch: dispatch(rootTask, "issue-coordinator"),
-    childDispatch: dispatch(childTask, "issue-validator"),
+    rootFork,
+    rootJoin,
+    rootAssignment: assignment(rootTask, "issue-coordinator", joinId),
+    childAssignment: assignment(childTask, "issue-validator"),
+    rootDispatch,
+    childDispatch,
   };
 }
 
@@ -242,6 +303,30 @@ async function withFakeRuntime(options, callback) {
       ROOT_TASK_NUMBER,
       [
         {
+          id: 180,
+          node_id: "IC_root_fork",
+          body: formatTaskFork(data.rootFork),
+          user: { id: ASSIGNMENT_ID, login: "assigner" },
+          created_at: "2026-08-29T19:40:00Z",
+          updated_at: "2026-08-29T19:40:00Z",
+        },
+        {
+          id: 185,
+          node_id: "IC_root_join",
+          body: formatTaskJoin(data.rootJoin),
+          user: { id: ASSIGNMENT_ID, login: "assigner" },
+          created_at: "2026-08-29T19:50:00Z",
+          updated_at: "2026-08-29T19:50:00Z",
+        },
+        {
+          id: 190,
+          node_id: "IC_root_assignment",
+          body: formatTaskAssignment(data.rootAssignment),
+          user: { id: ASSIGNMENT_ID, login: "assigner" },
+          created_at: "2026-08-29T19:59:00Z",
+          updated_at: "2026-08-29T19:59:00Z",
+        },
+        {
           id: 200,
           node_id: "IC_root_dispatch",
           body: formatTaskDispatch(data.rootDispatch),
@@ -254,6 +339,14 @@ async function withFakeRuntime(options, callback) {
     [
       CHILD_TASK_NUMBER,
       [
+        {
+          id: 191,
+          node_id: "IC_child_assignment",
+          body: formatTaskAssignment(data.childAssignment),
+          user: { id: ASSIGNMENT_ID, login: "assigner" },
+          created_at: "2026-08-29T19:59:00Z",
+          updated_at: "2026-08-29T19:59:00Z",
+        },
         ...(options.staleDispatch === true
           ? [
               {
@@ -288,6 +381,16 @@ async function withFakeRuntime(options, callback) {
       ],
     ],
   ]);
+  if (options.omitAssignment === true) {
+    comments.set(
+      CHILD_TASK_NUMBER,
+      comments
+        .get(CHILD_TASK_NUMBER)
+        .filter(
+          ({ body }) => !body.startsWith("WorkGraphTaskAssignment/v1\n"),
+        ),
+    );
+  }
   if (options.historicalResult === true) {
     const historicalDispatch = {
       ...data.childDispatch,
@@ -596,6 +699,15 @@ function lifecycleFixture({
     },
   }));
   const dispatch = dispatches.at(-1);
+  const assignment = {
+    assignmentId: dispatch.lease.assignmentId,
+    rootIssueId,
+    workflowRunId,
+    taskId: task.taskId,
+    task: runtimeIdentity(task.taskId, effectiveDefinition),
+    joinId: null,
+    permittedExecutors: [...effectiveDefinition.routing.permittedExecutors],
+  };
   const result = {
     resultId: deriveWorkGraphTaskResultId(
       task.taskId,
@@ -642,6 +754,14 @@ function lifecycleFixture({
       }
     : null;
   const comments = [
+    {
+      id: 190,
+      node_id: "IC_assignment",
+      body: formatTaskAssignment(assignment),
+      user: { id: ASSIGNMENT_ID, login: "assigner" },
+      created_at: "2026-08-29T19:59:00Z",
+      updated_at: "2026-08-29T19:59:00Z",
+    },
     ...dispatches.map((payload, index) => ({
       id: 200 + index,
       node_id: `IC_dispatch_${index}`,
@@ -761,6 +881,11 @@ async function withFakeLifecycle(options, callback) {
   if (options.omitResult === true) {
     data.comments = data.comments.filter(
       ({ body }) => !body.startsWith("WorkGraphTaskResult/v1\n"),
+    );
+  }
+  if (options.omitAssignment === true) {
+    data.comments = data.comments.filter(
+      ({ body }) => !body.startsWith("WorkGraphTaskAssignment/v1\n"),
     );
   }
   if (options.topLevelParentIsInitial === true && !data.parentTask) {
@@ -1163,6 +1288,19 @@ test("Dispatch uses the exact seven-field schema and direct task identities", as
   );
 });
 
+test("downstream lifecycle reporting requires the persisted Assignment", async () => {
+  await withFakeLifecycle(
+    { omitAssignment: true },
+    async ({ data: lifecycle, writes }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", lifecycle.input),
+        /exactly one Assignment/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
+});
+
 test("reporter exports strict TaskError diagnostic support", () => {
   const data = fixture();
   const references = {
@@ -1377,6 +1515,18 @@ test("get_root_issue verifies child, Root Task, admission, and Root Issue", asyn
       title: ROOT_TITLE,
       body: ROOT_BODY,
     });
+  });
+});
+
+test("get_root_issue requires Assignment and Dispatch action evidence", async () => {
+  await withFakeRuntime({ omitAssignment: true }, async ({ data }) => {
+    await assert.rejects(
+      callTool("get_root_issue", {
+        taskLocator: childLocator(),
+        taskId: data.childTask.taskId,
+      }),
+      /exactly one Assignment/,
+    );
   });
 });
 

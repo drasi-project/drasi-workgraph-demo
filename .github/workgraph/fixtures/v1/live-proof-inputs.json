@@ -30,7 +30,7 @@
       "wg-terminal-detail",
       "wg-predecessor-result-detail"
     ],
-    "queryContractDigest": "sha256:1e648107e0f1432cb08cb94a1f85d994512df9d5f0066e839dd9e18e73a62d44"
+    "queryContractDigest": "sha256:85a25c8f38b4a31868c0934771c9bf698e433f15b99f59aed3f2cd73069c7ec7"
   },
   "definition": {
     "bodyPath": "../../workflows/issue-lifecycle-v1.body",

@@ -369,7 +369,7 @@ test("proof inputs pin the exact loopback query contract and remain inactive", a
     .digest("hex")}`;
   assert.equal(
     inputs.runtimeContract.queryContractDigest,
-    "sha256:1e648107e0f1432cb08cb94a1f85d994512df9d5f0066e839dd9e18e73a62d44",
+    "sha256:85a25c8f38b4a31868c0934771c9bf698e433f15b99f59aed3f2cd73069c7ec7",
   );
   assert.equal(inputs.runtimeContract.queryContractDigest, queryContractDigest);
   assert.deepEqual(inputs.activation, {
@@ -1304,6 +1304,20 @@ test("Fork and Join actions have stable ordered identities and strict envelopes"
   assert.throws(
     () => formatTaskJoin({ ...join, children: [] }),
     /must contain 1-16 entries/,
+  );
+  assert.throws(
+    () =>
+      formatTaskJoin({
+        ...join,
+        children: [
+          joinedChildren[0],
+          {
+            ...joinedChildren[1],
+            resultId: joinedChildren[0].resultId,
+          },
+        ],
+      }),
+    /unique Result and Evaluation references/,
   );
 });
 

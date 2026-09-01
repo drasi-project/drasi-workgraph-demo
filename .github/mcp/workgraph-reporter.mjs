@@ -441,15 +441,15 @@ function configuration(toolName) {
     token: env("COPILOT_MCP_WORKGRAPH_TOKEN"),
     taskTypeId,
     launcherId: envUserId("COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID"),
+    assignmentId: envUserId(
+      "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
+    ),
     resultId: envUserId("COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID"),
     api: apiBaseUrl(),
   };
   if (toolName === "submit_task_result") {
     return {
       ...config,
-      assignmentId: envUserId(
-        "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
-      ),
       executorId: env("COPILOT_MCP_WORKGRAPH_EXECUTOR_ID"),
       leaseValidationToken: env(
         "COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN",
@@ -481,9 +481,6 @@ function configuration(toolName) {
       ...config,
       role,
       lifecycleAgentId: evaluatorId || orchestratorId,
-      assignmentId: envUserId(
-        "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
-      ),
       evaluationId: envUserId(
         "COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID",
       ),
@@ -1033,6 +1030,19 @@ async function loadTaskContext(locator, taskId, github, config, includeComments)
     rootIssue,
     locator.repositoryNodeId,
   );
+  if (includeComments) {
+    validateTaskActionPrefix(
+      task,
+      {
+        children:
+          task.taskDefinitionId === ROOT_TASK_DEFINITION_ID
+            ? [{ taskDefinitionId: VALIDATOR_TASK_DEFINITION_ID }]
+            : [],
+      },
+      comments,
+      config,
+    );
+  }
   return {
     task,
     rootTask,
@@ -1090,6 +1100,13 @@ function validateTaskActionPrefix(task, taskDefinition, comments, config) {
   ).map((entry) =>
     validateProtocolComment(entry, config.assignmentId, TASK_JOIN_MARKER),
   );
+  const dispatches = markedComments(
+    comments,
+    TASK_DISPATCH_MARKER,
+    parseTaskDispatch,
+  ).map((entry) =>
+    validateProtocolComment(entry, config.assignmentId, TASK_DISPATCH_MARKER),
+  );
   for (const { payload } of [...assignments, ...forks, ...joins]) {
     if (!dispatchMatchesTask(payload, task)) {
       throw new WorkGraphReporterError(
@@ -1097,9 +1114,36 @@ function validateTaskActionPrefix(task, taskDefinition, comments, config) {
       );
     }
   }
+  if (dispatches.some(({ payload }) => !dispatchMatchesTask(payload, task))) {
+    throw new WorkGraphReporterError(
+      "task has a malformed, foreign, or duplicate Dispatch",
+    );
+  }
   if (assignments.length > 1 || forks.length > 1 || joins.length > 1) {
     throw new WorkGraphReporterError(
       "task has duplicate Fork, Join, or Assignment actions",
+    );
+  }
+  if (assignments.length !== 1) {
+    throw new WorkGraphReporterError(
+      "task requires exactly one Assignment action",
+    );
+  }
+  if (dispatches.length === 0) {
+    throw new WorkGraphReporterError(
+      "task requires a Dispatch following its Assignment",
+    );
+  }
+  const assignment = assignments[0];
+  if (
+    dispatches.some(
+      ({ payload, comment }) =>
+        payload.lease.assignmentId !== assignment.payload.assignmentId ||
+        commentOrder(assignment.comment, comment) >= 0,
+    )
+  ) {
+    throw new WorkGraphReporterError(
+      "Dispatch must follow and reference the task Assignment",
     );
   }
 
@@ -1107,7 +1151,7 @@ function validateTaskActionPrefix(task, taskDefinition, comments, config) {
     if (
       forks.length !== 0 ||
       joins.length !== 0 ||
-      assignments.some(({ payload }) => payload.joinId !== null)
+      assignment.payload.joinId !== null
     ) {
       throw new WorkGraphReporterError(
         "leaf task cannot contain Fork or Join actions",
@@ -1115,9 +1159,7 @@ function validateTaskActionPrefix(task, taskDefinition, comments, config) {
     }
     return;
   }
-  if (assignments.length + forks.length + joins.length === 0) return;
   if (
-    assignments.length !== 1 ||
     forks.length !== 1 ||
     joins.length !== 1
   ) {
@@ -1127,7 +1169,14 @@ function validateTaskActionPrefix(task, taskDefinition, comments, config) {
   }
   const fork = forks[0].payload;
   const join = joins[0].payload;
-  const assignment = assignments[0].payload;
+  if (
+    commentOrder(forks[0].comment, joins[0].comment) >= 0 ||
+    commentOrder(joins[0].comment, assignment.comment) >= 0
+  ) {
+    throw new WorkGraphReporterError(
+      "parent actions must be ordered Fork, Join, then Assignment",
+    );
+  }
   const declared = taskDefinition.children
     .map((child) => child.taskDefinitionId)
     .sort();
@@ -1144,7 +1193,7 @@ function validateTaskActionPrefix(task, taskDefinition, comments, config) {
       fork.children,
     ) ||
     join.forkId !== fork.forkId ||
-    assignment.joinId !== join.joinId
+    assignment.payload.joinId !== join.joinId
   ) {
     throw new WorkGraphReporterError(
       "parent Fork, Join, Assignment, and declared children do not form one action chain",
@@ -1709,6 +1758,7 @@ async function loadLifecycleAncestry(
       "configured orchestrator does not match the effective compiled policy",
     );
   }
+  validateTaskActionPrefix(task, compiled.taskDefinition, comments, config);
   return {
     issue,
     task,
@@ -2484,7 +2534,7 @@ async function getRootIssue(input, github, config) {
     input.taskId,
     github,
     config,
-    false,
+    true,
   );
   if (
     !context.compiled &&

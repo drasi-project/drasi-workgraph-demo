@@ -1889,6 +1889,8 @@ function normalizeJoinChildren(children, context) {
     })),
     context,
   );
+  const results = new Set();
+  const evaluations = new Set();
   return children.map((child, index) => {
     validateWorkGraphProtocolId(
       child.resultId,
@@ -1900,6 +1902,13 @@ function normalizeJoinChildren(children, context) {
       "evaluation",
       `${context}[${index}].evaluationId`,
     );
+    if (results.has(child.resultId) || evaluations.has(child.evaluationId)) {
+      throw new WorkGraphDefinitionError(
+        `${context} must contain unique Result and Evaluation references`,
+      );
+    }
+    results.add(child.resultId);
+    evaluations.add(child.evaluationId);
     return { ...base[index], resultId: child.resultId, evaluationId: child.evaluationId };
   });
 }

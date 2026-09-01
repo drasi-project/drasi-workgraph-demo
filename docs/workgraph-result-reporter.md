@@ -110,6 +110,12 @@ title or body change after admission fails closed.
 }
 ```
 
+Before accepting any downstream lifecycle action, the reporter requires one
+immutable Assignment authored by the configured assigner. A parent task must
+also have an earlier Fork and Join, in that order, and its Assignment must
+reference that Join; a leaf must have neither. Every Dispatch must follow and
+reference that exact Assignment.
+
 The reporter requires every Dispatch attempt to be a unique, canonical,
 assignment-reporter-authored, never-edited `WorkGraphTaskDispatch/v1` comment,
 with the unified envelope and exact Dispatch references/data. All direct
