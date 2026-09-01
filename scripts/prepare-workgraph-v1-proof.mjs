@@ -52,9 +52,10 @@ const GENERIC_QUERY_IDS = [
   "wg-evaluation-detail",
   "wg-route-detail",
   "wg-error-detail",
+  "wg-terminal-detail",
   "wg-predecessor-result-detail",
 ];
-const GENERATED_QUERY_COUNT = 6;
+const GENERATED_QUERY_COUNT = 0;
 
 function exact(value, keys, label) {
   if (
@@ -146,7 +147,7 @@ export function validateGeneratedQueryInventory(queryBundle) {
     generatedInventory.length !== GENERATED_QUERY_COUNT ||
     generatedQueries.length !== GENERATED_QUERY_COUNT
   ) {
-    throw new Error("compiler output must contain exactly six generated queries");
+    throw new Error("compiler output must not generate per-edge queries");
   }
   const generatedQueryIds = generatedInventory.map(({ id }) => id);
   const compiledQueryIds = generatedQueries.map(({ id }) => id);
@@ -358,25 +359,37 @@ export async function buildWorkGraphV1Proof() {
     inputs.expectedRootTask.taskDefinitionId !== rootTask.taskDefinitionId ||
     inputs.expectedRootTask.taskKey !== rootTask.taskKey ||
     inputs.expectedRootTask.operation !== rootTask.operation ||
-    inputs.expectedRootTask.firstLifecycleState !== "FORK" ||
+    inputs.expectedRootTask.firstLifecycleState !== "ASSIGN" ||
     inputs.expectedRootTask.precreatedChildCount !== 0
   ) {
     throw new Error("expected Root Task does not match Root Issue admission");
   }
   if (
     JSON.stringify(inputs.expectedLifecycle) !==
-    JSON.stringify([
-      "FORK",
-      "JOIN_ALL",
-      "ASSIGN",
-      "LEASE",
-      "DISPATCH",
-      "RESULT",
-      "EVALUATE",
-      "ROUTE",
-      "CLOSE",
-      "CLOSED",
-    ])
+    JSON.stringify({
+      leaf: [
+        "ASSIGN",
+        "LEASE",
+        "DISPATCH",
+        "RESULT",
+        "EVALUATE",
+        "ROUTE",
+        "CLOSE",
+        "CLOSED",
+      ],
+      parent: [
+        "FORK",
+        "JOIN_ALL",
+        "ASSIGN",
+        "LEASE",
+        "DISPATCH",
+        "RESULT",
+        "EVALUATE",
+        "ROUTE",
+        "CLOSE",
+        "CLOSED",
+      ],
+    })
   ) {
     throw new Error("proof lifecycle differs from the v1 state progression");
   }
@@ -402,7 +415,7 @@ export async function buildWorkGraphV1Proof() {
     expectedRootTask: {
       value: rootTask,
       body: formatRuntimeTask(rootTask),
-      firstLifecycleState: "FORK",
+      firstLifecycleState: "ASSIGN",
     },
     expectedAdmissionQuery: {
       queryId: "wg-issues-waiting-for-admission",

@@ -1,0 +1,55 @@
+apiVersion: workgraph.drasi.io/v1
+kind: IssueWorkflow
+metadata:
+  id: fork-join-lifecycle
+
+spec:
+  trigger: workgraph
+  initial: a
+  defaults:
+    evaluator: result-evaluator
+    orchestrator: workflow-coordinator
+    maxReworkAttempts: 3
+  steps:
+    a:
+      type: task
+      operation: prepare-parallel-work
+      worker: issue-worker
+      inputs: {}
+      next: b
+    b:
+      type: task
+      operation: aggregate-child-results
+      worker: issue-worker
+      inputs: {}
+      children:
+        join: all
+        tasks:
+          c:
+            operation: inspect-title
+            worker: issue-worker
+            inputs: {}
+          d:
+            operation: inspect-body
+            worker: issue-worker
+            inputs: {}
+          e:
+            operation: inspect-risk
+            worker: issue-worker
+            inputs: {}
+      next: f
+    f:
+      type: task
+      operation: synthesize-results
+      worker: issue-worker
+      inputs: {}
+      next: g
+    g:
+      type: task
+      operation: finalize-parallel-work
+      worker: issue-worker
+      inputs: {}
+      next: completed
+    completed:
+      type: terminal
+      outcome: completed

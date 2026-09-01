@@ -2,13 +2,13 @@
   "apiVersion": "drasi.io/v1",
   "kind": "WorkGraphTestCase",
   "metadata": {
-    "id": "linear-sequence"
+    "id": "fork-join"
   },
   "spec": {
-    "workflowDefinitionId": "issue-lifecycle",
+    "workflowDefinitionId": "fork-join-lifecycle",
     "rootIssue": {
-      "title": "Linear WorkGraph proof",
-      "body": "Exercise the four-stage issue lifecycle.",
+      "title": "Fork Join WorkGraph proof",
+      "body": "Exercise A to B, three parallel children, then F to G.",
       "labels": [
         "workgraph"
       ]
@@ -27,6 +27,7 @@
         "result": {
           "outcome": "succeeded",
           "output": {
+            "childCount": 3,
             "step": "b"
           }
         },
@@ -49,20 +50,50 @@
           }
         },
         "evaluationVerdict": "accepted"
+      },
+      "e": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "step": "e"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "f": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "step": "f"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "g": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "step": "g"
+          }
+        },
+        "evaluationVerdict": "accepted"
       }
     },
     "expected": {
       "topLevelTaskKeys": [
         "a",
         "b",
-        "c",
-        "d"
+        "f",
+        "g"
       ],
       "taskParents": {
         "a": null,
         "b": null,
-        "c": null,
-        "d": null
+        "c": "b",
+        "d": "b",
+        "e": "b",
+        "f": null,
+        "g": null
       },
       "terminalOutcome": "completed"
     }

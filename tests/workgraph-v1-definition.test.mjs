@@ -82,13 +82,8 @@ const PROOF_QUERY_IDS = [
   "wg-evaluation-detail",
   "wg-route-detail",
   "wg-error-detail",
+  "wg-terminal-detail",
   "wg-predecessor-result-detail",
-  "wg-entry-55e20be013024dd53e34",
-  "wg-next-3fe06f5b356d70a8afae",
-  "wg-next-4e061353186c27445d52",
-  "wg-next-5f6cc00d3413bfca1bfb",
-  "wg-next-bf10b844ab367098f6f0",
-  "wg-terminal-ba3d302109136f253416",
 ];
 const sourceContext = (stepId) => ({
   sourceStepId: stepId,
@@ -363,7 +358,7 @@ test("proof inputs pin the exact loopback query contract and remain inactive", a
     .digest("hex")}`;
   assert.equal(
     inputs.runtimeContract.queryContractDigest,
-    "sha256:02fb19b72b789c751db00bee49c0ebcfa2f2912c3f075b2d642de2834d3c7fb0",
+    "sha256:6287b2b5901070e92aa035ab658d524547b8162c2d79b80d48da9671db518057",
   );
   assert.equal(inputs.runtimeContract.queryContractDigest, queryContractDigest);
   assert.deepEqual(inputs.activation, {
@@ -410,15 +405,19 @@ test("offline proof derives the Root Task from Root Issue admission", async () =
     proof.expectedRootTask.value.resolvedInputs.rootIssue.issueNodeId,
     proof.expectedRootTask.value.rootIssueId,
   );
-  assert.equal(proof.expectedRootTask.firstLifecycleState, "FORK");
+  assert.equal(proof.expectedRootTask.firstLifecycleState, "ASSIGN");
 });
 
-test("offline proof rejects generated query body hash drift", () => {
+test("offline proof rejects per-edge generated queries", () => {
   const queryBundle = clone(COMPILED_OUTPUT.queryBundle);
-  queryBundle.queries[0].query += " ";
+  queryBundle.queries.push({ id: "wg-next-legacy", query: "RETURN 1" });
+  queryBundle.canvasInventory.push({
+    id: "wg-next-legacy",
+    sha256: "0".repeat(64),
+  });
   assert.throws(
     () => validateGeneratedQueryInventory(queryBundle),
-    /body SHA-256 differs from its Canvas inventory/,
+    /must not generate per-edge queries/,
   );
 });
 
@@ -602,31 +601,7 @@ test("linear v1 authoring and test case match the compiled sequence", async () =
     ["completed"],
   );
   const generatedQueryIds = expected.queryBundle.queries.map(({ id }) => id);
-  assert.deepEqual(
-    generatedQueryIds,
-    [
-      "wg-entry-55e20be013024dd53e34",
-      "wg-next-3fe06f5b356d70a8afae",
-      "wg-next-4e061353186c27445d52",
-      "wg-next-5f6cc00d3413bfca1bfb",
-      "wg-next-bf10b844ab367098f6f0",
-      "wg-terminal-ba3d302109136f253416",
-    ],
-  );
-  assert.equal(
-    generatedQueryIds.some((id) =>
-      /(?:fork|join|outcome|resume|wait)/.test(id),
-    ),
-    false,
-  );
-  const terminalQuery = expected.queryBundle.queries.find(
-    ({ kind }) => kind === "terminal-complete",
-  ).query;
-  assert.match(
-    terminalQuery,
-    /^MATCH \(route:WorkGraphTaskRoute\)-\[:ROUTE_FOR\]->\(task:WorkGraphTask\)-\[:IN_RUN\]->\(run:WorkflowRun\)-\[:USES_DEFINITION\]->\(workflowDefinition:WorkflowDefinition\)/,
-  );
-  assert.match(terminalQuery, /route\.taskId = task\.taskId/);
+  assert.deepEqual(generatedQueryIds, []);
 
   assert.deepEqual(Object.keys(testCase), [
     "apiVersion",
@@ -666,9 +641,14 @@ test("linear v1 authoring and test case match the compiled sequence", async () =
   }
   assert.deepEqual(Object.keys(testCase.spec.expected), [
     "topLevelTaskKeys",
+    "taskParents",
     "terminalOutcome",
   ]);
   assert.deepEqual(testCase.spec.expected.topLevelTaskKeys, taskKeys);
+  assert.deepEqual(
+    testCase.spec.expected.taskParents,
+    Object.fromEntries(taskKeys.map((taskKey) => [taskKey, null])),
+  );
   const traversed = [];
   let stepId = definition.initialStepId;
   while (definition.steps[stepId].type === "task") {
@@ -718,6 +698,74 @@ test("linear v1 authoring and test case match the compiled sequence", async () =
     () => normalizeCompiledWorkflowDefinition(wrongWorker),
     /must match the task routing executor/,
   );
+});
+
+test("fork and mixed fixtures preserve hierarchy and branch paths without per-edge queries", async () => {
+  const [fork, forkCase, mixed, parallelCase, skipCase, rejectCase] =
+    await Promise.all([
+      read(".github/workgraph/fixtures/v1/fork-join-lifecycle.expected.json").then(
+        JSON.parse,
+      ),
+      read(".github/workgraph/tests/fork-join-v1.json").then(JSON.parse),
+      read(".github/workgraph/fixtures/v1/mixed-control-flow.expected.json").then(
+        JSON.parse,
+      ),
+      read(".github/workgraph/tests/mixed-parallel-v1.json").then(JSON.parse),
+      read(".github/workgraph/tests/mixed-skip-v1.json").then(JSON.parse),
+      read(".github/workgraph/tests/mixed-reject-v1.json").then(JSON.parse),
+    ]);
+
+  assert.deepEqual(fork.queryBundle.queries, []);
+  assert.deepEqual(mixed.queryBundle.queries, []);
+  const forkDefinition = fork.workgraphDefinition;
+  assert.deepEqual(
+    Object.values(forkDefinition.steps)
+      .filter(({ type }) => type === "task")
+      .map(({ taskDefinition }) => taskDefinition.taskKey),
+    ["a", "b", "f", "g"],
+  );
+  assert.deepEqual(
+    forkDefinition.steps.b.taskDefinition.children.map(({ taskKey }) => taskKey),
+    ["c", "d", "e"],
+  );
+  assert.equal(
+    Object.keys(forkDefinition.steps.b.executionPolicies).length,
+    4,
+  );
+  assert.deepEqual(forkCase.spec.expected.taskParents, {
+    a: null,
+    b: null,
+    c: "b",
+    d: "b",
+    e: "b",
+    f: null,
+    g: null,
+  });
+
+  const mixedDefinition = mixed.workgraphDefinition;
+  assert.deepEqual(mixedDefinition.steps.c.transition, {
+    type: "outcomes",
+    targets: {
+      parallel: "g",
+      reject: "ignored",
+      skip: "h",
+    },
+  });
+  assert.deepEqual(
+    mixedDefinition.steps.g.taskDefinition.children.map(({ taskKey }) => taskKey),
+    ["d", "e", "f"],
+  );
+  assert.deepEqual(parallelCase.spec.expected.topLevelTaskKeys, [
+    "a",
+    "b",
+    "c",
+    "g",
+    "h",
+  ]);
+  assert.deepEqual(skipCase.spec.expected.topLevelTaskKeys, ["a", "b", "c", "h"]);
+  assert.equal(skipCase.spec.expected.terminalOutcome, "completed");
+  assert.deepEqual(rejectCase.spec.expected.topLevelTaskKeys, ["a", "b", "c"]);
+  assert.equal(rejectCase.spec.expected.terminalOutcome, "ignored");
 });
 
 test("high-level IssueWorkflow shape is strict and resolves all graph references", () => {

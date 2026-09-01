@@ -2,13 +2,13 @@
   "apiVersion": "drasi.io/v1",
   "kind": "WorkGraphTestCase",
   "metadata": {
-    "id": "linear-sequence"
+    "id": "mixed-skip"
   },
   "spec": {
-    "workflowDefinitionId": "issue-lifecycle",
+    "workflowDefinitionId": "mixed-control-flow",
     "rootIssue": {
-      "title": "Linear WorkGraph proof",
-      "body": "Exercise the four-stage issue lifecycle.",
+      "title": "Mixed WorkGraph skip proof",
+      "body": "Exercise the alternate branch that skips parallel work.",
       "labels": [
         "workgraph"
       ]
@@ -36,16 +36,17 @@
         "result": {
           "outcome": "succeeded",
           "output": {
+            "outcome": "skip",
             "step": "c"
           }
         },
         "evaluationVerdict": "accepted"
       },
-      "d": {
+      "h": {
         "result": {
           "outcome": "succeeded",
           "output": {
-            "step": "d"
+            "step": "h"
           }
         },
         "evaluationVerdict": "accepted"
@@ -56,13 +57,13 @@
         "a",
         "b",
         "c",
-        "d"
+        "h"
       ],
       "taskParents": {
         "a": null,
         "b": null,
         "c": null,
-        "d": null
+        "h": null
       },
       "terminalOutcome": "completed"
     }

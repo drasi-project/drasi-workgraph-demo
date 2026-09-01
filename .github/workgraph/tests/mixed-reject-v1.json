@@ -2,13 +2,13 @@
   "apiVersion": "drasi.io/v1",
   "kind": "WorkGraphTestCase",
   "metadata": {
-    "id": "linear-sequence"
+    "id": "mixed-reject"
   },
   "spec": {
-    "workflowDefinitionId": "issue-lifecycle",
+    "workflowDefinitionId": "mixed-control-flow",
     "rootIssue": {
-      "title": "Linear WorkGraph proof",
-      "body": "Exercise the four-stage issue lifecycle.",
+      "title": "Mixed WorkGraph reject proof",
+      "body": "Exercise the alternate branch that reaches the ignored terminal.",
       "labels": [
         "workgraph"
       ]
@@ -36,16 +36,8 @@
         "result": {
           "outcome": "succeeded",
           "output": {
+            "outcome": "reject",
             "step": "c"
-          }
-        },
-        "evaluationVerdict": "accepted"
-      },
-      "d": {
-        "result": {
-          "outcome": "succeeded",
-          "output": {
-            "step": "d"
           }
         },
         "evaluationVerdict": "accepted"
@@ -55,16 +47,14 @@
       "topLevelTaskKeys": [
         "a",
         "b",
-        "c",
-        "d"
+        "c"
       ],
       "taskParents": {
         "a": null,
         "b": null,
-        "c": null,
-        "d": null
+        "c": null
       },
-      "terminalOutcome": "completed"
+      "terminalOutcome": "ignored"
     }
   }
 }

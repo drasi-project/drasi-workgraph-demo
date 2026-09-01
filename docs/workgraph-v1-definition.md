@@ -17,7 +17,7 @@ same task and assignment and creates a fresh bounded attempt. Every task has
 The definition has no outcome branches, waits, or recursive children.
 
 The Rust compiler is authoritative for the final canonical
-`WorkGraphWorkflowDefinition/v1` body and its generated query bundle.
+`WorkGraphWorkflowDefinition/v1` body, query plan, and any generated resume queries.
 `.github/workgraph/fixtures/v1/issue-lifecycle.expected.json` is the exact
 complete compiler output; `.github/workgraph/workflows/issue-lifecycle-v1.body`
 is its `canonicalDefinitionBody`. JavaScript parses and validates the complete
@@ -92,7 +92,7 @@ proof derives:
 2. the Root Issue content digest;
 3. the workflow run ID;
 4. the Root Task ID and canonical body;
-5. the first lifecycle state, `FORK`.
+5. the first lifecycle state, `ASSIGN`, because the Root Task is a leaf.
 
 No Root Task is pre-seeded. In live mode the `workgraph-v1` Reaction consumes
 `wg-issues-waiting-for-admission` and creates the Root Task as a native child of
@@ -102,26 +102,24 @@ The proof pins the complete runtime query inventory:
 
 - 1 admission query;
 - 11 lifecycle queries;
-- 9 detail queries, including `wg-route-detail` and `wg-error-detail`;
-- 6 compiler-generated entry, transition, and terminal queries;
-- 27 total queries in that exact category order.
+- 10 detail queries, including Route, Error, and terminal detail;
+- no per-edge entry, sequence, branch, fork, or terminal queries;
+- 22 total shape-independent queries in that exact category order.
 
 `runtimeContract` names `server-config-v1-loopback.yaml` and
 `data/workgraph-v1-loopback.redb`; production runtime names are not valid proof
 inputs. Its keys are exactly the Source and Reaction IDs, those two loopback
 paths, `queryIds`, and `queryContractDigest`. The query list must be the exact
-ordered 21 generic IDs from the canonical sibling Dogfooding Canvas inventory,
-followed by the exact six IDs from this Demo's compiled Canvas inventory.
+ordered 22 IDs from the canonical sibling Dogfooding Canvas inventory.
 
 `queryContractDigest` is `sha256:` plus the SHA-256 of compact JSON for the
-ordered 27 entries projected to exactly `{"id","sha256"}` (with keys in that
+ordered 22 entries projected to exactly `{"id","sha256"}` (with keys in that
 order). The generic entries and hashes are read only from
 `../drasi-dogfooding/.github/extensions/workgraph-v1-view/contract/query-inventory.json`;
-the generated entries and hashes come from
-`issue-lifecycle.expected.json`'s `queryBundle.canvasInventory`. This binds the
-offline proof to query content as well as query names. Before trusting a
-generated inventory hash, the proof hashes the corresponding
-`queryBundle.queries[].query` exact UTF-8 text and requires an exact match.
+the compiled inventory is empty for workflows without waits. A human wait adds
+only its content-addressed resume query. This binds the offline proof to query
+content as well as query names without multiplying queries for sequential,
+branch, or parallel tasks.
 
 Run:
 

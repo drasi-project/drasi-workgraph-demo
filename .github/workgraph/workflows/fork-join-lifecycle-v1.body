@@ -1,0 +1,197 @@
+WorkGraphWorkflowDefinition/v1
+
+```json
+{
+  "workflowDefinitionId": "fork-join-lifecycle",
+  "version": "v1",
+  "digest": "sha256:d7198f5b47ba990a3909d966255f35d6aaf87266622cc04de7ed1ee3cfddb72c",
+  "trigger": "workgraph",
+  "defaults": {
+    "evaluator": "result-evaluator",
+    "orchestrator": "workflow-coordinator",
+    "maxReworkAttempts": 3
+  },
+  "initialStepId": "a",
+  "root": {
+    "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:377e00223daa732b91a3d431cb604779767dc0b6b72aa5e58c2a1c2d57f6e4d7",
+    "taskKey": "a",
+    "operation": "prepare-parallel-work",
+    "routing": {
+      "permittedExecutors": [
+        "issue-worker"
+      ]
+    },
+    "staticInputs": {},
+    "children": []
+  },
+  "steps": {
+    "a": {
+      "type": "task",
+      "taskDefinition": {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:377e00223daa732b91a3d431cb604779767dc0b6b72aa5e58c2a1c2d57f6e4d7",
+        "taskKey": "a",
+        "operation": "prepare-parallel-work",
+        "routing": {
+          "permittedExecutors": [
+            "issue-worker"
+          ]
+        },
+        "staticInputs": {},
+        "children": []
+      },
+      "executionPolicies": {
+        "urn:drasi:workgraph:id:v1:task-definition:sha256:377e00223daa732b91a3d431cb604779767dc0b6b72aa5e58c2a1c2d57f6e4d7": {
+          "workerId": "issue-worker",
+          "evaluatorId": "result-evaluator",
+          "orchestratorId": "workflow-coordinator",
+          "maxReworkAttempts": 3
+        }
+      },
+      "transition": {
+        "type": "next",
+        "targetStepId": "b"
+      }
+    },
+    "b": {
+      "type": "task",
+      "taskDefinition": {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:378069129b6863627b8981aed71a86b085487c7963e99ac3d00993ccc356865d",
+        "taskKey": "b",
+        "operation": "aggregate-child-results",
+        "routing": {
+          "permittedExecutors": [
+            "issue-worker"
+          ]
+        },
+        "staticInputs": {},
+        "children": [
+          {
+            "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:4da0882a6d312ab69891020b95cb29b26d51b9d631c8c19fb7d17a7ccd27cb23",
+            "taskKey": "c",
+            "operation": "inspect-title",
+            "routing": {
+              "permittedExecutors": [
+                "issue-worker"
+              ]
+            },
+            "staticInputs": {},
+            "children": []
+          },
+          {
+            "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:c0f1fd8f4159b4363cf2c3df3af2e8b48c6562dfd2e7d36c639f00ed8a3eaf80",
+            "taskKey": "d",
+            "operation": "inspect-body",
+            "routing": {
+              "permittedExecutors": [
+                "issue-worker"
+              ]
+            },
+            "staticInputs": {},
+            "children": []
+          },
+          {
+            "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:acd1c1309fabd54f62d58949627f8a89b9d9c04b73148d62549d16206e833f18",
+            "taskKey": "e",
+            "operation": "inspect-risk",
+            "routing": {
+              "permittedExecutors": [
+                "issue-worker"
+              ]
+            },
+            "staticInputs": {},
+            "children": []
+          }
+        ]
+      },
+      "executionPolicies": {
+        "urn:drasi:workgraph:id:v1:task-definition:sha256:378069129b6863627b8981aed71a86b085487c7963e99ac3d00993ccc356865d": {
+          "workerId": "issue-worker",
+          "evaluatorId": "result-evaluator",
+          "orchestratorId": "workflow-coordinator",
+          "maxReworkAttempts": 3
+        },
+        "urn:drasi:workgraph:id:v1:task-definition:sha256:4da0882a6d312ab69891020b95cb29b26d51b9d631c8c19fb7d17a7ccd27cb23": {
+          "workerId": "issue-worker",
+          "evaluatorId": "result-evaluator",
+          "orchestratorId": "workflow-coordinator",
+          "maxReworkAttempts": 3
+        },
+        "urn:drasi:workgraph:id:v1:task-definition:sha256:acd1c1309fabd54f62d58949627f8a89b9d9c04b73148d62549d16206e833f18": {
+          "workerId": "issue-worker",
+          "evaluatorId": "result-evaluator",
+          "orchestratorId": "workflow-coordinator",
+          "maxReworkAttempts": 3
+        },
+        "urn:drasi:workgraph:id:v1:task-definition:sha256:c0f1fd8f4159b4363cf2c3df3af2e8b48c6562dfd2e7d36c639f00ed8a3eaf80": {
+          "workerId": "issue-worker",
+          "evaluatorId": "result-evaluator",
+          "orchestratorId": "workflow-coordinator",
+          "maxReworkAttempts": 3
+        }
+      },
+      "transition": {
+        "type": "next",
+        "targetStepId": "f"
+      }
+    },
+    "completed": {
+      "type": "terminal",
+      "outcome": "completed"
+    },
+    "f": {
+      "type": "task",
+      "taskDefinition": {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:9d5e0d11e031ec2ea6f396ae33df503449a66381d497103ff25ec9b74783905b",
+        "taskKey": "f",
+        "operation": "synthesize-results",
+        "routing": {
+          "permittedExecutors": [
+            "issue-worker"
+          ]
+        },
+        "staticInputs": {},
+        "children": []
+      },
+      "executionPolicies": {
+        "urn:drasi:workgraph:id:v1:task-definition:sha256:9d5e0d11e031ec2ea6f396ae33df503449a66381d497103ff25ec9b74783905b": {
+          "workerId": "issue-worker",
+          "evaluatorId": "result-evaluator",
+          "orchestratorId": "workflow-coordinator",
+          "maxReworkAttempts": 3
+        }
+      },
+      "transition": {
+        "type": "next",
+        "targetStepId": "g"
+      }
+    },
+    "g": {
+      "type": "task",
+      "taskDefinition": {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:06201be9060b3cab15549a0f333d12ffcfb795487cc16fdb4eb6869271af9640",
+        "taskKey": "g",
+        "operation": "finalize-parallel-work",
+        "routing": {
+          "permittedExecutors": [
+            "issue-worker"
+          ]
+        },
+        "staticInputs": {},
+        "children": []
+      },
+      "executionPolicies": {
+        "urn:drasi:workgraph:id:v1:task-definition:sha256:06201be9060b3cab15549a0f333d12ffcfb795487cc16fdb4eb6869271af9640": {
+          "workerId": "issue-worker",
+          "evaluatorId": "result-evaluator",
+          "orchestratorId": "workflow-coordinator",
+          "maxReworkAttempts": 3
+        }
+      },
+      "transition": {
+        "type": "next",
+        "targetStepId": "completed"
+      }
+    }
+  }
+}
+```

@@ -1,0 +1,67 @@
+apiVersion: workgraph.drasi.io/v1
+kind: IssueWorkflow
+metadata:
+  id: mixed-control-flow
+
+spec:
+  trigger: workgraph
+  initial: a
+  defaults:
+    evaluator: result-evaluator
+    orchestrator: workflow-coordinator
+    maxReworkAttempts: 3
+  steps:
+    a:
+      type: task
+      operation: intake-mixed-work
+      worker: issue-worker
+      inputs: {}
+      next: b
+    b:
+      type: task
+      operation: normalize-mixed-work
+      worker: issue-worker
+      inputs: {}
+      next: c
+    c:
+      type: task
+      operation: choose-processing-path
+      worker: issue-worker
+      inputs: {}
+      outcomes:
+        parallel: g
+        reject: ignored
+        skip: h
+    g:
+      type: task
+      operation: aggregate-parallel-checks
+      worker: issue-worker
+      inputs: {}
+      children:
+        join: all
+        tasks:
+          d:
+            operation: inspect-title
+            worker: issue-worker
+            inputs: {}
+          e:
+            operation: inspect-body
+            worker: issue-worker
+            inputs: {}
+          f:
+            operation: inspect-risk
+            worker: issue-worker
+            inputs: {}
+      next: h
+    h:
+      type: task
+      operation: finalize-mixed-work
+      worker: issue-worker
+      inputs: {}
+      next: completed
+    completed:
+      type: terminal
+      outcome: completed
+    ignored:
+      type: terminal
+      outcome: ignored

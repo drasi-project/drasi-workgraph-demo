@@ -2,13 +2,13 @@
   "apiVersion": "drasi.io/v1",
   "kind": "WorkGraphTestCase",
   "metadata": {
-    "id": "linear-sequence"
+    "id": "mixed-parallel"
   },
   "spec": {
-    "workflowDefinitionId": "issue-lifecycle",
+    "workflowDefinitionId": "mixed-control-flow",
     "rootIssue": {
-      "title": "Linear WorkGraph proof",
-      "body": "Exercise the four-stage issue lifecycle.",
+      "title": "Mixed WorkGraph parallel proof",
+      "body": "Exercise sequence, outcome selection, fork join, and completion.",
       "labels": [
         "workgraph"
       ]
@@ -36,6 +36,7 @@
         "result": {
           "outcome": "succeeded",
           "output": {
+            "outcome": "parallel",
             "step": "c"
           }
         },
@@ -49,6 +50,43 @@
           }
         },
         "evaluationVerdict": "accepted"
+      },
+      "e": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "step": "e"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "f": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "step": "f"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "g": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "childCount": 3,
+            "step": "g"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "h": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "step": "h"
+          }
+        },
+        "evaluationVerdict": "accepted"
       }
     },
     "expected": {
@@ -56,13 +94,18 @@
         "a",
         "b",
         "c",
-        "d"
+        "g",
+        "h"
       ],
       "taskParents": {
         "a": null,
         "b": null,
         "c": null,
-        "d": null
+        "d": "g",
+        "e": "g",
+        "f": "g",
+        "g": null,
+        "h": null
       },
       "terminalOutcome": "completed"
     }

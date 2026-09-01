@@ -37,14 +37,23 @@ It defines four `issue-worker` tasks: intake, normalization, inspection, and
 finalization. Each task follows one `next` edge to the sole `completed`
 terminal; there are no branches, waits, or recursive children.
 
+Two additional local-proof definitions preserve that regression while extending
+coverage:
+
+- `fork-join-lifecycle.yaml` runs A → B, realizes C/D/E beneath B, joins all
+  three, then runs F → G.
+- `mixed-control-flow.yaml` combines a sequential prefix, three outcome
+  branches, an optional D/E/F fork beneath G, branch convergence at H, and
+  completed/ignored terminals.
+
 Dogfooding's Rust `workgraph-compile` turns that YAML into the canonical
-`WorkGraphWorkflowDefinition/v1` body and a deterministic 6-query workflow
-bundle. The committed
+`WorkGraphWorkflowDefinition/v1` body. The committed
 [`issue-lifecycle-v1.body`](.github/workgraph/workflows/issue-lifecycle-v1.body)
 is that canonical body, and
 [`issue-lifecycle.expected.json`](.github/workgraph/fixtures/v1/issue-lifecycle.expected.json)
-is the exact complete compiler output. The runtime combines the generated
-queries with 21 generic admission, lifecycle, and detail queries.
+is the exact complete compiler output. Sequence, branch, fork/join, and
+terminal processing share 22 fixed admission, lifecycle, and detail queries;
+only workflows with human waits add generated resume queries.
 
 Evaluator and orchestrator profiles are lifecycle roles. Through the narrow
 reporter they read a verified current task snapshot and write one canonical
@@ -58,7 +67,7 @@ All generated protocol identities use the corresponding lowercase type in that
 URN namespace.
 
 The offline proof fixture pins the loopback server/state-store identities, the
-exact ordered 21 generic plus six generated `wg-*` Drasi queries, and a
+exact ordered 22 shape-independent `wg-*` Drasi queries, and a
 SHA-256 digest of their canonical Canvas inventory entries. It derives the Root
 Task from a Root Issue admission:
 
