@@ -7,7 +7,9 @@
     "queryIds": [
       "wg-issues-waiting-for-admission",
       "wg-tasks-waiting-for-fork",
+      "wg-tasks-waiting-for-fork-action",
       "wg-tasks-waiting-for-join-all",
+      "wg-tasks-waiting-for-join-action",
       "wg-task-leaves-waiting-for-assign",
       "wg-task-parents-waiting-for-assign",
       "wg-tasks-waiting-for-lease",
@@ -28,7 +30,7 @@
       "wg-terminal-detail",
       "wg-predecessor-result-detail"
     ],
-    "queryContractDigest": "sha256:6287b2b5901070e92aa035ab658d524547b8162c2d79b80d48da9671db518057"
+    "queryContractDigest": "sha256:1e648107e0f1432cb08cb94a1f85d994512df9d5f0066e839dd9e18e73a62d44"
   },
   "definition": {
     "bodyPath": "../../workflows/issue-lifecycle-v1.body",
@@ -72,7 +74,9 @@
     ],
     "parent": [
       "FORK",
+      "FORK_ACTION",
       "JOIN_ALL",
+      "JOIN_ACTION",
       "ASSIGN",
       "LEASE",
       "DISPATCH",

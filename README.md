@@ -11,6 +11,8 @@ The prototype has one protocol:
 - `WorkGraphWorkflowDefinition/v1`
 - `WorkGraphTask/v1`
 - `WorkGraphTaskAssignment/v1`
+- `WorkGraphTaskFork/v1`
+- `WorkGraphTaskJoin/v1`
 - `WorkGraphTaskDispatch/v1`
 - `WorkGraphTaskResult/v1`
 - `WorkGraphTaskEvaluation/v1`
@@ -52,7 +54,7 @@ Dogfooding's Rust `workgraph-compile` turns that YAML into the canonical
 is that canonical body, and
 [`issue-lifecycle.expected.json`](.github/workgraph/fixtures/v1/issue-lifecycle.expected.json)
 is the exact complete compiler output. Sequence, branch, fork/join, and
-terminal processing share 22 fixed admission, lifecycle, and detail queries;
+terminal processing share 24 fixed admission, lifecycle, and detail queries;
 only workflows with human waits add generated resume queries.
 
 Evaluator and orchestrator profiles are lifecycle roles. Through the narrow
@@ -67,7 +69,7 @@ All generated protocol identities use the corresponding lowercase type in that
 URN namespace.
 
 The offline proof fixture pins the loopback server/state-store identities, the
-exact ordered 22 shape-independent `wg-*` Drasi queries, and a
+exact ordered 24 shape-independent `wg-*` Drasi queries, and a
 SHA-256 digest of their canonical Canvas inventory entries. It derives the Root
 Task from a Root Issue admission:
 

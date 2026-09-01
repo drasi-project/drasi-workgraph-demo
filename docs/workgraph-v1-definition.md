@@ -34,10 +34,15 @@ Every task and lifecycle body contains exactly `apiVersion`, `kind`, `id`,
 `rootIssueId`, `workflowRunId`, `taskId`, `workflowContext`, `references`, and
 `data`. `apiVersion` is `workgraph.drasi.io/v1`. Workflow context always contains the pinned
 definition ID, version, digest, task-definition ID, `taskKey`, and `operation`.
-The markers and kinds are Task, TaskAssignment, TaskDispatch, TaskResult,
-TaskEvaluation, TaskRoute, and TaskError using their matching
+The markers and kinds are Task, TaskFork, TaskJoin, TaskAssignment,
+TaskDispatch, TaskResult, TaskEvaluation, TaskRoute, and TaskError using their matching
 `WorkGraph<kind>/v1` marker. Flat legacy bodies and old marker spellings are not
 accepted.
+
+The eight task-comment message kinds are the `WorkGraphTaskAction` log.
+TaskFork is persisted only after all declared child tasks are observed, and
+TaskJoin is persisted only after all joined children close with accepted
+Result/Evaluation pairs.
 
 Every runtime `taskId` must match the canonical form
 `urn:drasi:workgraph:id:v1:task:sha256:<64 lowercase hex>`. Root Task IDs hash
@@ -49,8 +54,10 @@ full 64-hex representation changed. Legacy `wgt-*`, pre-URN IDs, arbitrary
 names, uppercase hex, and malformed digests are
 rejected by Task and lifecycle formatters, parsers, and ID derivation helpers.
 
-References/data are strict: Task uses `{}`/`{resolvedInputs}`; Assignment uses
-`{}`/`{permittedExecutors}`; Dispatch uses `{assignment:{kind,id}}` with
+References/data are strict: Task uses `{}`/`{resolvedInputs}`; Fork records
+ordered child TaskDefinition/Task references; Join records its Fork and ordered
+child Task/Result/Evaluation references; Assignment uses
+`{join:{kind,id}|null}`/`{permittedExecutors}`; Dispatch uses `{assignment:{kind,id}}` with
 `{launchId, lease:{id,executorId,slotId}}`; Result uses
 typed `dispatch` and `lease` roles with `{attempt,outcome,output}`; Evaluation
 uses a typed `result` role; and Route uses typed `result` and `evaluation`
@@ -74,7 +81,7 @@ Verdicts are `accepted` or `rejected`; rejected Evaluations require actionable
 feedback. Accepted Results follow their exact transition, while rejected
 Results may rework within their effective bound. A failed worker execution is
 still a TaskResult with outcome `failed`. TaskError is reserved for diagnostics,
-including an error-terminal routing decision; its six optional causal
+including an error-terminal routing decision; its eight optional causal
 references and optional attempt are explicit `null` when absent.
 
 Evaluate summary and feedback are lifecycle text rather than static data-map
@@ -101,19 +108,19 @@ the Root Issue.
 The proof pins the complete runtime query inventory:
 
 - 1 admission query;
-- 11 lifecycle queries;
+- 13 lifecycle queries;
 - 10 detail queries, including Route, Error, and terminal detail;
 - no per-edge entry, sequence, branch, fork, or terminal queries;
-- 22 total shape-independent queries in that exact category order.
+- 24 total shape-independent queries in that exact category order.
 
 `runtimeContract` names `server-config-v1-loopback.yaml` and
 `data/workgraph-v1-loopback.redb`; production runtime names are not valid proof
 inputs. Its keys are exactly the Source and Reaction IDs, those two loopback
 paths, `queryIds`, and `queryContractDigest`. The query list must be the exact
-ordered 22 IDs from the canonical sibling Dogfooding Canvas inventory.
+ordered 24 IDs from the canonical sibling Dogfooding Canvas inventory.
 
 `queryContractDigest` is `sha256:` plus the SHA-256 of compact JSON for the
-ordered 22 entries projected to exactly `{"id","sha256"}` (with keys in that
+ordered 24 entries projected to exactly `{"id","sha256"}` (with keys in that
 order). The generic entries and hashes are read only from
 `../drasi-dogfooding/.github/extensions/workgraph-v1-view/contract/query-inventory.json`;
 the compiled inventory is empty for workflows without waits. A human wait adds

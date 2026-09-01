@@ -1166,6 +1166,8 @@ test("Dispatch uses the exact seven-field schema and direct task identities", as
 test("reporter exports strict TaskError diagnostic support", () => {
   const data = fixture();
   const references = {
+    forkId: null,
+    joinId: null,
     assignmentId: null,
     dispatchId: data.childDispatch.dispatchId,
     leaseId: data.childDispatch.lease.leaseId,

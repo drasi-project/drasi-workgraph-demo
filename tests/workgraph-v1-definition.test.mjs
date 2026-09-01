@@ -8,15 +8,21 @@ import {
   MAX_TASK_DEFINITION_CHILDREN,
   RUNTIME_TASK_MARKER,
   TASK_ERROR_MARKER,
+  TASK_FORK_MARKER,
+  TASK_JOIN_MARKER,
   deriveWorkGraphProtocolId,
   deriveWorkGraphTaskEvaluationId,
   deriveWorkGraphTaskErrorId,
+  deriveWorkGraphTaskForkId,
+  deriveWorkGraphTaskJoinId,
   deriveWorkGraphTaskResultId,
   deriveWorkGraphTaskRouteId,
   formatTaskEvaluation,
   formatTaskAssignment,
   formatTaskDispatch,
   formatTaskError,
+  formatTaskFork,
+  formatTaskJoin,
   formatTaskResult,
   formatTaskRoute,
   formatCompiledWorkflowDefinition,
@@ -29,6 +35,9 @@ import {
   parseTaskAssignment,
   parseTaskDispatch,
   parseTaskError,
+  parseTaskFork,
+  parseTaskJoin,
+  parseWorkGraphTaskAction,
   parseTaskResult,
   parseTaskRoute,
   parseCompiledWorkflowDefinition,
@@ -64,7 +73,9 @@ const RESULT_ID = protocolId("result", "result-1");
 const PROOF_QUERY_IDS = [
   "wg-issues-waiting-for-admission",
   "wg-tasks-waiting-for-fork",
+  "wg-tasks-waiting-for-fork-action",
   "wg-tasks-waiting-for-join-all",
+  "wg-tasks-waiting-for-join-action",
   "wg-task-leaves-waiting-for-assign",
   "wg-task-parents-waiting-for-assign",
   "wg-tasks-waiting-for-lease",
@@ -358,7 +369,7 @@ test("proof inputs pin the exact loopback query contract and remain inactive", a
     .digest("hex")}`;
   assert.equal(
     inputs.runtimeContract.queryContractDigest,
-    "sha256:6287b2b5901070e92aa035ab658d524547b8162c2d79b80d48da9671db518057",
+    "sha256:1e648107e0f1432cb08cb94a1f85d994512df9d5f0066e839dd9e18e73a62d44",
   );
   assert.equal(inputs.runtimeContract.queryContractDigest, queryContractDigest);
   assert.deepEqual(inputs.activation, {
@@ -970,6 +981,7 @@ test("all lifecycle bodies use the strict unified envelope", () => {
     workflowRunId: MESSAGE_RUN_ID,
     taskId: task.taskId,
     task,
+    joinId: null,
     permittedExecutors: ["issue-worker"],
   };
   const dispatch = {
@@ -1003,6 +1015,8 @@ test("all lifecycle bodies use the strict unified envelope", () => {
     output: { summary: "worker failed" },
   };
   const errorReferences = {
+    forkId: null,
+    joinId: null,
     assignmentId: null,
     dispatchId: dispatch.dispatchId,
     leaseId: dispatch.lease.leaseId,
@@ -1058,7 +1072,12 @@ test("all lifecycle bodies use the strict unified envelope", () => {
     assert.equal(envelope.workflowContext.operation, "inspect-issue");
   }
   assert.ok(formatTaskError(error).startsWith(`${TASK_ERROR_MARKER}\n`));
-  assert.deepEqual(JSON.parse(formatTaskAssignment(assignment).match(/```json\n([\s\S]+)\n```/)[1]).references, {});
+  assert.deepEqual(
+    JSON.parse(
+      formatTaskAssignment(assignment).match(/```json\n([\s\S]+)\n```/)[1],
+    ).references,
+    { join: null },
+  );
   const dispatchEnvelope = JSON.parse(
     formatTaskDispatch(dispatch).match(/```json\n([\s\S]+)\n```/)[1],
   );
@@ -1094,6 +1113,8 @@ test("all lifecycle bodies use the strict unified envelope", () => {
     JSON.parse(formatTaskError(error).match(/```json\n([\s\S]+)\n```/)[1])
       .references,
     {
+      fork: null,
+      join: null,
       assignment: null,
       dispatch: { kind: "TaskDispatch", id: DISPATCH_ID },
       lease: { kind: "TaskLease", id: LEASE_ID },
@@ -1209,6 +1230,83 @@ test("all lifecycle bodies use the strict unified envelope", () => {
   });
 });
 
+test("Fork and Join actions have stable ordered identities and strict envelopes", () => {
+  const parentTaskId = protocolId("task", "parent");
+  const task = { ...messageTask(), taskId: parentTaskId };
+  const children = [
+    {
+      taskDefinitionId: protocolId("task-definition", "definition-a"),
+      taskId: protocolId("task", "task-a"),
+    },
+    {
+      taskDefinitionId: protocolId("task-definition", "definition-b"),
+      taskId: protocolId("task", "task-b"),
+    },
+  ].sort((left, right) =>
+    left.taskDefinitionId.localeCompare(right.taskDefinitionId),
+  );
+  const forkId = deriveWorkGraphTaskForkId(parentTaskId, children);
+  assert.equal(
+    forkId,
+    "urn:drasi:workgraph:id:v1:fork:sha256:f7eed381ba52f77add8889df2706b2577bda16160cbc2ba21000f062f245862f",
+  );
+  const fork = {
+    forkId,
+    rootIssueId: "I_root_issue",
+    workflowRunId: MESSAGE_RUN_ID,
+    taskId: parentTaskId,
+    task,
+    children,
+  };
+  const forkBody = formatTaskFork(fork);
+  assert.ok(forkBody.startsWith(`${TASK_FORK_MARKER}\n`));
+  assert.deepEqual(parseTaskFork(forkBody), fork);
+  assert.deepEqual(parseWorkGraphTaskAction(forkBody), {
+    kind: "TaskFork",
+    value: fork,
+  });
+
+  const joinedChildren = children.map((child, index) => ({
+    ...child,
+    resultId: protocolId("result", `result-${index}`),
+    evaluationId: protocolId("evaluation", `evaluation-${index}`),
+  }));
+  const joinId = deriveWorkGraphTaskJoinId(
+    parentTaskId,
+    forkId,
+    joinedChildren,
+  );
+  assert.equal(
+    joinId,
+    "urn:drasi:workgraph:id:v1:join:sha256:0f3cad8d997a109b04b5110f2bc4507f69a2ec20ea13c80ea69091977cb4e659",
+  );
+  const join = {
+    joinId,
+    rootIssueId: fork.rootIssueId,
+    workflowRunId: fork.workflowRunId,
+    taskId: parentTaskId,
+    task,
+    forkId,
+    strategy: "all",
+    children: joinedChildren,
+  };
+  const joinBody = formatTaskJoin(join);
+  assert.ok(joinBody.startsWith(`${TASK_JOIN_MARKER}\n`));
+  assert.deepEqual(parseTaskJoin(joinBody), join);
+  assert.deepEqual(parseWorkGraphTaskAction(joinBody), {
+    kind: "TaskJoin",
+    value: join,
+  });
+  assert.throws(
+    () => formatTaskFork({ ...fork, children: [...children].reverse() }),
+    /ordered by taskDefinitionId/,
+  );
+  assert.throws(
+    () => formatTaskJoin({ ...join, children: [] }),
+    /must contain 1-16 entries/,
+  );
+});
+
 test("all task contracts reject legacy and malformed task IDs", () => {
   const task = messageTask();
   const assignment = {
@@ -1217,6 +1315,7 @@ test("all task contracts reject legacy and malformed task IDs", () => {
     workflowRunId: task.workflowRunId,
     taskId: task.taskId,
     task,
+    joinId: null,
     permittedExecutors: ["issue-worker"],
   };
   const dispatch = {
@@ -1246,6 +1345,8 @@ test("all task contracts reject legacy and malformed task IDs", () => {
     output: {},
   };
   const errorReferences = {
+    forkId: null,
+    joinId: null,
     assignmentId: null,
     dispatchId: null,
     leaseId: null,

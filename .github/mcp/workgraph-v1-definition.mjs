@@ -4,6 +4,8 @@ import { isDeepStrictEqual, TextEncoder } from "node:util";
 export const WORKFLOW_DEFINITION_MARKER = "WorkGraphWorkflowDefinition/v1";
 export const RUNTIME_TASK_MARKER = "WorkGraphTask/v1";
 export const TASK_ASSIGNMENT_MARKER = "WorkGraphTaskAssignment/v1";
+export const TASK_FORK_MARKER = "WorkGraphTaskFork/v1";
+export const TASK_JOIN_MARKER = "WorkGraphTaskJoin/v1";
 export const TASK_DISPATCH_MARKER = "WorkGraphTaskDispatch/v1";
 export const TASK_RESULT_MARKER = "WorkGraphTaskResult/v1";
 export const TASK_EVALUATION_MARKER = "WorkGraphTaskEvaluation/v1";
@@ -23,6 +25,8 @@ const RESERVED_MARKERS = [
   WORKFLOW_DEFINITION_MARKER,
   RUNTIME_TASK_MARKER,
   TASK_ASSIGNMENT_MARKER,
+  TASK_FORK_MARKER,
+  TASK_JOIN_MARKER,
   TASK_DISPATCH_MARKER,
   TASK_RESULT_MARKER,
   TASK_EVALUATION_MARKER,
@@ -753,7 +757,33 @@ const ASSIGNMENT_KEYS = [
   "workflowRunId",
   "taskId",
   "task",
+  "joinId",
   "permittedExecutors",
+];
+const FORK_KEYS = [
+  "forkId",
+  "rootIssueId",
+  "workflowRunId",
+  "taskId",
+  "task",
+  "children",
+];
+const FORK_CHILD_KEYS = ["taskDefinitionId", "taskId"];
+const JOIN_KEYS = [
+  "joinId",
+  "rootIssueId",
+  "workflowRunId",
+  "taskId",
+  "task",
+  "forkId",
+  "strategy",
+  "children",
+];
+const JOIN_CHILD_KEYS = [
+  "taskDefinitionId",
+  "taskId",
+  "resultId",
+  "evaluationId",
 ];
 const DISPATCH_KEYS = [
   "dispatchId",
@@ -827,6 +857,8 @@ const ERROR_KEYS = [
   "details",
 ];
 const ERROR_REFERENCE_KEYS = [
+  "forkId",
+  "joinId",
   "assignmentId",
   "dispatchId",
   "leaseId",
@@ -835,6 +867,8 @@ const ERROR_REFERENCE_KEYS = [
   "routeId",
 ];
 const ERROR_REFERENCE_ROLES = [
+  "fork",
+  "join",
   "assignment",
   "dispatch",
   "lease",
@@ -1600,6 +1634,10 @@ export function deriveWorkGraphProtocolId(type, semanticInputs) {
 }
 
 const REFERENCE_KINDS = {
+  task: ["Task", "task"],
+  taskDefinition: ["TaskDefinition", "task-definition"],
+  fork: ["TaskFork", "fork"],
+  join: ["TaskJoin", "join"],
   assignment: ["TaskAssignment", "assignment"],
   dispatch: ["TaskDispatch", "dispatch"],
   lease: ["TaskLease", "lease"],
@@ -1635,6 +1673,9 @@ export function normalizeTaskAssignment(value) {
     "assignmentId",
     "assignment",
   );
+  if (value.joinId !== null) {
+    validateWorkGraphProtocolId(value.joinId, "join", "task assignment joinId");
+  }
   if (
     !Array.isArray(value.permittedExecutors) ||
     value.permittedExecutors.length < 1 ||
@@ -1657,6 +1698,7 @@ export function normalizeTaskAssignment(value) {
   return {
     assignmentId: value.assignmentId,
     ...base,
+    joinId: value.joinId,
     permittedExecutors: [...value.permittedExecutors],
   };
 }
@@ -1668,7 +1710,12 @@ export function formatTaskAssignment(value) {
     "TaskAssignment",
     normalized.assignmentId,
     normalized,
-    {},
+    {
+      join:
+        normalized.joinId === null
+          ? null
+          : typedReference("join", normalized.joinId),
+    },
     { permittedExecutors: normalized.permittedExecutors },
   );
 }
@@ -1678,7 +1725,7 @@ export function parseTaskAssignment(body) {
     body,
     TASK_ASSIGNMENT_MARKER,
     "TaskAssignment",
-    EMPTY_KEYS,
+    ["join"],
     ["permittedExecutors"],
     (envelope) => ({
       assignmentId: envelope.id,
@@ -1686,9 +1733,293 @@ export function parseTaskAssignment(body) {
       workflowRunId: envelope.workflowRunId,
       taskId: envelope.taskId,
       task: taskFromEnvelope(envelope),
+      joinId: validateTypedReference(
+        envelope.references.join,
+        "join",
+        true,
+      )?.id ?? null,
       permittedExecutors: envelope.data.permittedExecutors,
     }),
     formatTaskAssignment,
+  );
+}
+
+function normalizeForkChildren(children, context) {
+  if (
+    !Array.isArray(children) ||
+    children.length < 1 ||
+    children.length > MAX_TASK_DEFINITION_CHILDREN
+  ) {
+    throw new WorkGraphDefinitionError(
+      `${context} must contain 1-${MAX_TASK_DEFINITION_CHILDREN} entries`,
+    );
+  }
+  const definitions = new Set();
+  const tasks = new Set();
+  let previousDefinition = null;
+  return children.map((child, index) => {
+    exactKeys(child, FORK_CHILD_KEYS, `${context}[${index}]`);
+    validateWorkGraphProtocolId(
+      child.taskDefinitionId,
+      "task-definition",
+      `${context}[${index}].taskDefinitionId`,
+    );
+    validateWorkGraphTaskId(child.taskId, `${context}[${index}].taskId`);
+    if (
+      definitions.has(child.taskDefinitionId) ||
+      tasks.has(child.taskId) ||
+      (previousDefinition !== null &&
+        previousDefinition >= child.taskDefinitionId)
+    ) {
+      throw new WorkGraphDefinitionError(
+        `${context} must contain unique children ordered by taskDefinitionId`,
+      );
+    }
+    definitions.add(child.taskDefinitionId);
+    tasks.add(child.taskId);
+    previousDefinition = child.taskDefinitionId;
+    return { ...child };
+  });
+}
+
+export function deriveWorkGraphTaskForkId(taskId, children) {
+  validateWorkGraphTaskId(taskId, "task Fork taskId");
+  const normalized = normalizeForkChildren(children, "task Fork children");
+  return deriveWorkGraphProtocolId("fork", [
+    taskId,
+    ...normalized.flatMap((child) => [
+      child.taskDefinitionId,
+      child.taskId,
+    ]),
+  ]);
+}
+
+export function normalizeTaskFork(value) {
+  const base = normalizeLifecycleBase(
+    value,
+    FORK_KEYS,
+    "task Fork",
+    "forkId",
+    "fork",
+  );
+  const children = normalizeForkChildren(value.children, "task Fork children");
+  if (value.forkId !== deriveWorkGraphTaskForkId(value.taskId, children)) {
+    throw new WorkGraphDefinitionError(
+      "task Fork forkId does not match its ordered child references",
+    );
+  }
+  return { forkId: value.forkId, ...base, children };
+}
+
+export function formatTaskFork(value) {
+  const normalized = normalizeTaskFork(value);
+  return formatEnvelope(
+    TASK_FORK_MARKER,
+    "TaskFork",
+    normalized.forkId,
+    normalized,
+    {
+      children: normalized.children.map((child) => ({
+        taskDefinition: typedReference(
+          "taskDefinition",
+          child.taskDefinitionId,
+        ),
+        task: typedReference("task", child.taskId),
+      })),
+    },
+    { childCount: normalized.children.length },
+  );
+}
+
+export function parseTaskFork(body) {
+  return parseEnvelopeBody(
+    body,
+    TASK_FORK_MARKER,
+    "TaskFork",
+    ["children"],
+    ["childCount"],
+    (envelope) => {
+      if (
+        !Array.isArray(envelope.references.children) ||
+        envelope.data.childCount !== envelope.references.children.length
+      ) {
+        throw new WorkGraphDefinitionError(
+          "TaskFork childCount does not match references.children",
+        );
+      }
+      return {
+        forkId: envelope.id,
+        rootIssueId: envelope.rootIssueId,
+        workflowRunId: envelope.workflowRunId,
+        taskId: envelope.taskId,
+        task: taskFromEnvelope(envelope),
+        children: envelope.references.children.map((child, index) => {
+          exactKeys(
+            child,
+            ["taskDefinition", "task"],
+            `TaskFork references.children[${index}]`,
+          );
+          return {
+            taskDefinitionId: validateTypedReference(
+              child.taskDefinition,
+              "taskDefinition",
+            ).id,
+            taskId: validateTypedReference(child.task, "task").id,
+          };
+        }),
+      };
+    },
+    formatTaskFork,
+  );
+}
+
+function normalizeJoinChildren(children, context) {
+  if (!Array.isArray(children)) {
+    throw new WorkGraphDefinitionError(
+      `${context} must contain 1-${MAX_TASK_DEFINITION_CHILDREN} entries`,
+    );
+  }
+  children.forEach((child, index) =>
+    exactKeys(child, JOIN_CHILD_KEYS, `${context}[${index}]`),
+  );
+  const base = normalizeForkChildren(
+    children.map((child) => ({
+      taskDefinitionId: child.taskDefinitionId,
+      taskId: child.taskId,
+    })),
+    context,
+  );
+  return children.map((child, index) => {
+    validateWorkGraphProtocolId(
+      child.resultId,
+      "result",
+      `${context}[${index}].resultId`,
+    );
+    validateWorkGraphProtocolId(
+      child.evaluationId,
+      "evaluation",
+      `${context}[${index}].evaluationId`,
+    );
+    return { ...base[index], resultId: child.resultId, evaluationId: child.evaluationId };
+  });
+}
+
+export function deriveWorkGraphTaskJoinId(taskId, forkId, children) {
+  validateWorkGraphTaskId(taskId, "task Join taskId");
+  validateWorkGraphProtocolId(forkId, "fork", "task Join forkId");
+  const normalized = normalizeJoinChildren(children, "task Join children");
+  return deriveWorkGraphProtocolId("join", [
+    taskId,
+    forkId,
+    ...normalized.flatMap((child) => [
+      child.taskDefinitionId,
+      child.taskId,
+      child.resultId,
+      child.evaluationId,
+    ]),
+  ]);
+}
+
+export function normalizeTaskJoin(value) {
+  const base = normalizeLifecycleBase(
+    value,
+    JOIN_KEYS,
+    "task Join",
+    "joinId",
+    "join",
+  );
+  validateWorkGraphProtocolId(value.forkId, "fork", "task Join forkId");
+  if (value.strategy !== "all") {
+    throw new WorkGraphDefinitionError("task Join strategy must be all");
+  }
+  const children = normalizeJoinChildren(value.children, "task Join children");
+  if (
+    value.joinId !==
+    deriveWorkGraphTaskJoinId(value.taskId, value.forkId, children)
+  ) {
+    throw new WorkGraphDefinitionError(
+      "task Join joinId does not match its Fork and ordered child actions",
+    );
+  }
+  return {
+    joinId: value.joinId,
+    ...base,
+    forkId: value.forkId,
+    strategy: value.strategy,
+    children,
+  };
+}
+
+export function formatTaskJoin(value) {
+  const normalized = normalizeTaskJoin(value);
+  return formatEnvelope(
+    TASK_JOIN_MARKER,
+    "TaskJoin",
+    normalized.joinId,
+    normalized,
+    {
+      fork: typedReference("fork", normalized.forkId),
+      children: normalized.children.map((child) => ({
+        taskDefinition: typedReference(
+          "taskDefinition",
+          child.taskDefinitionId,
+        ),
+        task: typedReference("task", child.taskId),
+        result: typedReference("result", child.resultId),
+        evaluation: typedReference("evaluation", child.evaluationId),
+      })),
+    },
+    { strategy: normalized.strategy, childCount: normalized.children.length },
+  );
+}
+
+export function parseTaskJoin(body) {
+  return parseEnvelopeBody(
+    body,
+    TASK_JOIN_MARKER,
+    "TaskJoin",
+    ["fork", "children"],
+    ["strategy", "childCount"],
+    (envelope) => {
+      const fork = validateTypedReference(envelope.references.fork, "fork");
+      if (
+        !Array.isArray(envelope.references.children) ||
+        envelope.data.childCount !== envelope.references.children.length
+      ) {
+        throw new WorkGraphDefinitionError(
+          "TaskJoin childCount does not match references.children",
+        );
+      }
+      return {
+        joinId: envelope.id,
+        rootIssueId: envelope.rootIssueId,
+        workflowRunId: envelope.workflowRunId,
+        taskId: envelope.taskId,
+        task: taskFromEnvelope(envelope),
+        forkId: fork.id,
+        strategy: envelope.data.strategy,
+        children: envelope.references.children.map((child, index) => {
+          exactKeys(
+            child,
+            ["taskDefinition", "task", "result", "evaluation"],
+            `TaskJoin references.children[${index}]`,
+          );
+          return {
+            taskDefinitionId: validateTypedReference(
+              child.taskDefinition,
+              "taskDefinition",
+            ).id,
+            taskId: validateTypedReference(child.task, "task").id,
+            resultId: validateTypedReference(child.result, "result").id,
+            evaluationId: validateTypedReference(
+              child.evaluation,
+              "evaluation",
+            ).id,
+          };
+        }),
+      };
+    },
+    formatTaskJoin,
   );
 }
 
@@ -2243,7 +2574,7 @@ export function parseTaskRoute(body) {
 
 export function deriveWorkGraphTaskErrorId(taskId, stage, code, causeId) {
   validateWorkGraphTaskId(taskId, "task Error taskId");
-  if (!["assignment", "dispatch", "execution", "evaluation", "routing", "closure"].includes(stage)) {
+  if (!["fork", "join", "assignment", "dispatch", "execution", "evaluation", "routing", "closure"].includes(stage)) {
     throw new WorkGraphDefinitionError("task Error stage is invalid");
   }
   identifier(code, "task Error code");
@@ -2272,7 +2603,7 @@ export function normalizeTaskError(value) {
     }
     references[key] = value.references[key];
   }
-  const stages = ["assignment", "dispatch", "execution", "evaluation", "routing", "closure"];
+  const stages = ["fork", "join", "assignment", "dispatch", "execution", "evaluation", "routing", "closure"];
   const categories = ["task", "protocol", "system"];
   if (!stages.includes(value.stage)) {
     throw new WorkGraphDefinitionError("task Error stage is invalid");
@@ -2295,6 +2626,8 @@ export function normalizeTaskError(value) {
     references.resultId ??
     references.dispatchId ??
     references.assignmentId ??
+    references.joinId ??
+    references.forkId ??
     references.leaseId;
   if (causeId === null || causeId === undefined) {
     throw new WorkGraphDefinitionError("task Error requires a causal reference");
@@ -2387,6 +2720,50 @@ export function parseTaskError(body) {
     },
     formatTaskError,
   );
+}
+
+const TASK_ACTION_CODECS = {
+  TaskFork: [TASK_FORK_MARKER, formatTaskFork, parseTaskFork],
+  TaskJoin: [TASK_JOIN_MARKER, formatTaskJoin, parseTaskJoin],
+  TaskAssignment: [
+    TASK_ASSIGNMENT_MARKER,
+    formatTaskAssignment,
+    parseTaskAssignment,
+  ],
+  TaskDispatch: [TASK_DISPATCH_MARKER, formatTaskDispatch, parseTaskDispatch],
+  TaskResult: [TASK_RESULT_MARKER, formatTaskResult, parseTaskResult],
+  TaskEvaluation: [
+    TASK_EVALUATION_MARKER,
+    formatTaskEvaluation,
+    parseTaskEvaluation,
+  ],
+  TaskRoute: [TASK_ROUTE_MARKER, formatTaskRoute, parseTaskRoute],
+  TaskError: [TASK_ERROR_MARKER, formatTaskError, parseTaskError],
+};
+
+export function formatWorkGraphTaskAction(action) {
+  exactKeys(action, ["kind", "value"], "WorkGraphTaskAction");
+  const codec = TASK_ACTION_CODECS[action.kind];
+  if (!codec) {
+    throw new WorkGraphDefinitionError(
+      "WorkGraphTaskAction kind is not supported",
+    );
+  }
+  return codec[1](action.value);
+}
+
+export function parseWorkGraphTaskAction(body) {
+  const marker = typeof body === "string" ? body.split("\n", 1)[0] : "";
+  const entry = Object.entries(TASK_ACTION_CODECS).find(
+    ([, [candidate]]) => candidate === marker,
+  );
+  if (!entry) {
+    throw new WorkGraphDefinitionError(
+      "body does not begin with a WorkGraphTaskAction/v1 marker",
+    );
+  }
+  const [kind, [, , parse]] = entry;
+  return { kind, value: parse(body) };
 }
 
 export function validateTaskRouteAgainstDefinition(

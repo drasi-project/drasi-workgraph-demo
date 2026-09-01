@@ -8,9 +8,12 @@ import { isDeepStrictEqual, TextEncoder } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import {
+  TASK_ASSIGNMENT_MARKER,
   TASK_DISPATCH_MARKER,
   TASK_ERROR_MARKER,
   TASK_EVALUATION_MARKER,
+  TASK_FORK_MARKER,
+  TASK_JOIN_MARKER,
   TASK_RESULT_MARKER,
   TASK_ROUTE_MARKER,
   WORKGRAPH_ID_NAMESPACE,
@@ -26,10 +29,13 @@ import {
   formatTaskResult,
   formatTaskRoute,
   normalizeCompiledWorkflowDefinition,
+  parseTaskAssignment,
   parseRuntimeTask,
   parseTaskDispatch,
   parseTaskError,
   parseTaskEvaluation,
+  parseTaskFork,
+  parseTaskJoin,
   parseTaskResult,
   parseTaskRoute,
   taskResultDigest,
@@ -935,6 +941,14 @@ async function loadTaskContext(locator, taskId, github, config, includeComments)
         validateContract: false,
       },
     );
+    if (includeComments) {
+      validateTaskActionPrefix(
+        task,
+        compiled.taskDefinition,
+        comments,
+        config,
+      );
+    }
     return {
       task,
       compiled,
@@ -1052,6 +1066,90 @@ function markedComments(comments, marker, parser) {
       }
       return { comment, payload: parser(comment.body) };
     });
+}
+
+function validateTaskActionPrefix(task, taskDefinition, comments, config) {
+  const assignments = markedComments(
+    comments,
+    TASK_ASSIGNMENT_MARKER,
+    parseTaskAssignment,
+  ).map((entry) =>
+    validateProtocolComment(entry, config.assignmentId, TASK_ASSIGNMENT_MARKER),
+  );
+  const forks = markedComments(
+    comments,
+    TASK_FORK_MARKER,
+    parseTaskFork,
+  ).map((entry) =>
+    validateProtocolComment(entry, config.assignmentId, TASK_FORK_MARKER),
+  );
+  const joins = markedComments(
+    comments,
+    TASK_JOIN_MARKER,
+    parseTaskJoin,
+  ).map((entry) =>
+    validateProtocolComment(entry, config.assignmentId, TASK_JOIN_MARKER),
+  );
+  for (const { payload } of [...assignments, ...forks, ...joins]) {
+    if (!dispatchMatchesTask(payload, task)) {
+      throw new WorkGraphReporterError(
+        "task has a Fork, Join, or Assignment for a different task identity",
+      );
+    }
+  }
+  if (assignments.length > 1 || forks.length > 1 || joins.length > 1) {
+    throw new WorkGraphReporterError(
+      "task has duplicate Fork, Join, or Assignment actions",
+    );
+  }
+
+  if (taskDefinition.children.length === 0) {
+    if (
+      forks.length !== 0 ||
+      joins.length !== 0 ||
+      assignments.some(({ payload }) => payload.joinId !== null)
+    ) {
+      throw new WorkGraphReporterError(
+        "leaf task cannot contain Fork or Join actions",
+      );
+    }
+    return;
+  }
+  if (assignments.length + forks.length + joins.length === 0) return;
+  if (
+    assignments.length !== 1 ||
+    forks.length !== 1 ||
+    joins.length !== 1
+  ) {
+    throw new WorkGraphReporterError(
+      "parent task requires exactly one Fork, Join, and Assignment action",
+    );
+  }
+  const fork = forks[0].payload;
+  const join = joins[0].payload;
+  const assignment = assignments[0].payload;
+  const declared = taskDefinition.children
+    .map((child) => child.taskDefinitionId)
+    .sort();
+  if (
+    !isDeepStrictEqual(
+      fork.children.map((child) => child.taskDefinitionId),
+      declared,
+    ) ||
+    !isDeepStrictEqual(
+      join.children.map((child) => ({
+        taskDefinitionId: child.taskDefinitionId,
+        taskId: child.taskId,
+      })),
+      fork.children,
+    ) ||
+    join.forkId !== fork.forkId ||
+    assignment.joinId !== join.joinId
+  ) {
+    throw new WorkGraphReporterError(
+      "parent Fork, Join, Assignment, and declared children do not form one action chain",
+    );
+  }
 }
 
 function resultContext(context, input, config, expectedBody) {

@@ -34,7 +34,9 @@ const CANONICAL_GENERIC_INVENTORY_PATH = resolve(
 const GENERIC_QUERY_IDS = [
   "wg-issues-waiting-for-admission",
   "wg-tasks-waiting-for-fork",
+  "wg-tasks-waiting-for-fork-action",
   "wg-tasks-waiting-for-join-all",
+  "wg-tasks-waiting-for-join-action",
   "wg-task-leaves-waiting-for-assign",
   "wg-task-parents-waiting-for-assign",
   "wg-tasks-waiting-for-lease",
@@ -379,7 +381,9 @@ export async function buildWorkGraphV1Proof() {
       ],
       parent: [
         "FORK",
+        "FORK_ACTION",
         "JOIN_ALL",
+        "JOIN_ACTION",
         "ASSIGN",
         "LEASE",
         "DISPATCH",
