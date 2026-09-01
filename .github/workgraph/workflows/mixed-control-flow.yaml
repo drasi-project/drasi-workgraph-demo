@@ -13,19 +13,19 @@ spec:
   steps:
     a:
       type: task
-      operation: intake-mixed-work
+      operation: intake-issue
       worker: issue-worker
       inputs: {}
       next: b
     b:
       type: task
-      operation: normalize-mixed-work
+      operation: normalize-issue
       worker: issue-worker
       inputs: {}
       next: c
     c:
       type: task
-      operation: choose-processing-path
+      operation: triage-issue
       worker: issue-worker
       inputs: {}
       outcomes:
@@ -34,28 +34,31 @@ spec:
         skip: h
     g:
       type: task
-      operation: aggregate-parallel-checks
+      operation: coordinate-validation
       worker: issue-worker
       inputs: {}
       children:
         join: all
         tasks:
           d:
-            operation: inspect-title
-            worker: issue-worker
-            inputs: {}
+            operation: validate-title
+            worker: issue-validator
+            inputs:
+              field: title
           e:
-            operation: inspect-body
-            worker: issue-worker
-            inputs: {}
+            operation: validate-body
+            worker: issue-validator
+            inputs:
+              field: body
           f:
-            operation: inspect-risk
-            worker: issue-worker
-            inputs: {}
+            operation: validate-reproduction
+            worker: issue-validator
+            inputs:
+              section: reproduction
       next: h
     h:
       type: task
-      operation: finalize-mixed-work
+      operation: finalize-issue
       worker: issue-worker
       inputs: {}
       next: completed

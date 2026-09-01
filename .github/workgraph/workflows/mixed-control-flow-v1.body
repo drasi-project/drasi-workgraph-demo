@@ -4,7 +4,7 @@ WorkGraphWorkflowDefinition/v1
 {
   "workflowDefinitionId": "mixed-control-flow",
   "version": "v1",
-  "digest": "sha256:2626bb2cf4883556e208e63573549b2b73d20011e28c83646eaa2600baab6206",
+  "digest": "sha256:15c90c1cde70adc87d11a17073345c6cb0a23a3fdd8089b230dedcf357515604",
   "trigger": "workgraph",
   "defaults": {
     "evaluator": "result-evaluator",
@@ -15,7 +15,7 @@ WorkGraphWorkflowDefinition/v1
   "root": {
     "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:c4fbf79cefb8f4c7a17e003da08fc887965bb51d01e069aa9dec5a074e794d41",
     "taskKey": "a",
-    "operation": "intake-mixed-work",
+    "operation": "intake-issue",
     "routing": {
       "permittedExecutors": [
         "issue-worker"
@@ -30,7 +30,7 @@ WorkGraphWorkflowDefinition/v1
       "taskDefinition": {
         "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:c4fbf79cefb8f4c7a17e003da08fc887965bb51d01e069aa9dec5a074e794d41",
         "taskKey": "a",
-        "operation": "intake-mixed-work",
+        "operation": "intake-issue",
         "routing": {
           "permittedExecutors": [
             "issue-worker"
@@ -57,7 +57,7 @@ WorkGraphWorkflowDefinition/v1
       "taskDefinition": {
         "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:2149bcd35e435497abfbbf19034d0344ee1aeb81ab09ed0bc4d94bc10caa8a97",
         "taskKey": "b",
-        "operation": "normalize-mixed-work",
+        "operation": "normalize-issue",
         "routing": {
           "permittedExecutors": [
             "issue-worker"
@@ -84,7 +84,7 @@ WorkGraphWorkflowDefinition/v1
       "taskDefinition": {
         "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:081173e0e41556624526a185a52b0acb60e4a1578d94cfad2b1f4f5588fd0cfd",
         "taskKey": "c",
-        "operation": "choose-processing-path",
+        "operation": "triage-issue",
         "routing": {
           "permittedExecutors": [
             "issue-worker"
@@ -119,7 +119,7 @@ WorkGraphWorkflowDefinition/v1
       "taskDefinition": {
         "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:fc0e1f34a7e308cd872f24c521d006a6554ddb95c1ca9d6394e4899b9dcfa9d7",
         "taskKey": "g",
-        "operation": "aggregate-parallel-checks",
+        "operation": "coordinate-validation",
         "routing": {
           "permittedExecutors": [
             "issue-worker"
@@ -130,56 +130,62 @@ WorkGraphWorkflowDefinition/v1
           {
             "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:d89537020cdcfa50c3e02c54e22fce1cdc172cbf8f2babef94ee7de3a1f2d485",
             "taskKey": "d",
-            "operation": "inspect-title",
+            "operation": "validate-title",
             "routing": {
               "permittedExecutors": [
-                "issue-worker"
+                "issue-validator"
               ]
             },
-            "staticInputs": {},
+            "staticInputs": {
+              "field": "title"
+            },
             "children": []
           },
           {
             "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:48436b855f1909ed5ff7969f388f2cbe0342c1b76c7a254e181c6905a28304d2",
             "taskKey": "e",
-            "operation": "inspect-body",
+            "operation": "validate-body",
             "routing": {
               "permittedExecutors": [
-                "issue-worker"
+                "issue-validator"
               ]
             },
-            "staticInputs": {},
+            "staticInputs": {
+              "field": "body"
+            },
             "children": []
           },
           {
             "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:942f444a60a4ba10a797988d950a67dbdd3c95c0529cce070142fc861fcc0dfb",
             "taskKey": "f",
-            "operation": "inspect-risk",
+            "operation": "validate-reproduction",
             "routing": {
               "permittedExecutors": [
-                "issue-worker"
+                "issue-validator"
               ]
             },
-            "staticInputs": {},
+            "staticInputs": {
+              "section": "reproduction"
+            },
             "children": []
           }
         ]
       },
       "executionPolicies": {
         "urn:drasi:workgraph:id:v1:task-definition:sha256:48436b855f1909ed5ff7969f388f2cbe0342c1b76c7a254e181c6905a28304d2": {
-          "workerId": "issue-worker",
+          "workerId": "issue-validator",
           "evaluatorId": "result-evaluator",
           "orchestratorId": "workflow-coordinator",
           "maxReworkAttempts": 3
         },
         "urn:drasi:workgraph:id:v1:task-definition:sha256:942f444a60a4ba10a797988d950a67dbdd3c95c0529cce070142fc861fcc0dfb": {
-          "workerId": "issue-worker",
+          "workerId": "issue-validator",
           "evaluatorId": "result-evaluator",
           "orchestratorId": "workflow-coordinator",
           "maxReworkAttempts": 3
         },
         "urn:drasi:workgraph:id:v1:task-definition:sha256:d89537020cdcfa50c3e02c54e22fce1cdc172cbf8f2babef94ee7de3a1f2d485": {
-          "workerId": "issue-worker",
+          "workerId": "issue-validator",
           "evaluatorId": "result-evaluator",
           "orchestratorId": "workflow-coordinator",
           "maxReworkAttempts": 3
@@ -201,7 +207,7 @@ WorkGraphWorkflowDefinition/v1
       "taskDefinition": {
         "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:ab855de0e7b3b6ebc17410cb5de5abf42409a71f4201090b0db060839cd0c1e8",
         "taskKey": "h",
-        "operation": "finalize-mixed-work",
+        "operation": "finalize-issue",
         "routing": {
           "permittedExecutors": [
             "issue-worker"
