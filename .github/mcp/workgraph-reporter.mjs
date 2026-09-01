@@ -85,21 +85,42 @@ const TASK_IDENTITY_KEYS = [
   "taskKey",
   "operation",
 ];
-const COMPILED_FIXTURE = JSON.parse(
-  readFileSync(
-    new URL("../workgraph/fixtures/v1/issue-lifecycle.expected.json", import.meta.url),
-    "utf8",
-  ),
-);
-const COMPILED_WORKFLOW = normalizeCompiledWorkflowDefinition(
-  COMPILED_FIXTURE.workgraphDefinition,
-);
-if (
-  COMPILED_FIXTURE.definitionDigest !== COMPILED_WORKFLOW.digest ||
-  COMPILED_WORKFLOW.workflowDefinitionId !== "issue-lifecycle" ||
-  COMPILED_WORKFLOW.version !== "v1"
-) {
-  throw new Error("pinned compiled WorkGraph fixture is inconsistent");
+const COMPILED_WORKFLOWS = new Map();
+for (const workflowDefinitionId of [
+  "fork-join-lifecycle",
+  "issue-lifecycle",
+  "mixed-control-flow",
+]) {
+  const fixture = JSON.parse(
+    readFileSync(
+      new URL(
+        `../workgraph/fixtures/v1/${workflowDefinitionId}.expected.json`,
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const workflow = normalizeCompiledWorkflowDefinition(
+    fixture.workgraphDefinition,
+  );
+  if (
+    fixture.definitionDigest !== workflow.digest ||
+    workflow.workflowDefinitionId !== workflowDefinitionId ||
+    workflow.version !== "v1" ||
+    COMPILED_WORKFLOWS.has(workflowDefinitionId)
+  ) {
+    throw new Error("pinned compiled WorkGraph fixture catalog is inconsistent");
+  }
+  COMPILED_WORKFLOWS.set(workflowDefinitionId, workflow);
+}
+
+function compiledWorkflowForTask(task) {
+  const workflow = COMPILED_WORKFLOWS.get(task.workflowDefinitionId);
+  return workflow &&
+    task.workflowDefinitionVersion === workflow.version &&
+    task.workflowDefinitionDigest === workflow.digest
+    ? workflow
+    : null;
 }
 
 export class WorkGraphReporterError extends Error {}
@@ -801,12 +822,10 @@ async function loadTaskContext(locator, taskId, github, config, includeComments)
     "task native parent",
   );
 
-  const generated =
-    task.workflowDefinitionId === COMPILED_WORKFLOW.workflowDefinitionId &&
-    task.workflowDefinitionVersion === COMPILED_WORKFLOW.version &&
-    task.workflowDefinitionDigest === COMPILED_WORKFLOW.digest;
+  const workflow = compiledWorkflowForTask(task);
+  const generated = workflow !== null;
   if (generated) {
-    const compiled = validateLifecycleTask(task, "Task");
+    const compiled = validateLifecycleTask(task, "Task", workflow);
     let rootIssueCandidate;
     if (compiled.isStepRoot) {
       rootIssueCandidate = await github.issue(parentLink.number);
@@ -892,7 +911,7 @@ async function loadTaskContext(locator, taskId, github, config, includeComments)
       );
       if (
         candidate.taskDefinitionId ===
-          COMPILED_WORKFLOW.root.taskDefinitionId &&
+          workflow.root.taskDefinitionId &&
         candidate.rootIssueId === task.rootIssueId &&
         candidate.workflowRunId === task.workflowRunId
       ) {
@@ -905,14 +924,14 @@ async function loadTaskContext(locator, taskId, github, config, includeComments)
       );
     }
     const [{ issue: rootTaskIssue, task: rootTask }] = initialTasks;
-    validateTaskMetadata(rootTask, COMPILED_WORKFLOW.root, "Root Task");
+    validateTaskMetadata(rootTask, workflow.root, "Root Task");
     const admission = validateRootAdmission(
       rootTask,
       rootIssue,
       locator.repositoryNodeId,
       {
-        taskDefinitionId: COMPILED_WORKFLOW.root.taskDefinitionId,
-        staticInputs: COMPILED_WORKFLOW.root.staticInputs,
+        taskDefinitionId: workflow.root.taskDefinitionId,
+        staticInputs: workflow.root.staticInputs,
         validateContract: false,
       },
     );
@@ -1295,8 +1314,8 @@ function dispatchMatchesTask(dispatch, task) {
   );
 }
 
-function compiledSource(taskDefinitionId) {
-  const matches = Object.entries(COMPILED_WORKFLOW.steps).filter(
+function compiledSource(workflow, taskDefinitionId) {
+  const matches = Object.entries(workflow.steps).filter(
     ([, step]) =>
       step.type === "task" && taskDefinitionId in step.executionPolicies,
   );
@@ -1320,6 +1339,7 @@ function compiledSource(taskDefinitionId) {
   };
   findParent(source.taskDefinition);
   return {
+    workflow,
     sourceStepId,
     source,
     policy: source.executionPolicies[taskDefinitionId],
@@ -1340,17 +1360,17 @@ function validateTaskMetadata(task, definition, label) {
   }
 }
 
-function validateLifecycleTask(task, label) {
-  if (
-    task.workflowDefinitionId !== COMPILED_WORKFLOW.workflowDefinitionId ||
-    task.workflowDefinitionVersion !== COMPILED_WORKFLOW.version ||
-    task.workflowDefinitionDigest !== COMPILED_WORKFLOW.digest
-  ) {
+function validateLifecycleTask(
+  task,
+  label,
+  workflow = compiledWorkflowForTask(task),
+) {
+  if (!workflow) {
     throw new WorkGraphReporterError(
       `${label} does not belong to the pinned compiled workflow`,
     );
   }
-  const context = compiledSource(task.taskDefinitionId);
+  const context = compiledSource(workflow, task.taskDefinitionId);
   validateTaskMetadata(task, context.taskDefinition, label);
   return context;
 }
@@ -1544,7 +1564,7 @@ async function loadLifecycleAncestry(
     );
     if (
       candidate.taskDefinitionId ===
-        COMPILED_WORKFLOW.root.taskDefinitionId &&
+        compiled.workflow.root.taskDefinitionId &&
       candidate.rootIssueId === task.rootIssueId &&
       candidate.workflowRunId === task.workflowRunId
     ) {
@@ -1558,20 +1578,20 @@ async function loadLifecycleAncestry(
   }
   const [{ issue: rootTaskIssue, task: rootTask }] = initialTasks;
   if (
-    rootTask.taskDefinitionId !== COMPILED_WORKFLOW.root.taskDefinitionId ||
+    rootTask.taskDefinitionId !== compiled.workflow.root.taskDefinitionId ||
     rootTask.rootIssueId !== input.rootIssueId ||
     rootTask.workflowRunId !== input.workflowRunId
   ) {
     throw new WorkGraphReporterError("Initial Task direct identities do not match");
   }
-  validateTaskMetadata(rootTask, COMPILED_WORKFLOW.root, "Root Task");
+  validateTaskMetadata(rootTask, compiled.workflow.root, "Root Task");
   const admission = validateRootAdmission(
     rootTask,
     rootIssue,
     locator.repositoryNodeId,
     {
-      taskDefinitionId: COMPILED_WORKFLOW.root.taskDefinitionId,
-      staticInputs: COMPILED_WORKFLOW.root.staticInputs,
+      taskDefinitionId: compiled.workflow.root.taskDefinitionId,
+      staticInputs: compiled.workflow.root.staticInputs,
       validateContract: false,
     },
   );
@@ -1793,7 +1813,7 @@ function lifecycleArtifacts(context, input, config, requireCurrent = true) {
         return true;
       }
       try {
-        validateTaskRouteAgainstDefinition(payload, COMPILED_WORKFLOW, {
+        validateTaskRouteAgainstDefinition(payload, context.workflow, {
           sourceStepId: context.sourceStepId,
           taskDefinitionId: context.task.taskDefinitionId,
         });
@@ -1935,7 +1955,9 @@ function transitionChoices(context, result) {
   if (!context.isStepRoot) return [];
   const transition = context.source.transition;
   if (transition.type === "next") {
-    return [routeTarget("next", null, transition.targetStepId)];
+    return [
+      routeTarget(context.workflow, "next", null, transition.targetStepId),
+    ];
   }
   const outcome = result.output?.outcome;
   if (
@@ -1945,12 +1967,17 @@ function transitionChoices(context, result) {
     return [];
   }
   return [
-    routeTarget("outcome", outcome, transition.targets[outcome]),
+    routeTarget(
+      context.workflow,
+      "outcome",
+      outcome,
+      transition.targets[outcome],
+    ),
   ];
 }
 
-function routeTarget(transitionKind, outcome, targetStepId) {
-  const target = COMPILED_WORKFLOW.steps[targetStepId];
+function routeTarget(workflow, transitionKind, outcome, targetStepId) {
+  const target = workflow.steps[targetStepId];
   const choice = {
     transitionKind,
     targetStepId,
@@ -1973,8 +2000,8 @@ function authorizedRoutePlan(context, result, verdict, attempt) {
       !context.isStepRoot ||
       transitions.some(
         ({ targetStepId }) =>
-          COMPILED_WORKFLOW.steps[targetStepId]?.type === "terminal" &&
-          COMPILED_WORKFLOW.steps[targetStepId].outcome === "completed",
+          context.workflow.steps[targetStepId]?.type === "terminal" &&
+          context.workflow.steps[targetStepId].outcome === "completed",
       )
     ) {
       actions.push("complete");
@@ -2289,7 +2316,7 @@ async function submitTaskRoute(input, github, config) {
     );
   }
   const route = routeFromInput(input, initial.context, evaluation);
-  validateTaskRouteAgainstDefinition(route, COMPILED_WORKFLOW, {
+  validateTaskRouteAgainstDefinition(route, initial.context.workflow, {
     sourceStepId: initial.context.sourceStepId,
     taskDefinitionId: initial.context.task.taskDefinitionId,
   });
