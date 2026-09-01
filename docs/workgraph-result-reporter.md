@@ -71,7 +71,7 @@ re-reads every referenced object from GitHub; caller-supplied locator values
 are never sufficient proof.
 
 `WorkGraphTask/v1` Issue bodies require `taskKey` and `operation` in envelope
-`context`, copied from the pinned task definition. These fields make task
+`workflowContext`, copied from the pinned task definition. These fields make task
 descriptions and titles human-readable; they are validated metadata, not
 substitutes for `taskDefinitionId`, definition version, or digest. Flat legacy
 task bodies are rejected.
@@ -102,9 +102,9 @@ title or body change after admission fails closed.
 ```json
 {
   "taskLocator": {},
-  "taskId": "workgraph-v1:task:sha256:...",
-  "dispatchId": "dispatch-id",
-  "leaseId": "lease-id",
+  "taskId": "urn:drasi:workgraph:id:v1:task:sha256:...",
+  "dispatchId": "urn:drasi:workgraph:id:v1:dispatch:sha256:...",
+  "leaseId": "urn:drasi:workgraph:id:v1:lease:sha256:...",
   "outcome": "succeeded",
   "output": {}
 }
@@ -129,12 +129,12 @@ with exactly:
 
 ```json
 {
-  "taskId": "workgraph-v1:task:sha256:...",
-  "leaseId": "lease-id",
-  "assignmentId": "assignment-id",
+  "taskId": "urn:drasi:workgraph:id:v1:task:sha256:...",
+  "leaseId": "urn:drasi:workgraph:id:v1:lease:sha256:...",
+  "assignmentId": "urn:drasi:workgraph:id:v1:assignment:sha256:...",
   "executorId": "issue-worker",
   "slotId": "issue-worker-slot-1",
-  "claimId": "per-invocation UUID"
+  "claimId": "urn:drasi:workgraph:id:v1:lease-claim:sha256:..."
 }
 ```
 
@@ -151,7 +151,7 @@ derived from the length-framed UTF-8 values of `taskId`, `dispatchId`, and
 `leaseId`:
 
 ```text
-workgraph-v1:result:sha256:<64 lowercase hex>
+urn:drasi:workgraph:id:v1:result:sha256:<64 lowercase hex>
 ```
 
 It writes the canonical body:
@@ -163,21 +163,27 @@ WorkGraphTaskResult/v1
 {
   "apiVersion": "workgraph.drasi.io/v1",
   "kind": "TaskResult",
-  "id": "workgraph-v1:result:sha256:...",
+  "id": "urn:drasi:workgraph:id:v1:result:sha256:...",
   "rootIssueId": "root-issue-id",
   "workflowRunId": "workflow-run-id",
-  "taskId": "workgraph-v1:task:sha256:...",
-  "context": {
+  "taskId": "urn:drasi:workgraph:id:v1:task:sha256:...",
+  "workflowContext": {
     "workflowDefinitionId": "issue-lifecycle",
     "workflowDefinitionVersion": "v1",
     "workflowDefinitionDigest": "sha256:...",
-    "taskDefinitionId": "wgd-...",
+    "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:...",
     "taskKey": "a",
     "operation": "intake-issue"
   },
   "references": {
-    "dispatchId": "workgraph-v1:dispatch:...",
-    "leaseId": "lease-id"
+    "dispatch": {
+      "kind": "TaskDispatch",
+      "id": "urn:drasi:workgraph:id:v1:dispatch:sha256:..."
+    },
+    "lease": {
+      "kind": "TaskLease",
+      "id": "urn:drasi:workgraph:id:v1:lease:sha256:..."
+    }
   },
   "data": {
     "attempt": 1,
@@ -202,8 +208,9 @@ envelope identity and context, references, and data, but excludes the Markdown
 marker, fence, indentation, and trailing newline bytes. Integer-like object keys
 are sorted by UTF-8 bytes rather than JavaScript enumeration order.
 
-Evaluation and Route IDs use `workgraph-v1:evaluation:sha256:...` and
-`workgraph-v1:route:sha256:...`; no legacy suffix is generated. The reporter
+Evaluation and Route IDs use
+`urn:drasi:workgraph:id:v1:evaluation:sha256:...` and
+`urn:drasi:workgraph:id:v1:route:sha256:...`; no legacy form is generated. The reporter
 requires every submitted or persisted Evaluation ID to derive from
 `(taskId, resultId, resultDigest)` and every Route ID from
 `(taskId, evaluationId)`. Error-terminal routing is diagnosed by a

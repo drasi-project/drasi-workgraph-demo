@@ -14,6 +14,7 @@ import {
   formatTaskRoute,
   parseTaskEvaluation,
   parseTaskRoute,
+  deriveWorkGraphProtocolId,
 } from "../.github/mcp/workgraph-v1-definition.mjs";
 import {
   canonicalTaskResultEnvelopeJson,
@@ -56,22 +57,32 @@ const CHILD_TASK_NUMBER = 101;
 const CHILD_TASK_NODE_ID = "I_child_task";
 const RECURSIVE_TASK_NUMBER = 102;
 const RECURSIVE_TASK_NODE_ID = "I_recursive_task";
-const ADMISSION_ID = "admission-1";
+const ADMISSION_ID = deriveWorkGraphProtocolId("admission", [
+  ROOT_ISSUE_ID,
+  "delivery-1",
+]);
 const DEFINITION_DIGEST = `sha256:${"a".repeat(64)}`;
 const ROOT_TITLE = "Validate this Issue";
 const ROOT_BODY = "The body to validate.";
-const VECTOR_TASK_ID = `workgraph-v1:task:sha256:${"1".repeat(64)}`;
-const fixtureTaskId = (...parts) => {
-  const hash = createHash("sha256");
-  for (const part of parts) {
-    const bytes = Buffer.from(part, "utf8");
-    const frame = Buffer.alloc(8);
-    frame.writeBigUInt64BE(BigInt(bytes.length));
-    hash.update(frame);
-    hash.update(bytes);
-  }
-  return `workgraph-v1:task:sha256:${hash.digest("hex")}`;
-};
+const VECTOR_TASK_ID = deriveWorkGraphProtocolId("task", ["task-1"]);
+const fixtureTaskId = (...parts) => deriveWorkGraphProtocolId("task", parts);
+const protocolId = (type, seed) => deriveWorkGraphProtocolId(type, [seed]);
+const VECTOR_RUN_ID = protocolId("workflow-run", "run-1");
+const VECTOR_DISPATCH_ID = protocolId("dispatch", "dispatch-1");
+const VECTOR_LEASE_ID = protocolId("lease", "lease-1");
+const ROOT_TASK_DEFINITION_ID = protocolId("task-definition", "root-v1");
+const CHILD_TASK_DEFINITION_ID = protocolId("task-definition", "validate-v1");
+const VECTOR_TASK_DEFINITION_ID = protocolId("task-definition", "task-definition");
+const RUST_TASK_ID =
+  `urn:drasi:workgraph:id:v1:task:sha256:${"1".repeat(64)}`;
+const RUST_RUN_ID =
+  `urn:drasi:workgraph:id:v1:workflow-run:sha256:${"1".repeat(64)}`;
+const RUST_TASK_DEFINITION_ID =
+  `urn:drasi:workgraph:id:v1:task-definition:sha256:${"1".repeat(64)}`;
+const RUST_DISPATCH_ID =
+  `urn:drasi:workgraph:id:v1:dispatch:sha256:${"b".repeat(64)}`;
+const RUST_LEASE_ID =
+  `urn:drasi:workgraph:id:v1:lease:sha256:${"d".repeat(64)}`;
 const COMPILED = JSON.parse(
   readFileSync(
     new URL(
@@ -97,7 +108,7 @@ function fixture() {
   );
   const rootTaskId = deriveWorkGraphRootTaskId(
     workflowRunId,
-    "root-v1",
+    ROOT_TASK_DEFINITION_ID,
   );
   const rootTask = {
     taskId: rootTaskId,
@@ -106,7 +117,7 @@ function fixture() {
     workflowDefinitionId: "issue-lifecycle",
     workflowDefinitionVersion: "v1",
     workflowDefinitionDigest: DEFINITION_DIGEST,
-    taskDefinitionId: "root-v1",
+    taskDefinitionId: ROOT_TASK_DEFINITION_ID,
     taskKey: "root",
     operation: "coordinate-issue",
     resolvedInputs: {
@@ -123,13 +134,17 @@ function fixture() {
     },
   };
   const childTask = {
-    taskId: fixtureTaskId(workflowRunId, rootTaskId, "validate-v1"),
+    taskId: fixtureTaskId(
+      workflowRunId,
+      rootTaskId,
+      CHILD_TASK_DEFINITION_ID,
+    ),
     rootIssueId: ROOT_ISSUE_ID,
     workflowRunId,
     workflowDefinitionId: "issue-lifecycle",
     workflowDefinitionVersion: "v1",
     workflowDefinitionDigest: DEFINITION_DIGEST,
-    taskDefinitionId: "validate-v1",
+    taskDefinitionId: CHILD_TASK_DEFINITION_ID,
     taskKey: "validate",
     operation: "validate-issue",
     resolvedInputs: { validationProfile: "new-issue-default" },
@@ -145,15 +160,15 @@ function fixture() {
     operation: task.operation,
   });
   const dispatch = (task, executorId) => ({
-    dispatchId: `dispatch-${task.taskId}`,
-    launchId: `launch-${task.taskId}`,
+    dispatchId: protocolId("dispatch", task.taskId),
+    launchId: protocolId("dispatch-launch", task.taskId),
     rootIssueId: task.rootIssueId,
     workflowRunId: task.workflowRunId,
     taskId: task.taskId,
     task: identity(task),
     lease: {
-      leaseId: `lease-${task.taskId}`,
-      assignmentId: `assignment-${task.taskId}`,
+      leaseId: protocolId("lease", task.taskId),
+      assignmentId: protocolId("assignment", task.taskId),
       executorId,
       slotId: `${executorId}-slot-1`,
     },
@@ -246,11 +261,11 @@ async function withFakeRuntime(options, callback) {
                 node_id: "IC_stale_child_dispatch",
                 body: formatTaskDispatch({
                   ...data.childDispatch,
-                  dispatchId: "dispatch-stale",
-                  launchId: "launch-stale",
+                  dispatchId: protocolId("dispatch", "stale"),
+                  launchId: protocolId("dispatch-launch", "stale"),
                   lease: {
                     ...data.childDispatch.lease,
-                    leaseId: "lease-stale",
+                    leaseId: protocolId("lease", "stale"),
                   },
                 }),
                 user: { id: ASSIGNMENT_ID, login: "assigner" },
@@ -276,11 +291,11 @@ async function withFakeRuntime(options, callback) {
   if (options.historicalResult === true) {
     const historicalDispatch = {
       ...data.childDispatch,
-      dispatchId: "dispatch-stale",
-      launchId: "launch-stale",
+      dispatchId: protocolId("dispatch", "stale"),
+      launchId: protocolId("dispatch-launch", "stale"),
       lease: {
         ...data.childDispatch.lease,
-        leaseId: "lease-stale",
+        leaseId: protocolId("lease", "stale"),
       },
     };
     comments.get(CHILD_TASK_NUMBER).push({
@@ -567,15 +582,15 @@ function lifecycleFixture({
     : null;
   const policy = COMPILED.steps[stepId].executionPolicies[taskDefinition];
   const dispatches = Array.from({ length: dispatchCount }, (_, index) => ({
-    dispatchId: `dispatch-${stepId}-${index}`,
-    launchId: `launch-${stepId}-${index}`,
+    dispatchId: protocolId("dispatch", `${stepId}-${index}`),
+    launchId: protocolId("dispatch-launch", `${stepId}-${index}`),
     rootIssueId,
     workflowRunId,
     taskId: task.taskId,
     task: runtimeIdentity(task.taskId, effectiveDefinition),
     lease: {
-      leaseId: `lease-${stepId}-${index}`,
-      assignmentId: `assignment-${stepId}`,
+      leaseId: protocolId("lease", `${stepId}-${index}`),
+      assignmentId: protocolId("assignment", stepId),
       executorId: policy.workerId,
       slotId: `${policy.workerId}-slot-1`,
     },
@@ -601,7 +616,9 @@ function lifecycleFixture({
   const resultDigest = staleEvaluation
     ? `sha256:${"f".repeat(64)}`
     : taskResultDigest(result);
-  const evaluationResultId = staleEvaluation ? "result-stale" : result.resultId;
+  const evaluationResultId = staleEvaluation
+    ? protocolId("result", "stale")
+    : result.resultId;
   const canonicalEvaluationId = deriveWorkGraphTaskEvaluationId(
     task.taskId,
     evaluationResultId,
@@ -876,11 +893,20 @@ async function withFakeLifecycle(options, callback) {
           node_id: "IC_dispatch_after_rework",
           body: formatTaskDispatch({
             ...data.dispatch,
-            dispatchId: `${data.dispatch.dispatchId}-rework`,
-            launchId: `${data.dispatch.launchId}-rework`,
+            dispatchId: protocolId(
+              "dispatch",
+              `${data.dispatch.dispatchId}-rework`,
+            ),
+            launchId: protocolId(
+              "dispatch-launch",
+              `${data.dispatch.launchId}-rework`,
+            ),
             lease: {
               ...data.dispatch.lease,
-              leaseId: `${data.dispatch.lease.leaseId}-rework`,
+              leaseId: protocolId(
+                "lease",
+                `${data.dispatch.lease.leaseId}-rework`,
+              ),
             },
           }),
           user: { id: ASSIGNMENT_ID, login: "assigner" },
@@ -949,34 +975,34 @@ async function withFakeLifecycle(options, callback) {
   }
 }
 
-test("v1 Result identity, body, and envelope digest match Rust vectors", () => {
+test("v1 Result identity, body, and envelope digest have stable vectors", () => {
   const task = {
     taskId: VECTOR_TASK_ID,
-    workflowRunId: "run-1",
+    workflowRunId: VECTOR_RUN_ID,
     workflowDefinitionId: "workflow",
     workflowDefinitionVersion: "v1",
     workflowDefinitionDigest: `sha256:${"a".repeat(64)}`,
-    taskDefinitionId: "task-definition",
+    taskDefinitionId: VECTOR_TASK_DEFINITION_ID,
     taskKey: "task",
     operation: "execute",
   };
   const resultId = deriveWorkGraphTaskResultId(
     VECTOR_TASK_ID,
-    "dispatch-1",
-    "lease-1",
+    VECTOR_DISPATCH_ID,
+    VECTOR_LEASE_ID,
   );
   assert.equal(
     resultId,
-    "workgraph-v1:result:sha256:9d81643bc476613fc2e7695fb82ff3b1c08efadc484fe05cd74047f8dfb64759",
+    "urn:drasi:workgraph:id:v1:result:sha256:f0f893a82047b5ab3435fe299867caa34eef163f7020fdb7799346749ff6bdef",
   );
   const body = formatTaskResult({
     resultId,
     rootIssueId: "root-1",
-    workflowRunId: "run-1",
+    workflowRunId: VECTOR_RUN_ID,
     taskId: VECTOR_TASK_ID,
     task,
-    dispatchId: "dispatch-1",
-    leaseId: "lease-1",
+    dispatchId: VECTOR_DISPATCH_ID,
+    leaseId: VECTOR_LEASE_ID,
     attempt: 1,
     outcome: "succeeded",
     output: { z: 1, a: true },
@@ -992,19 +1018,25 @@ test("v1 Result identity, body, and envelope digest match Rust vectors", () => {
   "kind": "TaskResult",
   "id": "${resultId}",
   "rootIssueId": "root-1",
-  "workflowRunId": "run-1",
+  "workflowRunId": "${VECTOR_RUN_ID}",
   "taskId": "${VECTOR_TASK_ID}",
-  "context": {
+  "workflowContext": {
     "workflowDefinitionId": "workflow",
     "workflowDefinitionVersion": "v1",
     "workflowDefinitionDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "taskDefinitionId": "task-definition",
+    "taskDefinitionId": "${VECTOR_TASK_DEFINITION_ID}",
     "taskKey": "task",
     "operation": "execute"
   },
   "references": {
-    "dispatchId": "dispatch-1",
-    "leaseId": "lease-1"
+    "dispatch": {
+      "kind": "TaskDispatch",
+      "id": "${VECTOR_DISPATCH_ID}"
+    },
+    "lease": {
+      "kind": "TaskLease",
+      "id": "${VECTOR_LEASE_ID}"
+    }
   },
   "data": {
     "attempt": 1,
@@ -1021,11 +1053,11 @@ test("v1 Result identity, body, and envelope digest match Rust vectors", () => {
   assert.deepEqual(parseTaskResult(body), {
     resultId,
     rootIssueId: "root-1",
-    workflowRunId: "run-1",
+    workflowRunId: VECTOR_RUN_ID,
     taskId: VECTOR_TASK_ID,
     task,
-    dispatchId: "dispatch-1",
-    leaseId: "lease-1",
+    dispatchId: VECTOR_DISPATCH_ID,
+    leaseId: VECTOR_LEASE_ID,
     attempt: 1,
     outcome: "succeeded",
     output: { a: true, z: 1 },
@@ -1033,7 +1065,7 @@ test("v1 Result identity, body, and envelope digest match Rust vectors", () => {
 
   assert.equal(
     taskResultDigest(parseTaskResult(body)),
-    "sha256:74cbed5d0332c9082be2d54ca345d33ac3df280d3daee4b048894ad2a4e758c2",
+    "sha256:4137a8eb709f27a8cb6961924c4d475fd96e8edcfab97fb2d89b9fce6ba9fe78",
   );
   assert.notEqual(
     taskResultDigest(parseTaskResult(body)),
@@ -1046,47 +1078,47 @@ test("v1 Result identity, body, and envelope digest match Rust vectors", () => {
   };
   assert.equal(
     canonicalTaskResultEnvelopeJson(integerKeys),
-    `{"apiVersion":"workgraph.drasi.io/v1","context":{"operation":"execute","taskDefinitionId":"task-definition","taskKey":"task","workflowDefinitionDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","workflowDefinitionId":"workflow","workflowDefinitionVersion":"v1"},"data":{"attempt":1,"outcome":"succeeded","output":{"10":"ten","2":"two"}},"id":"${resultId}","kind":"TaskResult","references":{"dispatchId":"dispatch-1","leaseId":"lease-1"},"rootIssueId":"root-1","taskId":"${VECTOR_TASK_ID}","workflowRunId":"run-1"}`,
+    `{"apiVersion":"workgraph.drasi.io/v1","data":{"attempt":1,"outcome":"succeeded","output":{"10":"ten","2":"two"}},"id":"${resultId}","kind":"TaskResult","references":{"dispatch":{"id":"${VECTOR_DISPATCH_ID}","kind":"TaskDispatch"},"lease":{"id":"${VECTOR_LEASE_ID}","kind":"TaskLease"}},"rootIssueId":"root-1","taskId":"${VECTOR_TASK_ID}","workflowContext":{"operation":"execute","taskDefinitionId":"${VECTOR_TASK_DEFINITION_ID}","taskKey":"task","workflowDefinitionDigest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","workflowDefinitionId":"workflow","workflowDefinitionVersion":"v1"},"workflowRunId":"${VECTOR_RUN_ID}"}`,
   );
   assert.equal(
     taskResultDigest(integerKeys),
-    "sha256:07f6a2afc7b33b549d9f415c0694a440d5cd1dc5bf96bc9c6dee5ee2a8365662",
+    "sha256:f21fdd0db68d5777c7908a393dc23f4e1d5451eee30d2fba0f7c4e0f1ec05b77",
   );
   const digestShape = JSON.parse(canonicalTaskResultEnvelopeJson(integerKeys));
   assert.equal(digestShape.kind, "TaskResult");
   assert.equal(digestShape.id, resultId);
   assert.equal(digestShape.resultId, undefined);
   assert.deepEqual(digestShape.references, {
-    dispatchId: "dispatch-1",
-    leaseId: "lease-1",
+    dispatch: { kind: "TaskDispatch", id: VECTOR_DISPATCH_ID },
+    lease: { kind: "TaskLease", id: VECTOR_LEASE_ID },
   });
   assert.throws(() => parseTaskResult(body.replace('  "taskId"', ' "taskId"')));
   assert.throws(() => parseTaskResult(body.replace("/v1", "/v2")));
 });
 
-test("TaskResult envelope digest matches the Rust cross-implementation vector", () => {
+test("TaskResult URN envelope digest has a stable cross-shape vector", () => {
   const task = {
-    taskId: VECTOR_TASK_ID,
-    workflowRunId: "run-1",
+    taskId: RUST_TASK_ID,
+    workflowRunId: RUST_RUN_ID,
     workflowDefinitionId: "workflow-1",
     workflowDefinitionVersion: "v1",
     workflowDefinitionDigest: `sha256:${"1".repeat(64)}`,
-    taskDefinitionId: "definition-1",
+    taskDefinitionId: RUST_TASK_DEFINITION_ID,
     taskKey: "task",
     operation: "execute",
   };
   const result = {
     resultId: deriveWorkGraphTaskResultId(
-      VECTOR_TASK_ID,
-      "dispatch-1",
-      "lease-1",
+      RUST_TASK_ID,
+      RUST_DISPATCH_ID,
+      RUST_LEASE_ID,
     ),
     rootIssueId: "root-1",
-    workflowRunId: "run-1",
-    taskId: VECTOR_TASK_ID,
+    workflowRunId: RUST_RUN_ID,
+    taskId: RUST_TASK_ID,
     task,
-    dispatchId: "dispatch-1",
-    leaseId: "lease-1",
+    dispatchId: RUST_DISPATCH_ID,
+    leaseId: RUST_LEASE_ID,
     attempt: 1,
     outcome: "succeeded",
     output: { 2: "two", 10: "ten" },
@@ -1094,7 +1126,7 @@ test("TaskResult envelope digest matches the Rust cross-implementation vector", 
 
   assert.equal(
     taskResultDigest(result),
-    "sha256:d89a0212d6b18db90713618c82755642417aa459213c59efb80e2692d623ef41",
+    "sha256:1376f6e924be53d9d2ee58ab039d05c5bc5fbd9cc0bc780dd433277d80e2a654",
   );
   assert.equal(
     taskResultDigest(parseTaskResult(formatTaskResult(result))),
@@ -1168,24 +1200,24 @@ test("Result output enforces the kernel JSON data domain", () => {
   const base = {
     resultId: deriveWorkGraphTaskResultId(
       VECTOR_TASK_ID,
-      "dispatch-1",
-      "lease-1",
+      VECTOR_DISPATCH_ID,
+      VECTOR_LEASE_ID,
     ),
     rootIssueId: "root-1",
-    workflowRunId: "run-1",
+    workflowRunId: VECTOR_RUN_ID,
     taskId: VECTOR_TASK_ID,
     task: {
       taskId: VECTOR_TASK_ID,
-      workflowRunId: "run-1",
+      workflowRunId: VECTOR_RUN_ID,
       workflowDefinitionId: "workflow",
       workflowDefinitionVersion: "v1",
       workflowDefinitionDigest: `sha256:${"a".repeat(64)}`,
-      taskDefinitionId: "task-definition",
+      taskDefinitionId: VECTOR_TASK_DEFINITION_ID,
       taskKey: "task",
       operation: "execute",
     },
-    dispatchId: "dispatch-1",
-    leaseId: "lease-1",
+    dispatchId: VECTOR_DISPATCH_ID,
+    leaseId: VECTOR_LEASE_ID,
     attempt: 1,
     outcome: "succeeded",
   };
@@ -1256,7 +1288,32 @@ test("MCP exposes only narrow WorkGraph readers and lifecycle writers", async ()
   for (const tool of tools) {
     assert.equal(
       tool.inputSchema.properties.taskId.pattern,
-      "^workgraph-v1:task:sha256:[0-9a-f]{64}$",
+      "^urn:drasi:workgraph:id:v1:task:sha256:[0-9a-f]{64}$",
+    );
+  }
+  const resultSchema = tools.find(
+    ({ name }) => name === "submit_task_result",
+  ).inputSchema.properties;
+  assert.equal(
+    resultSchema.dispatchId.pattern,
+    "^urn:drasi:workgraph:id:v1:dispatch:sha256:[0-9a-f]{64}$",
+  );
+  assert.equal(
+    resultSchema.leaseId.pattern,
+    "^urn:drasi:workgraph:id:v1:lease:sha256:[0-9a-f]{64}$",
+  );
+  const snapshotSchema = tools.find(
+    ({ name }) => name === "get_task_snapshot",
+  ).inputSchema.properties;
+  for (const [field, type] of [
+    ["workflowRunId", "workflow-run"],
+    ["dispatchId", "dispatch"],
+    ["leaseId", "lease"],
+    ["resultId", "result"],
+  ]) {
+    assert.equal(
+      snapshotSchema[field].pattern,
+      `^urn:drasi:workgraph:id:v1:${type}:sha256:[0-9a-f]{64}$`,
     );
   }
   const child = spawn(process.execPath, [REPORTER], {
@@ -1390,7 +1447,10 @@ test("submit_task_result validates the exact active lease and reconciles", async
     assert.equal(result.rootIssueId, data.childTask.rootIssueId);
     assert.equal(result.workflowRunId, data.childTask.workflowRunId);
     assert.equal(result.attempt, 1);
-    assert.match(state.leaseRequests[0].value.claimId, /^[0-9a-f-]{36}$/);
+    assert.match(
+      state.leaseRequests[0].value.claimId,
+      /^urn:drasi:workgraph:id:v1:lease-claim:sha256:[0-9a-f]{64}$/,
+    );
     assert.deepEqual(state.leaseRequests, [
       {
         authorization: "Bearer lease-token",
@@ -1599,9 +1659,10 @@ test("reporter inputs reject legacy and malformed task IDs before reads", async 
   const invalidTaskIds = [
     `wgt-${"a".repeat(60)}`,
     "task-1",
-    `workgraph-v1:task:sha256:${"A".repeat(64)}`,
-    `workgraph-v1:task:sha256:${"a".repeat(63)}`,
-    `workgraph-v1:task:sha256:${"g".repeat(64)}`,
+    `workgraph-v1:task:sha256:${"a".repeat(64)}`,
+    `urn:drasi:workgraph:id:v1:task:sha256:${"A".repeat(64)}`,
+    `urn:drasi:workgraph:id:v1:task:sha256:${"a".repeat(63)}`,
+    `urn:drasi:workgraph:id:v1:task:sha256:${"g".repeat(64)}`,
   ];
   await withFakeRuntime({}, async ({ data, state }) => {
     for (const taskId of invalidTaskIds) {
@@ -1610,14 +1671,14 @@ test("reporter inputs reject legacy and malformed task IDs before reads", async 
           taskLocator: childLocator(),
           taskId,
         }),
-        /taskId must be workgraph-v1:task:sha256:<64 lowercase hex>/,
+        /taskId must be urn:drasi:workgraph:id:v1:task:sha256:<64 lowercase hex>/,
       );
       await assert.rejects(
         callTool("submit_task_result", {
           ...resultInput(data.childTask, data.childDispatch, childLocator()),
           taskId,
         }),
-        /taskId must be workgraph-v1:task:sha256:<64 lowercase hex>/,
+        /taskId must be urn:drasi:workgraph:id:v1:task:sha256:<64 lowercase hex>/,
       );
     }
     assert.equal(state.writes.length, 0);
@@ -1627,14 +1688,14 @@ test("reporter inputs reject legacy and malformed task IDs before reads", async 
     for (const taskId of invalidTaskIds) {
       await assert.rejects(
         callTool("get_task_snapshot", { ...data.input, taskId }),
-        /taskId must be workgraph-v1:task:sha256:<64 lowercase hex>/,
+        /taskId must be urn:drasi:workgraph:id:v1:task:sha256:<64 lowercase hex>/,
       );
       await assert.rejects(
         callTool("submit_task_evaluation", {
           ...evaluationInput(data, "accepted"),
           taskId,
         }),
-        /taskId must be workgraph-v1:task:sha256:<64 lowercase hex>/,
+        /taskId must be urn:drasi:workgraph:id:v1:task:sha256:<64 lowercase hex>/,
       );
     }
     assert.equal(writes.length, 0);
@@ -1653,7 +1714,7 @@ test("reporter inputs reject legacy and malformed task IDs before reads", async 
             action: "advance",
             ...snapshot.authorizedTransitions[0],
           }),
-          /taskId must be workgraph-v1:task:sha256:<64 lowercase hex>/,
+          /taskId must be urn:drasi:workgraph:id:v1:task:sha256:<64 lowercase hex>/,
         );
       }
       assert.equal(writes.length, 0);
@@ -2005,7 +2066,7 @@ test("Evaluation rejects arbitrary and legacy IDs in comments and submissions", 
       async ({ data, writes }) => {
         await assert.rejects(
           callTool("get_task_snapshot", data.input),
-          /evaluationId is not canonical/,
+          /evaluationId (?:is not canonical|must be urn:)/,
         );
         assert.equal(writes.length, 0);
       },
@@ -2128,7 +2189,7 @@ test("Route rejects arbitrary and legacy IDs in comments and submissions", async
       async ({ data, writes }) => {
         await assert.rejects(
           callTool("get_task_snapshot", data.input),
-          /routeId is not canonical/,
+          /routeId (?:is not canonical|must be urn:)/,
         );
         assert.equal(writes.length, 0);
       },
@@ -2145,7 +2206,7 @@ test("Route rejects arbitrary and legacy IDs in comments and submissions", async
             action: "advance",
             ...snapshot.authorizedTransitions[0],
           }),
-          /canonical current Evaluation identity/,
+          /routeId (?:must be urn:|does not match the canonical current Evaluation identity)/,
         );
         assert.equal(writes.length, 0);
       },

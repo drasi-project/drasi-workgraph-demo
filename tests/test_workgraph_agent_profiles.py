@@ -68,7 +68,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
                 self.assertEqual(tools, EXPECTED_TOOLS[name])
                 self.assertNotIn("github/issue_write", frontmatter)
                 self.assertIn(
-                    "workgraph-v1:task:sha256:<64 lowercase hex>", content
+                    "urn:drasi:workgraph:id:v1:task:sha256:<64 lowercase hex>", content
                 )
         for name in EXPECTED_TOOLS:
             with self.subTest(runtime_profile=name):

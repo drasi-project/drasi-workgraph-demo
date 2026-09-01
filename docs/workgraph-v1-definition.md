@@ -31,8 +31,8 @@ definition and rejects children, outcome transitions, or waits.
 ## Runtime message envelope
 
 Every task and lifecycle body contains exactly `apiVersion`, `kind`, `id`,
-`rootIssueId`, `workflowRunId`, `taskId`, `context`, `references`, and `data`.
-`apiVersion` is `workgraph.drasi.io/v1`. Context always contains the pinned
+`rootIssueId`, `workflowRunId`, `taskId`, `workflowContext`, `references`, and
+`data`. `apiVersion` is `workgraph.drasi.io/v1`. Workflow context always contains the pinned
 definition ID, version, digest, task-definition ID, `taskKey`, and `operation`.
 The markers and kinds are Task, TaskAssignment, TaskDispatch, TaskResult,
 TaskEvaluation, TaskRoute, and TaskError using their matching
@@ -40,28 +40,35 @@ TaskEvaluation, TaskRoute, and TaskError using their matching
 accepted.
 
 Every runtime `taskId` must match the canonical form
-`workgraph-v1:task:sha256:<64 lowercase hex>`. Root Task IDs hash the same
+`urn:drasi:workgraph:id:v1:task:sha256:<64 lowercase hex>`. Root Task IDs hash
+the same
 length-framed `(workflowRunId, rootTaskDefinitionId)` inputs as before. Forked
 children and routed successors retain their existing length-framed
 `(workflowRunId, parentTaskId, taskDefinitionId)` inputs. Only the namespace and
-full 64-hex representation changed; `taskDefinitionId` remains `wgd-*`.
-Legacy `wgt-*`, arbitrary names, uppercase hex, and malformed digests are
+full 64-hex representation changed. Legacy `wgt-*`, pre-URN IDs, arbitrary
+names, uppercase hex, and malformed digests are
 rejected by Task and lifecycle formatters, parsers, and ID derivation helpers.
 
 References/data are strict: Task uses `{}`/`{resolvedInputs}`; Assignment uses
-`{}`/`{permittedExecutors}`; Dispatch uses `{assignmentId}` with
+`{}`/`{permittedExecutors}`; Dispatch uses `{assignment:{kind,id}}` with
 `{launchId, lease:{id,executorId,slotId}}`; Result uses
-`{dispatchId,leaseId}` with `{attempt,outcome,output}`; Evaluation uses
-`{resultId}` with `{resultDigest,evaluatorId,attempt,verdict,summary,feedback}`;
-and Route uses `{resultId,evaluationId}` with its verdict, orchestrator, action,
-attempt, transition, target, selected-outcome, and target-task fields. All five
-nullable Route data fields are serialized explicitly as `null`.
+typed `dispatch` and `lease` roles with `{attempt,outcome,output}`; Evaluation
+uses a typed `result` role; and Route uses typed `result` and `evaluation`
+roles with its verdict, orchestrator, action, attempt, transition, target,
+selected-outcome, and target-task fields. Each non-null reference is exactly
+`{kind,id}`. All five nullable Route data fields are serialized explicitly as
+`null`; every TaskError reference role is typed or explicitly `null`.
+
+Generated protocol IDs hash the length-framed UTF-8 sequence
+`["urn:drasi:workgraph:id:v1", type, ...semanticInputs]` and use
+`urn:drasi:workgraph:id:v1:<type>:sha256:<64 lowercase hex>`.
 Evaluation `resultDigest` hashes recursively key-sorted compact JSON for the
 canonical TaskResult envelope object, not the flattened parser projection.
 Evaluation IDs derive from `(taskId, resultId, resultDigest)`, and Route IDs
 derive from `(taskId, evaluationId)`. Their strict formatters and parsers reject
-noncanonical IDs. TaskResult formatting intentionally keeps `resultId` opaque;
-the reporter and source layers enforce its canonical identity.
+noncanonical IDs. TaskResult formatting requires the `result` URN type but
+intentionally does not rederive it; reporter and source layers enforce its
+semantic identity.
 
 Verdicts are `accepted` or `rejected`; rejected Evaluations require actionable
 feedback. Accepted Results follow their exact transition, while rejected

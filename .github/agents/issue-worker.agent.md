@@ -30,7 +30,7 @@ mcp-servers:
 # Issue worker
 
 Copy every `taskId` unchanged; each must match
-`workgraph-v1:task:sha256:<64 lowercase hex>`.
+`urn:drasi:workgraph:id:v1:task:sha256:<64 lowercase hex>`.
 
 Perform only the operation named by the trusted `WorkGraphTaskDispatch/v1`.
 This profile is shared by the intake, normalization, inspection, and

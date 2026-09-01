@@ -26,20 +26,20 @@
       "wg-route-detail",
       "wg-error-detail",
       "wg-predecessor-result-detail",
-      "wg-entry-9fa7c23308acc6f2f663",
-      "wg-next-36052ed88c92f5b5cd29",
-      "wg-next-7b7e3f4ef615e40fac55",
-      "wg-next-81d9671b0d5b83db2a14",
-      "wg-next-d9777655870aa7254c3f",
-      "wg-terminal-8f328a93bc2ba9c6d49d"
+      "wg-entry-55e20be013024dd53e34",
+      "wg-next-3fe06f5b356d70a8afae",
+      "wg-next-4e061353186c27445d52",
+      "wg-next-5f6cc00d3413bfca1bfb",
+      "wg-next-bf10b844ab367098f6f0",
+      "wg-terminal-ba3d302109136f253416"
     ],
-    "queryContractDigest": "sha256:6a073f9f324eaac9225f1654596f29958d5e18c8e0c1689b1ef02f3e9509095c"
+    "queryContractDigest": "sha256:02fb19b72b789c751db00bee49c0ebcfa2f2912c3f075b2d642de2834d3c7fb0"
   },
   "definition": {
     "bodyPath": "../../workflows/issue-lifecycle-v1.body",
     "workflowDefinitionId": "issue-lifecycle",
     "version": "v1",
-    "digest": "sha256:7706c7d30b8a0028ddaa4fad2d17577be388cdf723efc0b23e468c130fba476d"
+    "digest": "sha256:8f5876b5bd61dd63a957db5adf61277ee852d4752790c95fa3b78056aad34754"
   },
   "rootIssueAdmission": {
     "repositoryOwner": "drasi-project",
@@ -49,16 +49,16 @@
     "issueNodeId": "I_workgraph_root_issue",
     "label": "workgraph",
     "deliveryId": "workgraph-delivery-1",
-    "admissionId": "wga-c011d85d24550c7469b5264f2c1ab1237a96469ea4a51f7c27f6b6762ea1ab31",
+    "admissionId": "urn:drasi:workgraph:id:v1:admission:sha256:077e3315d4fcc9cbd8eb0377863c0bac07f859bbb0143b5661e3101ca1276198",
     "title": "WorkGraph Root Issue",
     "body": "Validate this issue.",
     "contentDigest": "sha256:1b079c1efdfac32900286e0b20216dac4c17115ddf6c9cf526d4cc0a3f1c68bb"
   },
   "expectedRootTask": {
-    "taskId": "workgraph-v1:task:sha256:a417c7051894a093f13e1e06c212d0bd740d608bbc75513b28aa61aad87ea238",
+    "taskId": "urn:drasi:workgraph:id:v1:task:sha256:f000b1854ea3b9b009c43bdbf68e7786298016514e52a81d46f5461116b4ee4b",
     "rootIssueId": "I_workgraph_root_issue",
-    "workflowRunId": "workgraph-v1:run:sha256:1cb0cca12c477296d36277433d7c42f34f918e27a435cd6208c95c74599df6cd",
-    "taskDefinitionId": "wgd-2ce0abc2104478fd27e0edeec7173ad089f6f2fb72c02694bc2525146cfe",
+    "workflowRunId": "urn:drasi:workgraph:id:v1:workflow-run:sha256:086749d7bbfd8c7b6f665a099f7344d71314674c9f89f1a2021f0c9ac2ff1691",
+    "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:1e33ac3e56d691d86845bccf2c2c9c42c0487d55d9b6ac1fd359a33582ab7261",
     "taskKey": "a",
     "operation": "intake-issue",
     "firstLifecycleState": "FORK",

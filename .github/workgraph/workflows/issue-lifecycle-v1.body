@@ -4,7 +4,7 @@ WorkGraphWorkflowDefinition/v1
 {
   "workflowDefinitionId": "issue-lifecycle",
   "version": "v1",
-  "digest": "sha256:7706c7d30b8a0028ddaa4fad2d17577be388cdf723efc0b23e468c130fba476d",
+  "digest": "sha256:8f5876b5bd61dd63a957db5adf61277ee852d4752790c95fa3b78056aad34754",
   "trigger": "workgraph",
   "defaults": {
     "evaluator": "result-evaluator",
@@ -13,7 +13,7 @@ WorkGraphWorkflowDefinition/v1
   },
   "initialStepId": "a",
   "root": {
-    "taskDefinitionId": "wgd-2ce0abc2104478fd27e0edeec7173ad089f6f2fb72c02694bc2525146cfe",
+    "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:1e33ac3e56d691d86845bccf2c2c9c42c0487d55d9b6ac1fd359a33582ab7261",
     "taskKey": "a",
     "operation": "intake-issue",
     "routing": {
@@ -28,7 +28,7 @@ WorkGraphWorkflowDefinition/v1
     "a": {
       "type": "task",
       "taskDefinition": {
-        "taskDefinitionId": "wgd-2ce0abc2104478fd27e0edeec7173ad089f6f2fb72c02694bc2525146cfe",
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:1e33ac3e56d691d86845bccf2c2c9c42c0487d55d9b6ac1fd359a33582ab7261",
         "taskKey": "a",
         "operation": "intake-issue",
         "routing": {
@@ -40,7 +40,7 @@ WorkGraphWorkflowDefinition/v1
         "children": []
       },
       "executionPolicies": {
-        "wgd-2ce0abc2104478fd27e0edeec7173ad089f6f2fb72c02694bc2525146cfe": {
+        "urn:drasi:workgraph:id:v1:task-definition:sha256:1e33ac3e56d691d86845bccf2c2c9c42c0487d55d9b6ac1fd359a33582ab7261": {
           "workerId": "issue-worker",
           "evaluatorId": "result-evaluator",
           "orchestratorId": "workflow-coordinator",
@@ -55,7 +55,7 @@ WorkGraphWorkflowDefinition/v1
     "b": {
       "type": "task",
       "taskDefinition": {
-        "taskDefinitionId": "wgd-b48fb3e191ebb3ac4ad937529081620b89964134acd6818a63d4abef4135",
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:801091d12fe0d0b8f4bef3e39dd7c15164ef4ce96da8f24ef17f757a9a662fe5",
         "taskKey": "b",
         "operation": "normalize-issue",
         "routing": {
@@ -67,7 +67,7 @@ WorkGraphWorkflowDefinition/v1
         "children": []
       },
       "executionPolicies": {
-        "wgd-b48fb3e191ebb3ac4ad937529081620b89964134acd6818a63d4abef4135": {
+        "urn:drasi:workgraph:id:v1:task-definition:sha256:801091d12fe0d0b8f4bef3e39dd7c15164ef4ce96da8f24ef17f757a9a662fe5": {
           "workerId": "issue-worker",
           "evaluatorId": "result-evaluator",
           "orchestratorId": "workflow-coordinator",
@@ -82,7 +82,7 @@ WorkGraphWorkflowDefinition/v1
     "c": {
       "type": "task",
       "taskDefinition": {
-        "taskDefinitionId": "wgd-95affedcc9b4f69dc6ac3aa3376245811348b9ee543a5072b44027d2aae1",
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:6655e16c4e7bf6f8ef22f8573e3b06b5821dbefdb2ca464fa52ebcbbe15e05af",
         "taskKey": "c",
         "operation": "inspect-issue",
         "routing": {
@@ -94,7 +94,7 @@ WorkGraphWorkflowDefinition/v1
         "children": []
       },
       "executionPolicies": {
-        "wgd-95affedcc9b4f69dc6ac3aa3376245811348b9ee543a5072b44027d2aae1": {
+        "urn:drasi:workgraph:id:v1:task-definition:sha256:6655e16c4e7bf6f8ef22f8573e3b06b5821dbefdb2ca464fa52ebcbbe15e05af": {
           "workerId": "issue-worker",
           "evaluatorId": "result-evaluator",
           "orchestratorId": "workflow-coordinator",
@@ -113,7 +113,7 @@ WorkGraphWorkflowDefinition/v1
     "d": {
       "type": "task",
       "taskDefinition": {
-        "taskDefinitionId": "wgd-7f3cdeee71f8c43c5f9de62d097e56c652a13de22dee7708992a37b8708c",
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:844075d4ee8b2fd19f58b34de63958d5003a0292e0ce987ffe25cb9499003171",
         "taskKey": "d",
         "operation": "finalize-issue",
         "routing": {
@@ -125,7 +125,7 @@ WorkGraphWorkflowDefinition/v1
         "children": []
       },
       "executionPolicies": {
-        "wgd-7f3cdeee71f8c43c5f9de62d097e56c652a13de22dee7708992a37b8708c": {
+        "urn:drasi:workgraph:id:v1:task-definition:sha256:844075d4ee8b2fd19f58b34de63958d5003a0292e0ce987ffe25cb9499003171": {
           "workerId": "issue-worker",
           "evaluatorId": "result-evaluator",
           "orchestratorId": "workflow-coordinator",

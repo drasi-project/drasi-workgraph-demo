@@ -1,5 +1,5 @@
 {
-  "definitionDigest": "sha256:7706c7d30b8a0028ddaa4fad2d17577be388cdf723efc0b23e468c130fba476d",
+  "definitionDigest": "sha256:8f5876b5bd61dd63a957db5adf61277ee852d4752790c95fa3b78056aad34754",
   "definition": {
     "apiVersion": "workgraph.drasi.io/v1",
     "kind": "IssueWorkflow",
@@ -73,7 +73,7 @@
   "workgraphDefinition": {
     "workflowDefinitionId": "issue-lifecycle",
     "version": "v1",
-    "digest": "sha256:7706c7d30b8a0028ddaa4fad2d17577be388cdf723efc0b23e468c130fba476d",
+    "digest": "sha256:8f5876b5bd61dd63a957db5adf61277ee852d4752790c95fa3b78056aad34754",
     "trigger": "workgraph",
     "defaults": {
       "evaluator": "result-evaluator",
@@ -82,7 +82,7 @@
     },
     "initialStepId": "a",
     "root": {
-      "taskDefinitionId": "wgd-2ce0abc2104478fd27e0edeec7173ad089f6f2fb72c02694bc2525146cfe",
+      "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:1e33ac3e56d691d86845bccf2c2c9c42c0487d55d9b6ac1fd359a33582ab7261",
       "taskKey": "a",
       "operation": "intake-issue",
       "routing": {
@@ -97,7 +97,7 @@
       "a": {
         "type": "task",
         "taskDefinition": {
-          "taskDefinitionId": "wgd-2ce0abc2104478fd27e0edeec7173ad089f6f2fb72c02694bc2525146cfe",
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:1e33ac3e56d691d86845bccf2c2c9c42c0487d55d9b6ac1fd359a33582ab7261",
           "taskKey": "a",
           "operation": "intake-issue",
           "routing": {
@@ -109,7 +109,7 @@
           "children": []
         },
         "executionPolicies": {
-          "wgd-2ce0abc2104478fd27e0edeec7173ad089f6f2fb72c02694bc2525146cfe": {
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:1e33ac3e56d691d86845bccf2c2c9c42c0487d55d9b6ac1fd359a33582ab7261": {
             "workerId": "issue-worker",
             "evaluatorId": "result-evaluator",
             "orchestratorId": "workflow-coordinator",
@@ -124,7 +124,7 @@
       "b": {
         "type": "task",
         "taskDefinition": {
-          "taskDefinitionId": "wgd-b48fb3e191ebb3ac4ad937529081620b89964134acd6818a63d4abef4135",
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:801091d12fe0d0b8f4bef3e39dd7c15164ef4ce96da8f24ef17f757a9a662fe5",
           "taskKey": "b",
           "operation": "normalize-issue",
           "routing": {
@@ -136,7 +136,7 @@
           "children": []
         },
         "executionPolicies": {
-          "wgd-b48fb3e191ebb3ac4ad937529081620b89964134acd6818a63d4abef4135": {
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:801091d12fe0d0b8f4bef3e39dd7c15164ef4ce96da8f24ef17f757a9a662fe5": {
             "workerId": "issue-worker",
             "evaluatorId": "result-evaluator",
             "orchestratorId": "workflow-coordinator",
@@ -151,7 +151,7 @@
       "c": {
         "type": "task",
         "taskDefinition": {
-          "taskDefinitionId": "wgd-95affedcc9b4f69dc6ac3aa3376245811348b9ee543a5072b44027d2aae1",
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:6655e16c4e7bf6f8ef22f8573e3b06b5821dbefdb2ca464fa52ebcbbe15e05af",
           "taskKey": "c",
           "operation": "inspect-issue",
           "routing": {
@@ -163,7 +163,7 @@
           "children": []
         },
         "executionPolicies": {
-          "wgd-95affedcc9b4f69dc6ac3aa3376245811348b9ee543a5072b44027d2aae1": {
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:6655e16c4e7bf6f8ef22f8573e3b06b5821dbefdb2ca464fa52ebcbbe15e05af": {
             "workerId": "issue-worker",
             "evaluatorId": "result-evaluator",
             "orchestratorId": "workflow-coordinator",
@@ -182,7 +182,7 @@
       "d": {
         "type": "task",
         "taskDefinition": {
-          "taskDefinitionId": "wgd-7f3cdeee71f8c43c5f9de62d097e56c652a13de22dee7708992a37b8708c",
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:844075d4ee8b2fd19f58b34de63958d5003a0292e0ce987ffe25cb9499003171",
           "taskKey": "d",
           "operation": "finalize-issue",
           "routing": {
@@ -194,7 +194,7 @@
           "children": []
         },
         "executionPolicies": {
-          "wgd-7f3cdeee71f8c43c5f9de62d097e56c652a13de22dee7708992a37b8708c": {
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:844075d4ee8b2fd19f58b34de63958d5003a0292e0ce987ffe25cb9499003171": {
             "workerId": "issue-worker",
             "evaluatorId": "result-evaluator",
             "orchestratorId": "workflow-coordinator",
@@ -208,16 +208,16 @@
       }
     }
   },
-  "canonicalDefinitionBody": "WorkGraphWorkflowDefinition/v1\n\n```json\n{\n  \"workflowDefinitionId\": \"issue-lifecycle\",\n  \"version\": \"v1\",\n  \"digest\": \"sha256:7706c7d30b8a0028ddaa4fad2d17577be388cdf723efc0b23e468c130fba476d\",\n  \"trigger\": \"workgraph\",\n  \"defaults\": {\n    \"evaluator\": \"result-evaluator\",\n    \"orchestrator\": \"workflow-coordinator\",\n    \"maxReworkAttempts\": 3\n  },\n  \"initialStepId\": \"a\",\n  \"root\": {\n    \"taskDefinitionId\": \"wgd-2ce0abc2104478fd27e0edeec7173ad089f6f2fb72c02694bc2525146cfe\",\n    \"taskKey\": \"a\",\n    \"operation\": \"intake-issue\",\n    \"routing\": {\n      \"permittedExecutors\": [\n        \"issue-worker\"\n      ]\n    },\n    \"staticInputs\": {},\n    \"children\": []\n  },\n  \"steps\": {\n    \"a\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"wgd-2ce0abc2104478fd27e0edeec7173ad089f6f2fb72c02694bc2525146cfe\",\n        \"taskKey\": \"a\",\n        \"operation\": \"intake-issue\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"issue-worker\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"children\": []\n      },\n      \"executionPolicies\": {\n        \"wgd-2ce0abc2104478fd27e0edeec7173ad089f6f2fb72c02694bc2525146cfe\": {\n          \"workerId\": \"issue-worker\",\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        }\n      },\n      \"transition\": {\n        \"type\": \"next\",\n        \"targetStepId\": \"b\"\n      }\n    },\n    \"b\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"wgd-b48fb3e191ebb3ac4ad937529081620b89964134acd6818a63d4abef4135\",\n        \"taskKey\": \"b\",\n        \"operation\": \"normalize-issue\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"issue-worker\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"children\": []\n      },\n      \"executionPolicies\": {\n        \"wgd-b48fb3e191ebb3ac4ad937529081620b89964134acd6818a63d4abef4135\": {\n          \"workerId\": \"issue-worker\",\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        }\n      },\n      \"transition\": {\n        \"type\": \"next\",\n        \"targetStepId\": \"c\"\n      }\n    },\n    \"c\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"wgd-95affedcc9b4f69dc6ac3aa3376245811348b9ee543a5072b44027d2aae1\",\n        \"taskKey\": \"c\",\n        \"operation\": \"inspect-issue\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"issue-worker\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"children\": []\n      },\n      \"executionPolicies\": {\n        \"wgd-95affedcc9b4f69dc6ac3aa3376245811348b9ee543a5072b44027d2aae1\": {\n          \"workerId\": \"issue-worker\",\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        }\n      },\n      \"transition\": {\n        \"type\": \"next\",\n        \"targetStepId\": \"d\"\n      }\n    },\n    \"completed\": {\n      \"type\": \"terminal\",\n      \"outcome\": \"completed\"\n    },\n    \"d\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"wgd-7f3cdeee71f8c43c5f9de62d097e56c652a13de22dee7708992a37b8708c\",\n        \"taskKey\": \"d\",\n        \"operation\": \"finalize-issue\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"issue-worker\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"children\": []\n      },\n      \"executionPolicies\": {\n        \"wgd-7f3cdeee71f8c43c5f9de62d097e56c652a13de22dee7708992a37b8708c\": {\n          \"workerId\": \"issue-worker\",\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        }\n      },\n      \"transition\": {\n        \"type\": \"next\",\n        \"targetStepId\": \"completed\"\n      }\n    }\n  }\n}\n```\n",
+  "canonicalDefinitionBody": "WorkGraphWorkflowDefinition/v1\n\n```json\n{\n  \"workflowDefinitionId\": \"issue-lifecycle\",\n  \"version\": \"v1\",\n  \"digest\": \"sha256:8f5876b5bd61dd63a957db5adf61277ee852d4752790c95fa3b78056aad34754\",\n  \"trigger\": \"workgraph\",\n  \"defaults\": {\n    \"evaluator\": \"result-evaluator\",\n    \"orchestrator\": \"workflow-coordinator\",\n    \"maxReworkAttempts\": 3\n  },\n  \"initialStepId\": \"a\",\n  \"root\": {\n    \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:1e33ac3e56d691d86845bccf2c2c9c42c0487d55d9b6ac1fd359a33582ab7261\",\n    \"taskKey\": \"a\",\n    \"operation\": \"intake-issue\",\n    \"routing\": {\n      \"permittedExecutors\": [\n        \"issue-worker\"\n      ]\n    },\n    \"staticInputs\": {},\n    \"children\": []\n  },\n  \"steps\": {\n    \"a\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:1e33ac3e56d691d86845bccf2c2c9c42c0487d55d9b6ac1fd359a33582ab7261\",\n        \"taskKey\": \"a\",\n        \"operation\": \"intake-issue\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"issue-worker\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"children\": []\n      },\n      \"executionPolicies\": {\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:1e33ac3e56d691d86845bccf2c2c9c42c0487d55d9b6ac1fd359a33582ab7261\": {\n          \"workerId\": \"issue-worker\",\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        }\n      },\n      \"transition\": {\n        \"type\": \"next\",\n        \"targetStepId\": \"b\"\n      }\n    },\n    \"b\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:801091d12fe0d0b8f4bef3e39dd7c15164ef4ce96da8f24ef17f757a9a662fe5\",\n        \"taskKey\": \"b\",\n        \"operation\": \"normalize-issue\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"issue-worker\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"children\": []\n      },\n      \"executionPolicies\": {\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:801091d12fe0d0b8f4bef3e39dd7c15164ef4ce96da8f24ef17f757a9a662fe5\": {\n          \"workerId\": \"issue-worker\",\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        }\n      },\n      \"transition\": {\n        \"type\": \"next\",\n        \"targetStepId\": \"c\"\n      }\n    },\n    \"c\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:6655e16c4e7bf6f8ef22f8573e3b06b5821dbefdb2ca464fa52ebcbbe15e05af\",\n        \"taskKey\": \"c\",\n        \"operation\": \"inspect-issue\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"issue-worker\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"children\": []\n      },\n      \"executionPolicies\": {\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:6655e16c4e7bf6f8ef22f8573e3b06b5821dbefdb2ca464fa52ebcbbe15e05af\": {\n          \"workerId\": \"issue-worker\",\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        }\n      },\n      \"transition\": {\n        \"type\": \"next\",\n        \"targetStepId\": \"d\"\n      }\n    },\n    \"completed\": {\n      \"type\": \"terminal\",\n      \"outcome\": \"completed\"\n    },\n    \"d\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:844075d4ee8b2fd19f58b34de63958d5003a0292e0ce987ffe25cb9499003171\",\n        \"taskKey\": \"d\",\n        \"operation\": \"finalize-issue\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"issue-worker\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"children\": []\n      },\n      \"executionPolicies\": {\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:844075d4ee8b2fd19f58b34de63958d5003a0292e0ce987ffe25cb9499003171\": {\n          \"workerId\": \"issue-worker\",\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        }\n      },\n      \"transition\": {\n        \"type\": \"next\",\n        \"targetStepId\": \"completed\"\n      }\n    }\n  }\n}\n```\n",
   "queryPlan": {
     "version": "v1",
     "workflowDefinitionId": "issue-lifecycle",
-    "definitionDigest": "sha256:7706c7d30b8a0028ddaa4fad2d17577be388cdf723efc0b23e468c130fba476d",
+    "definitionDigest": "sha256:8f5876b5bd61dd63a957db5adf61277ee852d4752790c95fa3b78056aad34754",
     "lifecycleTemplates": [
       {
-        "taskDefinitionId": "wgd-2ce0abc2104478fd27e0edeec7173ad089f6f2fb72c02694bc2525146cfe",
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:1e33ac3e56d691d86845bccf2c2c9c42c0487d55d9b6ac1fd359a33582ab7261",
         "taskDefinition": {
-          "taskDefinitionId": "wgd-2ce0abc2104478fd27e0edeec7173ad089f6f2fb72c02694bc2525146cfe",
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:1e33ac3e56d691d86845bccf2c2c9c42c0487d55d9b6ac1fd359a33582ab7261",
           "taskKey": "a",
           "operation": "intake-issue",
           "routing": {
@@ -235,9 +235,9 @@
         "childTaskDefinitionIds": []
       },
       {
-        "taskDefinitionId": "wgd-b48fb3e191ebb3ac4ad937529081620b89964134acd6818a63d4abef4135",
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:801091d12fe0d0b8f4bef3e39dd7c15164ef4ce96da8f24ef17f757a9a662fe5",
         "taskDefinition": {
-          "taskDefinitionId": "wgd-b48fb3e191ebb3ac4ad937529081620b89964134acd6818a63d4abef4135",
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:801091d12fe0d0b8f4bef3e39dd7c15164ef4ce96da8f24ef17f757a9a662fe5",
           "taskKey": "b",
           "operation": "normalize-issue",
           "routing": {
@@ -255,9 +255,9 @@
         "childTaskDefinitionIds": []
       },
       {
-        "taskDefinitionId": "wgd-95affedcc9b4f69dc6ac3aa3376245811348b9ee543a5072b44027d2aae1",
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:6655e16c4e7bf6f8ef22f8573e3b06b5821dbefdb2ca464fa52ebcbbe15e05af",
         "taskDefinition": {
-          "taskDefinitionId": "wgd-95affedcc9b4f69dc6ac3aa3376245811348b9ee543a5072b44027d2aae1",
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:6655e16c4e7bf6f8ef22f8573e3b06b5821dbefdb2ca464fa52ebcbbe15e05af",
           "taskKey": "c",
           "operation": "inspect-issue",
           "routing": {
@@ -275,9 +275,9 @@
         "childTaskDefinitionIds": []
       },
       {
-        "taskDefinitionId": "wgd-7f3cdeee71f8c43c5f9de62d097e56c652a13de22dee7708992a37b8708c",
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:844075d4ee8b2fd19f58b34de63958d5003a0292e0ce987ffe25cb9499003171",
         "taskDefinition": {
-          "taskDefinitionId": "wgd-7f3cdeee71f8c43c5f9de62d097e56c652a13de22dee7708992a37b8708c",
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:844075d4ee8b2fd19f58b34de63958d5003a0292e0ce987ffe25cb9499003171",
           "taskKey": "d",
           "operation": "finalize-issue",
           "routing": {
@@ -299,28 +299,28 @@
       {
         "type": "workflow-entry",
         "targetStepId": "a",
-        "targetTaskDefinitionId": "wgd-2ce0abc2104478fd27e0edeec7173ad089f6f2fb72c02694bc2525146cfe"
+        "targetTaskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:1e33ac3e56d691d86845bccf2c2c9c42c0487d55d9b6ac1fd359a33582ab7261"
       },
       {
         "type": "next",
         "sourceStepId": "a",
         "targetStepId": "b",
         "targetStepKind": "task",
-        "targetTaskDefinitionId": "wgd-b48fb3e191ebb3ac4ad937529081620b89964134acd6818a63d4abef4135"
+        "targetTaskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:801091d12fe0d0b8f4bef3e39dd7c15164ef4ce96da8f24ef17f757a9a662fe5"
       },
       {
         "type": "next",
         "sourceStepId": "b",
         "targetStepId": "c",
         "targetStepKind": "task",
-        "targetTaskDefinitionId": "wgd-95affedcc9b4f69dc6ac3aa3376245811348b9ee543a5072b44027d2aae1"
+        "targetTaskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:6655e16c4e7bf6f8ef22f8573e3b06b5821dbefdb2ca464fa52ebcbbe15e05af"
       },
       {
         "type": "next",
         "sourceStepId": "c",
         "targetStepId": "d",
         "targetStepKind": "task",
-        "targetTaskDefinitionId": "wgd-7f3cdeee71f8c43c5f9de62d097e56c652a13de22dee7708992a37b8708c"
+        "targetTaskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:844075d4ee8b2fd19f58b34de63958d5003a0292e0ce987ffe25cb9499003171"
       },
       {
         "type": "terminal",
@@ -338,12 +338,12 @@
   "queryBundle": {
     "version": "v1",
     "workflowDefinitionId": "issue-lifecycle",
-    "definitionDigest": "sha256:7706c7d30b8a0028ddaa4fad2d17577be388cdf723efc0b23e468c130fba476d",
+    "definitionDigest": "sha256:8f5876b5bd61dd63a957db5adf61277ee852d4752790c95fa3b78056aad34754",
     "queries": [
       {
-        "id": "wg-entry-9fa7c23308acc6f2f663",
+        "id": "wg-entry-55e20be013024dd53e34",
         "kind": "workflow-entry",
-        "query": "MATCH (root:WorkGraphRootIssue)\nMATCH (definition:WorkflowDefinition {workflowDefinitionId: 'issue-lifecycle', digest: 'sha256:7706c7d30b8a0028ddaa4fad2d17577be388cdf723efc0b23e468c130fba476d'})-[:HAS_TASK]->(target:TaskDefinition {taskDefinitionId: 'wgd-2ce0abc2104478fd27e0edeec7173ad089f6f2fb72c02694bc2525146cfe'})\nOPTIONAL MATCH (run:WorkflowRun)-[:RUN_FOR]->(root)\nWITH root, definition, target, count(run) AS runCount\nWHERE root.isOpen = true AND runCount = 0\nRETURN null AS workflowRunId, root.rootIssueId AS rootIssueId, null AS sourceTaskId, null AS routeId, null AS sourceStepId, 'a' AS targetStepId, 'task' AS targetStepKind, target.taskDefinitionId AS targetTaskDefinitionId",
+        "query": "MATCH (root:WorkGraphRootIssue)\nMATCH (definition:WorkflowDefinition {workflowDefinitionId: 'issue-lifecycle', digest: 'sha256:8f5876b5bd61dd63a957db5adf61277ee852d4752790c95fa3b78056aad34754'})-[:HAS_TASK]->(target:TaskDefinition {taskDefinitionId: 'urn:drasi:workgraph:id:v1:task-definition:sha256:1e33ac3e56d691d86845bccf2c2c9c42c0487d55d9b6ac1fd359a33582ab7261'})\nOPTIONAL MATCH (run:WorkflowRun)-[:RUN_FOR]->(root)\nWITH root, definition, target, count(run) AS runCount\nWHERE root.isOpen = true AND runCount = 0\nRETURN null AS workflowRunId, root.rootIssueId AS rootIssueId, null AS sourceTaskId, null AS routeId, null AS sourceStepId, 'a' AS targetStepId, 'task' AS targetStepKind, target.taskDefinitionId AS targetTaskDefinitionId",
         "resultSchema": [
           {
             "name": "workflowRunId",
@@ -388,9 +388,9 @@
         ]
       },
       {
-        "id": "wg-next-36052ed88c92f5b5cd29",
+        "id": "wg-next-3fe06f5b356d70a8afae",
         "kind": "next",
-        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)-[:HAS_TASK]->(definition:TaskDefinition)<-[:INSTANCE_OF]-(task:WorkGraphTask)-[:IN_RUN]->(run)\nMATCH (route:WorkGraphTaskRoute)-[:ROUTES]->(evaluation:WorkGraphTaskEvaluate)-[:EVALUATES]->(result:WorkGraphTaskResult)-[:RESULT_FOR]->(task)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:7706c7d30b8a0028ddaa4fad2d17577be388cdf723efc0b23e468c130fba476d' AND definition.taskKey = 'a' AND route.workflowRunId = run.workflowRunId AND route.taskId = task.taskId AND route.resultId = result.resultId AND route.evaluationId = evaluation.evaluationId AND route.action = 'advance' AND route.transitionKind = 'next' AND route.outcome IS NULL AND route.targetStepId = 'b' AND route.targetStepKind = 'task' AND route.targetTaskDefinitionId = 'wgd-b48fb3e191ebb3ac4ad937529081620b89964134acd6818a63d4abef4135'\nRETURN run.workflowRunId AS workflowRunId, task.rootIssueId AS rootIssueId, task.taskId AS sourceTaskId, route.routeId AS routeId, 'a' AS sourceStepId, 'b' AS targetStepId, route.targetStepKind AS targetStepKind, route.targetTaskDefinitionId AS targetTaskDefinitionId",
+        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)-[:HAS_TASK]->(definition:TaskDefinition)<-[:INSTANCE_OF]-(task:WorkGraphTask)-[:IN_RUN]->(run)\nMATCH (route:WorkGraphTaskRoute)-[:ROUTES]->(evaluation:WorkGraphTaskEvaluate)-[:EVALUATES]->(result:WorkGraphTaskResult)-[:RESULT_FOR]->(task)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:8f5876b5bd61dd63a957db5adf61277ee852d4752790c95fa3b78056aad34754' AND definition.taskKey = 'c' AND route.workflowRunId = run.workflowRunId AND route.taskId = task.taskId AND route.resultId = result.resultId AND route.evaluationId = evaluation.evaluationId AND route.action = 'advance' AND route.transitionKind = 'next' AND route.outcome IS NULL AND route.targetStepId = 'd' AND route.targetStepKind = 'task' AND route.targetTaskDefinitionId = 'urn:drasi:workgraph:id:v1:task-definition:sha256:844075d4ee8b2fd19f58b34de63958d5003a0292e0ce987ffe25cb9499003171'\nRETURN run.workflowRunId AS workflowRunId, task.rootIssueId AS rootIssueId, task.taskId AS sourceTaskId, route.routeId AS routeId, 'c' AS sourceStepId, 'd' AS targetStepId, route.targetStepKind AS targetStepKind, route.targetTaskDefinitionId AS targetTaskDefinitionId",
         "resultSchema": [
           {
             "name": "workflowRunId",
@@ -435,9 +435,9 @@
         ]
       },
       {
-        "id": "wg-next-7b7e3f4ef615e40fac55",
+        "id": "wg-next-4e061353186c27445d52",
         "kind": "next",
-        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)-[:HAS_TASK]->(definition:TaskDefinition)<-[:INSTANCE_OF]-(task:WorkGraphTask)-[:IN_RUN]->(run)\nMATCH (route:WorkGraphTaskRoute)-[:ROUTES]->(evaluation:WorkGraphTaskEvaluate)-[:EVALUATES]->(result:WorkGraphTaskResult)-[:RESULT_FOR]->(task)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:7706c7d30b8a0028ddaa4fad2d17577be388cdf723efc0b23e468c130fba476d' AND definition.taskKey = 'b' AND route.workflowRunId = run.workflowRunId AND route.taskId = task.taskId AND route.resultId = result.resultId AND route.evaluationId = evaluation.evaluationId AND route.action = 'advance' AND route.transitionKind = 'next' AND route.outcome IS NULL AND route.targetStepId = 'c' AND route.targetStepKind = 'task' AND route.targetTaskDefinitionId = 'wgd-95affedcc9b4f69dc6ac3aa3376245811348b9ee543a5072b44027d2aae1'\nRETURN run.workflowRunId AS workflowRunId, task.rootIssueId AS rootIssueId, task.taskId AS sourceTaskId, route.routeId AS routeId, 'b' AS sourceStepId, 'c' AS targetStepId, route.targetStepKind AS targetStepKind, route.targetTaskDefinitionId AS targetTaskDefinitionId",
+        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)-[:HAS_TASK]->(definition:TaskDefinition)<-[:INSTANCE_OF]-(task:WorkGraphTask)-[:IN_RUN]->(run)\nMATCH (route:WorkGraphTaskRoute)-[:ROUTES]->(evaluation:WorkGraphTaskEvaluate)-[:EVALUATES]->(result:WorkGraphTaskResult)-[:RESULT_FOR]->(task)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:8f5876b5bd61dd63a957db5adf61277ee852d4752790c95fa3b78056aad34754' AND definition.taskKey = 'd' AND route.workflowRunId = run.workflowRunId AND route.taskId = task.taskId AND route.resultId = result.resultId AND route.evaluationId = evaluation.evaluationId AND route.action = 'advance' AND route.transitionKind = 'next' AND route.outcome IS NULL AND route.targetStepId = 'completed' AND route.targetStepKind = 'terminal' AND route.targetTaskDefinitionId IS NULL\nRETURN run.workflowRunId AS workflowRunId, task.rootIssueId AS rootIssueId, task.taskId AS sourceTaskId, route.routeId AS routeId, 'd' AS sourceStepId, 'completed' AS targetStepId, route.targetStepKind AS targetStepKind, route.targetTaskDefinitionId AS targetTaskDefinitionId",
         "resultSchema": [
           {
             "name": "workflowRunId",
@@ -482,9 +482,9 @@
         ]
       },
       {
-        "id": "wg-next-81d9671b0d5b83db2a14",
+        "id": "wg-next-5f6cc00d3413bfca1bfb",
         "kind": "next",
-        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)-[:HAS_TASK]->(definition:TaskDefinition)<-[:INSTANCE_OF]-(task:WorkGraphTask)-[:IN_RUN]->(run)\nMATCH (route:WorkGraphTaskRoute)-[:ROUTES]->(evaluation:WorkGraphTaskEvaluate)-[:EVALUATES]->(result:WorkGraphTaskResult)-[:RESULT_FOR]->(task)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:7706c7d30b8a0028ddaa4fad2d17577be388cdf723efc0b23e468c130fba476d' AND definition.taskKey = 'c' AND route.workflowRunId = run.workflowRunId AND route.taskId = task.taskId AND route.resultId = result.resultId AND route.evaluationId = evaluation.evaluationId AND route.action = 'advance' AND route.transitionKind = 'next' AND route.outcome IS NULL AND route.targetStepId = 'd' AND route.targetStepKind = 'task' AND route.targetTaskDefinitionId = 'wgd-7f3cdeee71f8c43c5f9de62d097e56c652a13de22dee7708992a37b8708c'\nRETURN run.workflowRunId AS workflowRunId, task.rootIssueId AS rootIssueId, task.taskId AS sourceTaskId, route.routeId AS routeId, 'c' AS sourceStepId, 'd' AS targetStepId, route.targetStepKind AS targetStepKind, route.targetTaskDefinitionId AS targetTaskDefinitionId",
+        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)-[:HAS_TASK]->(definition:TaskDefinition)<-[:INSTANCE_OF]-(task:WorkGraphTask)-[:IN_RUN]->(run)\nMATCH (route:WorkGraphTaskRoute)-[:ROUTES]->(evaluation:WorkGraphTaskEvaluate)-[:EVALUATES]->(result:WorkGraphTaskResult)-[:RESULT_FOR]->(task)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:8f5876b5bd61dd63a957db5adf61277ee852d4752790c95fa3b78056aad34754' AND definition.taskKey = 'b' AND route.workflowRunId = run.workflowRunId AND route.taskId = task.taskId AND route.resultId = result.resultId AND route.evaluationId = evaluation.evaluationId AND route.action = 'advance' AND route.transitionKind = 'next' AND route.outcome IS NULL AND route.targetStepId = 'c' AND route.targetStepKind = 'task' AND route.targetTaskDefinitionId = 'urn:drasi:workgraph:id:v1:task-definition:sha256:6655e16c4e7bf6f8ef22f8573e3b06b5821dbefdb2ca464fa52ebcbbe15e05af'\nRETURN run.workflowRunId AS workflowRunId, task.rootIssueId AS rootIssueId, task.taskId AS sourceTaskId, route.routeId AS routeId, 'b' AS sourceStepId, 'c' AS targetStepId, route.targetStepKind AS targetStepKind, route.targetTaskDefinitionId AS targetTaskDefinitionId",
         "resultSchema": [
           {
             "name": "workflowRunId",
@@ -529,9 +529,9 @@
         ]
       },
       {
-        "id": "wg-next-d9777655870aa7254c3f",
+        "id": "wg-next-bf10b844ab367098f6f0",
         "kind": "next",
-        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)-[:HAS_TASK]->(definition:TaskDefinition)<-[:INSTANCE_OF]-(task:WorkGraphTask)-[:IN_RUN]->(run)\nMATCH (route:WorkGraphTaskRoute)-[:ROUTES]->(evaluation:WorkGraphTaskEvaluate)-[:EVALUATES]->(result:WorkGraphTaskResult)-[:RESULT_FOR]->(task)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:7706c7d30b8a0028ddaa4fad2d17577be388cdf723efc0b23e468c130fba476d' AND definition.taskKey = 'd' AND route.workflowRunId = run.workflowRunId AND route.taskId = task.taskId AND route.resultId = result.resultId AND route.evaluationId = evaluation.evaluationId AND route.action = 'advance' AND route.transitionKind = 'next' AND route.outcome IS NULL AND route.targetStepId = 'completed' AND route.targetStepKind = 'terminal' AND route.targetTaskDefinitionId IS NULL\nRETURN run.workflowRunId AS workflowRunId, task.rootIssueId AS rootIssueId, task.taskId AS sourceTaskId, route.routeId AS routeId, 'd' AS sourceStepId, 'completed' AS targetStepId, route.targetStepKind AS targetStepKind, route.targetTaskDefinitionId AS targetTaskDefinitionId",
+        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)-[:HAS_TASK]->(definition:TaskDefinition)<-[:INSTANCE_OF]-(task:WorkGraphTask)-[:IN_RUN]->(run)\nMATCH (route:WorkGraphTaskRoute)-[:ROUTES]->(evaluation:WorkGraphTaskEvaluate)-[:EVALUATES]->(result:WorkGraphTaskResult)-[:RESULT_FOR]->(task)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:8f5876b5bd61dd63a957db5adf61277ee852d4752790c95fa3b78056aad34754' AND definition.taskKey = 'a' AND route.workflowRunId = run.workflowRunId AND route.taskId = task.taskId AND route.resultId = result.resultId AND route.evaluationId = evaluation.evaluationId AND route.action = 'advance' AND route.transitionKind = 'next' AND route.outcome IS NULL AND route.targetStepId = 'b' AND route.targetStepKind = 'task' AND route.targetTaskDefinitionId = 'urn:drasi:workgraph:id:v1:task-definition:sha256:801091d12fe0d0b8f4bef3e39dd7c15164ef4ce96da8f24ef17f757a9a662fe5'\nRETURN run.workflowRunId AS workflowRunId, task.rootIssueId AS rootIssueId, task.taskId AS sourceTaskId, route.routeId AS routeId, 'a' AS sourceStepId, 'b' AS targetStepId, route.targetStepKind AS targetStepKind, route.targetTaskDefinitionId AS targetTaskDefinitionId",
         "resultSchema": [
           {
             "name": "workflowRunId",
@@ -576,9 +576,9 @@
         ]
       },
       {
-        "id": "wg-terminal-8f328a93bc2ba9c6d49d",
+        "id": "wg-terminal-ba3d302109136f253416",
         "kind": "terminal-complete",
-        "query": "MATCH (route:WorkGraphTaskRoute)-[:ROUTE_FOR]->(task:WorkGraphTask)-[:IN_RUN]->(run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)\nMATCH (route)-[:CONCLUDES]->(terminal:WorkGraphTerminal)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:7706c7d30b8a0028ddaa4fad2d17577be388cdf723efc0b23e468c130fba476d' AND route.workflowRunId = run.workflowRunId AND route.taskId = task.taskId AND terminal.workflowRunId = run.workflowRunId AND terminal.stepId = 'completed' AND terminal.outcome = 'completed'\nRETURN run.workflowRunId AS workflowRunId, terminal.rootIssueId AS rootIssueId, route.taskId AS sourceTaskId, route.routeId AS routeId, terminal.stepId AS terminalStepId, terminal.outcome AS terminalOutcome",
+        "query": "MATCH (route:WorkGraphTaskRoute)-[:ROUTE_FOR]->(task:WorkGraphTask)-[:IN_RUN]->(run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)\nMATCH (route)-[:CONCLUDES]->(terminal:WorkGraphTerminal)\nWHERE workflowDefinition.workflowDefinitionId = 'issue-lifecycle' AND workflowDefinition.digest = 'sha256:8f5876b5bd61dd63a957db5adf61277ee852d4752790c95fa3b78056aad34754' AND route.workflowRunId = run.workflowRunId AND route.taskId = task.taskId AND terminal.workflowRunId = run.workflowRunId AND terminal.stepId = 'completed' AND terminal.outcome = 'completed'\nRETURN run.workflowRunId AS workflowRunId, terminal.rootIssueId AS rootIssueId, route.taskId AS sourceTaskId, route.routeId AS routeId, terminal.stepId AS terminalStepId, terminal.outcome AS terminalOutcome",
         "resultSchema": [
           {
             "name": "workflowRunId",
@@ -614,26 +614,26 @@
       }
     ],
     "workgraphReactionQueries": [
-      "wg-entry-9fa7c23308acc6f2f663",
-      "wg-next-36052ed88c92f5b5cd29",
-      "wg-next-7b7e3f4ef615e40fac55",
-      "wg-next-81d9671b0d5b83db2a14",
-      "wg-next-d9777655870aa7254c3f",
-      "wg-terminal-8f328a93bc2ba9c6d49d"
+      "wg-entry-55e20be013024dd53e34",
+      "wg-next-3fe06f5b356d70a8afae",
+      "wg-next-4e061353186c27445d52",
+      "wg-next-5f6cc00d3413bfca1bfb",
+      "wg-next-bf10b844ab367098f6f0",
+      "wg-terminal-ba3d302109136f253416"
     ],
     "sseQueries": [
-      "wg-entry-9fa7c23308acc6f2f663",
-      "wg-next-36052ed88c92f5b5cd29",
-      "wg-next-7b7e3f4ef615e40fac55",
-      "wg-next-81d9671b0d5b83db2a14",
-      "wg-next-d9777655870aa7254c3f",
-      "wg-terminal-8f328a93bc2ba9c6d49d"
+      "wg-entry-55e20be013024dd53e34",
+      "wg-next-3fe06f5b356d70a8afae",
+      "wg-next-4e061353186c27445d52",
+      "wg-next-5f6cc00d3413bfca1bfb",
+      "wg-next-bf10b844ab367098f6f0",
+      "wg-terminal-ba3d302109136f253416"
     ],
     "canvasInventory": [
       {
-        "id": "wg-entry-9fa7c23308acc6f2f663",
+        "id": "wg-entry-55e20be013024dd53e34",
         "kind": "workflow-entry",
-        "sha256": "167497e5542731d3f656f7f950377cb196e7da0ef78403653ef7ba2398b6953e",
+        "sha256": "a356656e6723f2fd55a3f38165235bf43c12f3a87c3db1a617da3f85369f7882",
         "fields": [
           "workflowRunId",
           "rootIssueId",
@@ -646,9 +646,9 @@
         ]
       },
       {
-        "id": "wg-next-36052ed88c92f5b5cd29",
+        "id": "wg-next-3fe06f5b356d70a8afae",
         "kind": "next",
-        "sha256": "53cc1c50ca4f70aa947d755405107d621548422d831e06f5a780baed28832d33",
+        "sha256": "c385b7aec33a44b66dee67b46c1b25dc27d40b8706996c78d8df044a566b6b46",
         "fields": [
           "workflowRunId",
           "rootIssueId",
@@ -661,9 +661,9 @@
         ]
       },
       {
-        "id": "wg-next-7b7e3f4ef615e40fac55",
+        "id": "wg-next-4e061353186c27445d52",
         "kind": "next",
-        "sha256": "b6591cd27b18e6293e4185d67d7389706ebd36e8dfe4ed384177cad855786266",
+        "sha256": "f6cc91ab77ce45652f7142245899d900eeacdcd462a59324569c4ba2c5f4954d",
         "fields": [
           "workflowRunId",
           "rootIssueId",
@@ -676,9 +676,9 @@
         ]
       },
       {
-        "id": "wg-next-81d9671b0d5b83db2a14",
+        "id": "wg-next-5f6cc00d3413bfca1bfb",
         "kind": "next",
-        "sha256": "3996286357aa166d5a0e76170e0c6f9007490c782a3bd1bdaf57d03228b6a855",
+        "sha256": "81873d99cca6ea903fca24c10e35c646f7c5fc08aa1cd4024ebfc8e78b41b4c0",
         "fields": [
           "workflowRunId",
           "rootIssueId",
@@ -691,9 +691,9 @@
         ]
       },
       {
-        "id": "wg-next-d9777655870aa7254c3f",
+        "id": "wg-next-bf10b844ab367098f6f0",
         "kind": "next",
-        "sha256": "8e5797bf0657b6ae69f61974ffbb3ff492f3793a727fb72d4be61d8cb04964cd",
+        "sha256": "a3bd8aac27849cb6ef6d495ac9e888a85d1f2a71a41de610bca66a411d0bd211",
         "fields": [
           "workflowRunId",
           "rootIssueId",
@@ -706,9 +706,9 @@
         ]
       },
       {
-        "id": "wg-terminal-8f328a93bc2ba9c6d49d",
+        "id": "wg-terminal-ba3d302109136f253416",
         "kind": "terminal-complete",
-        "sha256": "c9622775799d29cbae11691b156b5da83ea00db2caca2400523b72ab34ab017d",
+        "sha256": "8f46604fc096cc2523097a1602405f73812036329bc7d9fa648dedd31a7f88c8",
         "fields": [
           "workflowRunId",
           "rootIssueId",

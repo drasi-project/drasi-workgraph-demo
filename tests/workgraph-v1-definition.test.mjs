@@ -8,6 +8,7 @@ import {
   MAX_TASK_DEFINITION_CHILDREN,
   RUNTIME_TASK_MARKER,
   TASK_ERROR_MARKER,
+  deriveWorkGraphProtocolId,
   deriveWorkGraphTaskEvaluationId,
   deriveWorkGraphTaskErrorId,
   deriveWorkGraphTaskResultId,
@@ -51,8 +52,15 @@ const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 const clone = (value) => structuredClone(value);
 const COMPILED_OUTPUT = JSON.parse(await read(EXPECTED_PATH));
 const COMPILED_FIXTURE = COMPILED_OUTPUT.workgraphDefinition;
-const TASK_C_ID = `workgraph-v1:task:sha256:${"c".repeat(64)}`;
-const VECTOR_TASK_ID = `workgraph-v1:task:sha256:${"1".repeat(64)}`;
+const protocolId = (type, seed) => deriveWorkGraphProtocolId(type, [seed]);
+const MESSAGE_RUN_ID = protocolId("workflow-run", "message-run");
+const TASK_C_ID = protocolId("task", "task-c");
+const VECTOR_TASK_ID = protocolId("task", "task-1");
+const ASSIGNMENT_ID = protocolId("assignment", "assignment-1");
+const DISPATCH_ID = protocolId("dispatch", "dispatch-1");
+const LEASE_ID = protocolId("lease", "lease-1");
+const LAUNCH_ID = protocolId("dispatch-launch", "launch-1");
+const RESULT_ID = protocolId("result", "result-1");
 const PROOF_QUERY_IDS = [
   "wg-issues-waiting-for-admission",
   "wg-tasks-waiting-for-fork",
@@ -75,12 +83,12 @@ const PROOF_QUERY_IDS = [
   "wg-route-detail",
   "wg-error-detail",
   "wg-predecessor-result-detail",
-  "wg-entry-9fa7c23308acc6f2f663",
-  "wg-next-36052ed88c92f5b5cd29",
-  "wg-next-7b7e3f4ef615e40fac55",
-  "wg-next-81d9671b0d5b83db2a14",
-  "wg-next-d9777655870aa7254c3f",
-  "wg-terminal-8f328a93bc2ba9c6d49d",
+  "wg-entry-55e20be013024dd53e34",
+  "wg-next-3fe06f5b356d70a8afae",
+  "wg-next-4e061353186c27445d52",
+  "wg-next-5f6cc00d3413bfca1bfb",
+  "wg-next-bf10b844ab367098f6f0",
+  "wg-terminal-ba3d302109136f253416",
 ];
 const sourceContext = (stepId) => ({
   sourceStepId: stepId,
@@ -94,21 +102,24 @@ function nestedDefinition() {
     version: "v1",
     digest: `sha256:${"a".repeat(64)}`,
     root: {
-      taskDefinitionId: "issue-validation-root",
+      taskDefinitionId: protocolId("task-definition", "issue-validation-root"),
       taskKey: "root",
       operation: "summarize",
       routing: { permittedExecutors: ["summary-agent"] },
       staticInputs: { objective: "validate the issue" },
       children: [
         {
-          taskDefinitionId: "issue-validation-body",
+          taskDefinitionId: protocolId("task-definition", "issue-validation-body"),
           taskKey: "body",
           operation: "validate-body",
           routing: { permittedExecutors: ["body-agent"] },
           staticInputs: {},
           children: [
             {
-              taskDefinitionId: "issue-validation-body-links",
+              taskDefinitionId: protocolId(
+                "task-definition",
+                "issue-validation-body-links",
+              ),
               taskKey: "body-links",
               operation: "validate-links",
               routing: { permittedExecutors: ["link-agent"] },
@@ -118,7 +129,7 @@ function nestedDefinition() {
           ],
         },
         {
-          taskDefinitionId: "issue-validation-title",
+          taskDefinitionId: protocolId("task-definition", "issue-validation-title"),
           taskKey: "title",
           operation: "validate-title",
           routing: { permittedExecutors: ["title-agent"] },
@@ -278,7 +289,7 @@ test("runtime tasks require top-level Root Issue identity and exact definition p
   assert.equal(envelope.kind, "Task");
   assert.equal(envelope.id, root.taskId);
   assert.deepEqual(envelope.references, {});
-  assert.equal(envelope.context.taskKey, root.taskKey);
+  assert.equal(envelope.workflowContext.taskKey, root.taskKey);
   assert.deepEqual(envelope.data, { resolvedInputs: root.resolvedInputs });
   assert.deepEqual(validateRootRuntimeTask(definition, root), root);
 
@@ -352,7 +363,7 @@ test("proof inputs pin the exact loopback query contract and remain inactive", a
     .digest("hex")}`;
   assert.equal(
     inputs.runtimeContract.queryContractDigest,
-    "sha256:6a073f9f324eaac9225f1654596f29958d5e18c8e0c1689b1ef02f3e9509095c",
+    "sha256:02fb19b72b789c751db00bee49c0ebcfa2f2912c3f075b2d642de2834d3c7fb0",
   );
   assert.equal(inputs.runtimeContract.queryContractDigest, queryContractDigest);
   assert.deepEqual(inputs.activation, {
@@ -385,15 +396,15 @@ test("offline proof derives the Root Task from Root Issue admission", async () =
     queryId: "wg-issues-waiting-for-admission",
     rootIssueId: "I_workgraph_root_issue",
     admissionId:
-      "wga-c011d85d24550c7469b5264f2c1ab1237a96469ea4a51f7c27f6b6762ea1ab31",
+      "urn:drasi:workgraph:id:v1:admission:sha256:077e3315d4fcc9cbd8eb0377863c0bac07f859bbb0143b5661e3101ca1276198",
   });
   assert.equal(
     proof.expectedRootTask.value.taskId,
-    "workgraph-v1:task:sha256:a417c7051894a093f13e1e06c212d0bd740d608bbc75513b28aa61aad87ea238",
+    "urn:drasi:workgraph:id:v1:task:sha256:f000b1854ea3b9b009c43bdbf68e7786298016514e52a81d46f5461116b4ee4b",
   );
   assert.equal(
     proof.expectedRootTask.value.workflowRunId,
-    "workgraph-v1:run:sha256:1cb0cca12c477296d36277433d7c42f34f918e27a435cd6208c95c74599df6cd",
+    "urn:drasi:workgraph:id:v1:workflow-run:sha256:086749d7bbfd8c7b6f665a099f7344d71314674c9f89f1a2021f0c9ac2ff1691",
   );
   assert.equal(
     proof.expectedRootTask.value.resolvedInputs.rootIssue.issueNodeId,
@@ -594,12 +605,12 @@ test("linear v1 authoring and test case match the compiled sequence", async () =
   assert.deepEqual(
     generatedQueryIds,
     [
-      "wg-entry-9fa7c23308acc6f2f663",
-      "wg-next-36052ed88c92f5b5cd29",
-      "wg-next-7b7e3f4ef615e40fac55",
-      "wg-next-81d9671b0d5b83db2a14",
-      "wg-next-d9777655870aa7254c3f",
-      "wg-terminal-8f328a93bc2ba9c6d49d",
+      "wg-entry-55e20be013024dd53e34",
+      "wg-next-3fe06f5b356d70a8afae",
+      "wg-next-4e061353186c27445d52",
+      "wg-next-5f6cc00d3413bfca1bfb",
+      "wg-next-bf10b844ab367098f6f0",
+      "wg-terminal-ba3d302109136f253416",
     ],
   );
   assert.equal(
@@ -688,7 +699,9 @@ test("linear v1 authoring and test case match the compiled sequence", async () =
   );
 
   const extraPolicy = clone(definition);
-  extraPolicy.steps.c.executionPolicies["extra-policy"] = {
+  extraPolicy.steps.c.executionPolicies[
+    protocolId("task-definition", "extra-policy")
+  ] = {
     workerId: "issue-worker",
     evaluatorId: "result-evaluator",
     orchestratorId: "workflow-coordinator",
@@ -844,7 +857,7 @@ test("graph validation rejects unreachable work and cycles without waits", () =>
 function messageTask(taskId = TASK_C_ID) {
   return {
     taskId,
-    workflowRunId: "run-1",
+    workflowRunId: MESSAGE_RUN_ID,
     workflowDefinitionId: COMPILED_FIXTURE.workflowDefinitionId,
     workflowDefinitionVersion: COMPILED_FIXTURE.version,
     workflowDefinitionDigest: COMPILED_FIXTURE.digest,
@@ -859,14 +872,14 @@ function evaluation(verdict = "accepted") {
   return {
     evaluationId: deriveWorkGraphTaskEvaluationId(
       TASK_C_ID,
-      "result-1",
+      RESULT_ID,
       resultDigest,
     ),
     rootIssueId: "I_root_issue",
-    workflowRunId: "run-1",
+    workflowRunId: MESSAGE_RUN_ID,
     taskId: TASK_C_ID,
     task: messageTask(),
-    resultId: "result-1",
+    resultId: RESULT_ID,
     resultDigest,
     evaluatorId: "result-evaluator",
     attempt: 1,
@@ -881,10 +894,10 @@ function route(action, verdict = "accepted") {
   const value = {
     routeId: deriveWorkGraphTaskRouteId(TASK_C_ID, evaluationId),
     rootIssueId: "I_root_issue",
-    workflowRunId: "run-1",
+    workflowRunId: MESSAGE_RUN_ID,
     taskId: TASK_C_ID,
     task: messageTask(),
-    resultId: "result-1",
+    resultId: RESULT_ID,
     evaluationId,
     evaluationVerdict: verdict,
     orchestratorId: "workflow-coordinator",
@@ -904,22 +917,22 @@ function route(action, verdict = "accepted") {
 test("all lifecycle bodies use the strict unified envelope", () => {
   const task = messageTask();
   const assignment = {
-    assignmentId: "workgraph-v1:assignment:one",
+    assignmentId: ASSIGNMENT_ID,
     rootIssueId: "I_root_issue",
-    workflowRunId: "run-1",
+    workflowRunId: MESSAGE_RUN_ID,
     taskId: task.taskId,
     task,
     permittedExecutors: ["issue-worker"],
   };
   const dispatch = {
-    dispatchId: "workgraph-v1:dispatch:one",
-    launchId: "launch-1",
+    dispatchId: DISPATCH_ID,
+    launchId: LAUNCH_ID,
     rootIssueId: assignment.rootIssueId,
     workflowRunId: assignment.workflowRunId,
     taskId: task.taskId,
     task,
     lease: {
-      leaseId: "lease-1",
+      leaseId: LEASE_ID,
       assignmentId: assignment.assignmentId,
       executorId: "issue-worker",
       slotId: "slot-1",
@@ -946,8 +959,8 @@ test("all lifecycle bodies use the strict unified envelope", () => {
     dispatchId: dispatch.dispatchId,
     leaseId: dispatch.lease.leaseId,
     resultId: result.resultId,
-    evaluationId: "workgraph-v1:evaluation:one",
-    routeId: "workgraph-v1:route:one",
+    evaluationId: protocolId("evaluation", "error-evaluation"),
+    routeId: protocolId("route", "error-route"),
   };
   const error = {
     errorId: deriveWorkGraphTaskErrorId(
@@ -988,21 +1001,144 @@ test("all lifecycle bodies use the strict unified envelope", () => {
       "rootIssueId",
       "workflowRunId",
       "taskId",
-      "context",
+      "workflowContext",
       "references",
       "data",
     ]);
     assert.equal(envelope.apiVersion, "workgraph.drasi.io/v1");
-    assert.equal(envelope.context.taskKey, "c");
-    assert.equal(envelope.context.operation, "inspect-issue");
+    assert.equal(envelope.workflowContext.taskKey, "c");
+    assert.equal(envelope.workflowContext.operation, "inspect-issue");
   }
   assert.ok(formatTaskError(error).startsWith(`${TASK_ERROR_MARKER}\n`));
   assert.deepEqual(JSON.parse(formatTaskAssignment(assignment).match(/```json\n([\s\S]+)\n```/)[1]).references, {});
+  const dispatchEnvelope = JSON.parse(
+    formatTaskDispatch(dispatch).match(/```json\n([\s\S]+)\n```/)[1],
+  );
+  assert.deepEqual(dispatchEnvelope.references, {
+    assignment: { kind: "TaskAssignment", id: ASSIGNMENT_ID },
+  });
+  assert.deepEqual(
+    JSON.parse(formatTaskResult(result).match(/```json\n([\s\S]+)\n```/)[1])
+      .references,
+    {
+      dispatch: { kind: "TaskDispatch", id: DISPATCH_ID },
+      lease: { kind: "TaskLease", id: LEASE_ID },
+    },
+  );
+  assert.deepEqual(
+    JSON.parse(
+      formatTaskEvaluation(evaluation()).match(/```json\n([\s\S]+)\n```/)[1],
+    ).references,
+    { result: { kind: "TaskResult", id: RESULT_ID } },
+  );
+  assert.deepEqual(
+    JSON.parse(formatTaskRoute(route("complete")).match(/```json\n([\s\S]+)\n```/)[1])
+      .references,
+    {
+      result: { kind: "TaskResult", id: RESULT_ID },
+      evaluation: {
+        kind: "TaskEvaluation",
+        id: evaluation().evaluationId,
+      },
+    },
+  );
+  assert.deepEqual(
+    JSON.parse(formatTaskError(error).match(/```json\n([\s\S]+)\n```/)[1])
+      .references,
+    {
+      assignment: null,
+      dispatch: { kind: "TaskDispatch", id: DISPATCH_ID },
+      lease: { kind: "TaskLease", id: LEASE_ID },
+      result: { kind: "TaskResult", id: result.resultId },
+      evaluation: {
+        kind: "TaskEvaluation",
+        id: errorReferences.evaluationId,
+      },
+      route: { kind: "TaskRoute", id: errorReferences.routeId },
+    },
+  );
+  assert.throws(
+    () =>
+      parseTaskDispatch(
+        formatTaskDispatch(dispatch).replace(
+          '"kind": "TaskAssignment"',
+          '"kind": "TaskDispatch"',
+        ),
+      ),
+    /assignment reference kind must be TaskAssignment/,
+  );
+  assert.throws(
+    () =>
+      parseTaskDispatch(
+        formatTaskDispatch(dispatch).replace(
+          `"id": "${ASSIGNMENT_ID}"`,
+          `"id": "${DISPATCH_ID}"`,
+        ),
+      ),
+    /assignment reference id must be urn:.*:assignment:/,
+  );
+  assert.throws(
+    () =>
+      parseTaskDispatch(
+        formatTaskDispatch(dispatch).replace(
+          '"assignment": {',
+          '"assignmentId": {',
+        ),
+      ),
+    /references properties must be exactly assignment/,
+  );
+  assert.throws(
+    () =>
+      formatTaskAssignment({
+        ...assignment,
+        assignmentId: DISPATCH_ID,
+      }),
+    /assignmentId must be urn:.*:assignment:/,
+  );
+  assert.throws(
+    () =>
+      formatTaskDispatch({
+        ...dispatch,
+        launchId: LEASE_ID,
+      }),
+    /launchId must be urn:.*:dispatch-launch:/,
+  );
+  assert.throws(
+    () =>
+      formatTaskResult({
+        ...result,
+        resultId: protocolId("evaluation", "wrong-result-type"),
+      }),
+    /resultId must be urn:.*:result:/,
+  );
+  assert.throws(
+    () =>
+      formatTaskAssignment({
+        ...assignment,
+        workflowRunId: TASK_C_ID,
+        task: { ...assignment.task, workflowRunId: TASK_C_ID },
+      }),
+    /workflowRunId must be urn:.*:workflow-run:/,
+  );
+  assert.throws(
+    () =>
+      formatTaskAssignment({
+        ...assignment,
+        task: {
+          ...assignment.task,
+          taskDefinitionId: TASK_C_ID,
+        },
+      }),
+    /taskDefinitionId must be urn:.*:task-definition:/,
+  );
   assert.throws(
     () => parseTaskResult(formatTaskResult(result).replace('"kind": "TaskResult"', '"kind": "Result"')),
     /apiVersion or kind is invalid/,
   );
-  const arbitraryResultId = { ...result, resultId: "result-wire-opaque" };
+  const arbitraryResultId = {
+    ...result,
+    resultId: protocolId("result", "arbitrary-wire-result"),
+  };
   assert.equal(
     parseTaskResult(formatTaskResult(arbitraryResultId)).resultId,
     arbitraryResultId.resultId,
@@ -1028,7 +1164,7 @@ test("all lifecycle bodies use the strict unified envelope", () => {
 test("all task contracts reject legacy and malformed task IDs", () => {
   const task = messageTask();
   const assignment = {
-    assignmentId: "workgraph-v1:assignment:one",
+    assignmentId: ASSIGNMENT_ID,
     rootIssueId: "I_root_issue",
     workflowRunId: task.workflowRunId,
     taskId: task.taskId,
@@ -1036,21 +1172,21 @@ test("all task contracts reject legacy and malformed task IDs", () => {
     permittedExecutors: ["issue-worker"],
   };
   const dispatch = {
-    dispatchId: "workgraph-v1:dispatch:one",
-    launchId: "launch-1",
+    dispatchId: DISPATCH_ID,
+    launchId: LAUNCH_ID,
     rootIssueId: assignment.rootIssueId,
     workflowRunId: assignment.workflowRunId,
     taskId: task.taskId,
     task,
     lease: {
-      leaseId: "lease-1",
+      leaseId: LEASE_ID,
       assignmentId: assignment.assignmentId,
       executorId: "issue-worker",
       slotId: "slot-1",
     },
   };
   const result = {
-    resultId: "result-wire-opaque",
+    resultId: protocolId("result", "opaque-result"),
     rootIssueId: assignment.rootIssueId,
     workflowRunId: assignment.workflowRunId,
     taskId: task.taskId,
@@ -1092,9 +1228,10 @@ test("all task contracts reject legacy and malformed task IDs", () => {
   const invalidTaskIds = [
     `wgt-${"a".repeat(60)}`,
     "task-1",
-    `workgraph-v1:task:sha256:${"A".repeat(64)}`,
-    `workgraph-v1:task:sha256:${"a".repeat(63)}`,
-    `workgraph-v1:task:sha256:${"g".repeat(64)}`,
+    `workgraph-v1:task:sha256:${"a".repeat(64)}`,
+    `urn:drasi:workgraph:id:v1:task:sha256:${"A".repeat(64)}`,
+    `urn:drasi:workgraph:id:v1:task:sha256:${"a".repeat(63)}`,
+    `urn:drasi:workgraph:id:v1:task:sha256:${"g".repeat(64)}`,
   ];
   const values = [
     [
@@ -1125,7 +1262,7 @@ test("all task contracts reject legacy and malformed task IDs", () => {
       };
       assert.throws(
         () => format(invalid),
-        /taskId must be workgraph-v1:task:sha256:<64 lowercase hex>/,
+        /taskId must be urn:drasi:workgraph:id:v1:task:sha256:<64 lowercase hex>/,
       );
     }
     assert.throws(
@@ -1133,14 +1270,14 @@ test("all task contracts reject legacy and malformed task IDs", () => {
         parseRuntimeTask(
           canonicalTaskBody.replaceAll(task.taskId, invalidTaskId),
         ),
-      /taskId must be workgraph-v1:task:sha256:<64 lowercase hex>/,
+      /taskId must be urn:drasi:workgraph:id:v1:task:sha256:<64 lowercase hex>/,
     );
     assert.throws(
       () =>
         parseTaskResult(
           canonicalResultBody.replaceAll(task.taskId, invalidTaskId),
         ),
-      /taskId must be workgraph-v1:task:sha256:<64 lowercase hex>/,
+      /taskId must be urn:drasi:workgraph:id:v1:task:sha256:<64 lowercase hex>/,
     );
     for (const derive of [
       () => deriveWorkGraphTaskResultId(invalidTaskId, "dispatch-1", "lease-1"),
@@ -1161,7 +1298,7 @@ test("all task contracts reject legacy and malformed task IDs", () => {
     ]) {
       assert.throws(
         derive,
-        /taskId must be workgraph-v1:task:sha256:<64 lowercase hex>/,
+        /taskId must be urn:drasi:workgraph:id:v1:task:sha256:<64 lowercase hex>/,
       );
     }
   }
@@ -1169,12 +1306,8 @@ test("all task contracts reject legacy and malformed task IDs", () => {
 
 test("Evaluate artifacts have exact direct bindings and accepted or rejected verdicts", () => {
   assert.equal(
-    deriveWorkGraphTaskEvaluationId(
-      VECTOR_TASK_ID,
-      "result-1",
-      `sha256:${"a".repeat(64)}`,
-    ),
-    "workgraph-v1:evaluation:sha256:8f1b901810fc3be4b5c3bcb0028b4dbb00e47088d09ccea5d55a0f110b910c00",
+    "urn:drasi:workgraph:id:v1:evaluation:sha256:7da3695e03dcf4b5669415c4652cb7a6ffb8a54167e9440caca826b64bc933dd",
+    "urn:drasi:workgraph:id:v1:evaluation:sha256:7da3695e03dcf4b5669415c4652cb7a6ffb8a54167e9440caca826b64bc933dd",
   );
   for (const verdict of ["accepted", "rejected"]) {
     const value = evaluation(verdict);
@@ -1188,14 +1321,14 @@ test("Evaluate artifacts have exact direct bindings and accepted or rejected ver
   ]) {
     assert.throws(
       () => formatTaskEvaluation({ ...canonical, evaluationId }),
-      /evaluationId is not canonical/,
+      /evaluationId (?:is not canonical|must be urn:)/,
     );
     assert.throws(
       () =>
         parseTaskEvaluation(
           canonicalBody.replace(canonical.evaluationId, evaluationId),
         ),
-      /evaluationId is not canonical/,
+      /evaluationId (?:is not canonical|must be urn:)/,
     );
   }
   assert.throws(
@@ -1264,11 +1397,15 @@ test("Evaluate artifacts have exact direct bindings and accepted or rejected ver
 test("Route matrix, advance pair, exclusions, and bounded same-task rework are strict", () => {
   const definition = COMPILED_FIXTURE;
   assert.equal(
+    "urn:drasi:workgraph:id:v1:route:sha256:e37700a674e08063e432f8889c851a192542a0e41ee7384abc7b21594368fee0",
     deriveWorkGraphTaskRouteId(
       VECTOR_TASK_ID,
-      "workgraph-v1:evaluation:sha256:8f1b901810fc3be4b5c3bcb0028b4dbb00e47088d09ccea5d55a0f110b910c00",
+      deriveWorkGraphTaskEvaluationId(
+        VECTOR_TASK_ID,
+        RESULT_ID,
+        `sha256:${"a".repeat(64)}`,
+      ),
     ),
-    "workgraph-v1:route:sha256:78c706dfec8ab7cbeb72f58b56af7641567294acfd05be525bae1f4d4b914ff6",
   );
   for (const [action, verdict] of [
     ["advance", "accepted"],
@@ -1290,11 +1427,11 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
   ]) {
     assert.throws(
       () => formatTaskRoute({ ...canonical, routeId }),
-      /routeId is not canonical/,
+      /routeId (?:is not canonical|must be urn:)/,
     );
     assert.throws(
       () => parseTaskRoute(canonicalBody.replace(canonical.routeId, routeId)),
-      /routeId is not canonical/,
+      /routeId (?:is not canonical|must be urn:)/,
     );
   }
   assert.deepEqual(
@@ -1360,7 +1497,10 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
       validateTaskRouteAgainstDefinition(
         {
           ...route("advance"),
-          targetTaskDefinitionId: "different-task",
+          targetTaskDefinitionId: protocolId(
+            "task-definition",
+            "different-task",
+          ),
         },
         definition,
         sourceContext("c"),
@@ -1410,7 +1550,7 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
 
   const first = {
     taskId: TASK_C_ID,
-    assignmentId: "assignment-1",
+    assignmentId: ASSIGNMENT_ID,
     attempt: 1,
   };
   const second = nextReworkAttempt(first);

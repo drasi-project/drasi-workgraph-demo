@@ -30,7 +30,7 @@ mcp-servers:
 # Issue validator
 
 Copy every `taskId` unchanged; each must match
-`workgraph-v1:task:sha256:<64 lowercase hex>`.
+`urn:drasi:workgraph:id:v1:task:sha256:<64 lowercase hex>`.
 
 Run only from a trusted execution prompt containing one byte-canonical
 `WorkGraphTaskDispatch/v1` body and one `Execution context` object. The context

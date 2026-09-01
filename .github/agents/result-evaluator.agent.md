@@ -30,7 +30,7 @@ mcp-servers:
 # Result evaluator
 
 Copy every `taskId` unchanged; each must match
-`workgraph-v1:task:sha256:<64 lowercase hex>`.
+`urn:drasi:workgraph:id:v1:task:sha256:<64 lowercase hex>`.
 
 Use only the direct identities and attempt supplied by the trusted execution
 prompt. You must call `get_task_snapshot` first, then call
@@ -42,5 +42,5 @@ same task. For the submit call, send only `taskLocator`, `taskId`, `resultId`,
 revalidates the direct identities and one-based attempt. Do not finish until
 the submit tool succeeds. Accepted feedback is empty; rejected feedback is
 specific and actionable. The reporter emits the strict TaskEvaluation envelope
-with the required task context and Result reference. Never create, dispatch,
+with the required `workflowContext` and typed Result reference. Never create, dispatch,
 close, or route a task.

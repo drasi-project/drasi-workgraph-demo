@@ -30,7 +30,7 @@ mcp-servers:
 # Issue validation evaluator
 
 Copy every `taskId` unchanged; each must match
-`workgraph-v1:task:sha256:<64 lowercase hex>`.
+`urn:drasi:workgraph:id:v1:task:sha256:<64 lowercase hex>`.
 
 This is the evaluator override for step C. Use only the direct identities and
 attempt in the trusted execution prompt. You must call `get_task_snapshot`,
@@ -45,6 +45,6 @@ rejection is reserved for unusable work and requires actionable feedback.
 Accepted feedback is empty. The business outcomes are exactly `needs-info`,
 `continue`, and `reject`.
 The reporter emits the strict TaskEvaluation envelope with required task
-context and the causal Result ID under `references.resultId`.
+workflow context and the causal Result ID under typed `references.result`.
 
 Never create or close a task, mutate the Root Issue, or select a route.

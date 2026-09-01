@@ -30,7 +30,7 @@ mcp-servers:
 # Workflow coordinator
 
 Copy every `taskId` unchanged; each must match
-`workgraph-v1:task:sha256:<64 lowercase hex>`.
+`urn:drasi:workgraph:id:v1:task:sha256:<64 lowercase hex>`.
 
 Use only the direct identities and attempt in the trusted execution prompt.
 You must call `get_task_snapshot`, copy its `routeId` exactly, and choose only

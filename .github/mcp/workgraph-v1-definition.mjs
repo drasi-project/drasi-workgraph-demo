@@ -16,6 +16,7 @@ export const MAX_TASK_DEFINITION_CHILDREN = 16;
 export const MAX_TASK_DEFINITION_DEPTH = 4;
 export const MAX_WORKGRAPH_BODY_BYTES = 64 * 1024;
 export const MAX_TASK_DEFINITION_EXECUTORS = 8;
+export const WORKGRAPH_ID_NAMESPACE = "urn:drasi:workgraph:id:v1";
 
 const MAX_DATA_DEPTH = 32;
 const RESERVED_MARKERS = [
@@ -62,7 +63,7 @@ const ENVELOPE_KEYS = [
   "rootIssueId",
   "workflowRunId",
   "taskId",
-  "context",
+  "workflowContext",
   "references",
   "data",
 ];
@@ -127,15 +128,7 @@ function workflowRunIdentifier(value, context) {
 }
 
 export function validateWorkGraphTaskId(value, context = "taskId") {
-  if (
-    typeof value !== "string" ||
-    !/^workgraph-v1:task:sha256:[0-9a-f]{64}$/.test(value)
-  ) {
-    throw new WorkGraphDefinitionError(
-      `${context} must be workgraph-v1:task:sha256:<64 lowercase hex>`,
-    );
-  }
-  return value;
+  return validateWorkGraphProtocolId(value, "task", context);
 }
 
 function wellFormedUnicode(value) {
@@ -314,7 +307,11 @@ function normalizeTaskDefinition(task, context, depth, identities) {
       `task definition nesting exceeds maximum depth ${MAX_TASK_DEFINITION_DEPTH}`,
     );
   }
-  identifier(task.taskDefinitionId, `${context}.taskDefinitionId`);
+  validateWorkGraphProtocolId(
+    task.taskDefinitionId,
+    "task-definition",
+    `${context}.taskDefinitionId`,
+  );
   identifier(task.taskKey, `${context}.taskKey`);
   identifier(task.operation, `${context}.operation`);
   if (identities.definitionIds.has(task.taskDefinitionId)) {
@@ -474,7 +471,11 @@ function normalizeTaskContext(value, context = "message context") {
   identifier(value.workflowDefinitionId, `${context} workflowDefinitionId`);
   identifier(value.workflowDefinitionVersion, `${context} workflowDefinitionVersion`);
   digest(value.workflowDefinitionDigest, `${context} workflowDefinitionDigest`);
-  identifier(value.taskDefinitionId, `${context} taskDefinitionId`);
+  validateWorkGraphProtocolId(
+    value.taskDefinitionId,
+    "task-definition",
+    `${context} taskDefinitionId`,
+  );
   identifier(value.taskKey, `${context} taskKey`);
   identifier(value.operation, `${context} operation`);
   return Object.fromEntries(CONTEXT_KEYS.map((key) => [key, value[key]]));
@@ -483,7 +484,11 @@ function normalizeTaskContext(value, context = "message context") {
 export function normalizeTaskIdentity(value, context = "task identity") {
   exactKeys(value, TASK_IDENTITY_KEYS, context);
   validateWorkGraphTaskId(value.taskId, `${context} taskId`);
-  workflowRunIdentifier(value.workflowRunId, `${context} workflowRunId`);
+  validateWorkGraphProtocolId(
+    value.workflowRunId,
+    "workflow-run",
+    `${context} workflowRunId`,
+  );
   return {
     taskId: value.taskId,
     workflowRunId: value.workflowRunId,
@@ -505,7 +510,11 @@ function taskIdentity(value) {
 function envelopeObject(kind, id, value, references, data) {
   directId(id, `${kind} message id`);
   workflowRunIdentifier(value.rootIssueId, `${kind} rootIssueId`);
-  workflowRunIdentifier(value.workflowRunId, `${kind} workflowRunId`);
+  validateWorkGraphProtocolId(
+    value.workflowRunId,
+    "workflow-run",
+    `${kind} workflowRunId`,
+  );
   validateWorkGraphTaskId(value.taskId, `${kind} taskId`);
   const identity = normalizeTaskIdentity(
     value.task ?? taskIdentity(value),
@@ -526,7 +535,9 @@ function envelopeObject(kind, id, value, references, data) {
     rootIssueId: value.rootIssueId,
     workflowRunId: value.workflowRunId,
     taskId: value.taskId,
-    context: Object.fromEntries(CONTEXT_KEYS.map((key) => [key, identity[key]])),
+    workflowContext: Object.fromEntries(
+      CONTEXT_KEYS.map((key) => [key, identity[key]]),
+    ),
     references,
     data,
   };
@@ -574,9 +585,16 @@ function parseEnvelopeBody(
   }
   directId(envelope.id, `${kind} envelope id`);
   workflowRunIdentifier(envelope.rootIssueId, `${kind} envelope rootIssueId`);
-  workflowRunIdentifier(envelope.workflowRunId, `${kind} envelope workflowRunId`);
+  validateWorkGraphProtocolId(
+    envelope.workflowRunId,
+    "workflow-run",
+    `${kind} envelope workflowRunId`,
+  );
   validateWorkGraphTaskId(envelope.taskId, `${kind} envelope taskId`);
-  envelope.context = normalizeTaskContext(envelope.context, `${kind} context`);
+  envelope.workflowContext = normalizeTaskContext(
+    envelope.workflowContext,
+    `${kind} workflowContext`,
+  );
   exactKeys(envelope.references, referenceKeys, `${kind} references`);
   exactKeys(envelope.data, dataKeys, `${kind} data`);
   const value = fromEnvelope(envelope);
@@ -590,7 +608,11 @@ export function normalizeRuntimeTask(task) {
   exactKeys(task, RUNTIME_TASK_KEYS, "runtime task");
   validateWorkGraphTaskId(task.taskId, "runtime task taskId");
   workflowRunIdentifier(task.rootIssueId, "runtime task rootIssueId");
-  workflowRunIdentifier(task.workflowRunId, "runtime task workflowRunId");
+  validateWorkGraphProtocolId(
+    task.workflowRunId,
+    "workflow-run",
+    "runtime task workflowRunId",
+  );
   identifier(
     task.workflowDefinitionId,
     "runtime task workflowDefinitionId",
@@ -603,7 +625,11 @@ export function normalizeRuntimeTask(task) {
     task.workflowDefinitionDigest,
     "runtime task workflowDefinitionDigest",
   );
-  identifier(task.taskDefinitionId, "runtime task taskDefinitionId");
+  validateWorkGraphProtocolId(
+    task.taskDefinitionId,
+    "task-definition",
+    "runtime task taskDefinitionId",
+  );
   identifier(task.taskKey, "runtime task taskKey");
   identifier(task.operation, "runtime task operation");
   return {
@@ -647,7 +673,7 @@ export function parseRuntimeTask(body) {
         taskId: envelope.taskId,
         rootIssueId: envelope.rootIssueId,
         workflowRunId: envelope.workflowRunId,
-        ...envelope.context,
+        ...envelope.workflowContext,
         resolvedInputs: envelope.data.resolvedInputs,
       };
     },
@@ -807,6 +833,14 @@ const ERROR_REFERENCE_KEYS = [
   "resultId",
   "evaluationId",
   "routeId",
+];
+const ERROR_REFERENCE_ROLES = [
+  "assignment",
+  "dispatch",
+  "lease",
+  "result",
+  "evaluation",
+  "route",
 ];
 
 function exactAllowedKeys(value, required, allowed, context) {
@@ -1201,7 +1235,11 @@ function normalizeCompiledTaskDefinition(value, context, depth = 0) {
       `compiled task nesting exceeds maximum depth ${MAX_TASK_DEFINITION_DEPTH}`,
     );
   }
-  identifier(value.taskDefinitionId, `${context}.taskDefinitionId`);
+  validateWorkGraphProtocolId(
+    value.taskDefinitionId,
+    "task-definition",
+    `${context}.taskDefinitionId`,
+  );
   identifier(value.taskKey, `${context}.taskKey`);
   identifier(value.operation, `${context}.operation`);
   exactKeys(value.routing, ROUTING_KEYS, `${context}.routing`);
@@ -1247,7 +1285,11 @@ function normalizeExecutionPolicies(value, context) {
   }
   return Object.fromEntries(
     Object.entries(value).map(([taskDefinitionId, policy]) => {
-      identifier(taskDefinitionId, `${context} key`);
+      validateWorkGraphProtocolId(
+        taskDefinitionId,
+        "task-definition",
+        `${context} key`,
+      );
       exactKeys(
         policy,
         ["workerId", "evaluatorId", "orchestratorId", "maxReworkAttempts"],
@@ -1479,11 +1521,15 @@ export function normalizeCompiledWorkflowDefinition(definition) {
   };
 }
 
-function normalizeLifecycleBase(value, keys, label, idField) {
+function normalizeLifecycleBase(value, keys, label, idField, idType) {
   exactKeys(value, keys, label);
-  directId(value[idField], `${label} ${idField}`);
+  validateWorkGraphProtocolId(value[idField], idType, `${label} ${idField}`);
   workflowRunIdentifier(value.rootIssueId, `${label} rootIssueId`);
-  workflowRunIdentifier(value.workflowRunId, `${label} workflowRunId`);
+  validateWorkGraphProtocolId(
+    value.workflowRunId,
+    "workflow-run",
+    `${label} workflowRunId`,
+  );
   validateWorkGraphTaskId(value.taskId, `${label} taskId`);
   const task = normalizeTaskIdentity(value.task, `${label} task`);
   if (task.taskId !== value.taskId || task.workflowRunId !== value.workflowRunId) {
@@ -1503,7 +1549,7 @@ function taskFromEnvelope(envelope) {
   return {
     taskId: envelope.taskId,
     workflowRunId: envelope.workflowRunId,
-    ...envelope.context,
+    ...envelope.workflowContext,
   };
 }
 
@@ -1519,12 +1565,75 @@ function framedSha256(parts) {
   return hash.digest("hex");
 }
 
+export function validateWorkGraphProtocolId(value, type, context = type) {
+  if (
+    typeof type !== "string" ||
+    !/^[a-z][a-z0-9-]*$/.test(type) ||
+    typeof value !== "string" ||
+    value !==
+      `${WORKGRAPH_ID_NAMESPACE}:${type}:sha256:${value.slice(-64)}` ||
+    !/^[0-9a-f]{64}$/.test(value.slice(-64))
+  ) {
+    throw new WorkGraphDefinitionError(
+      `${context} must be ${WORKGRAPH_ID_NAMESPACE}:${type}:sha256:<64 lowercase hex>`,
+    );
+  }
+  return value;
+}
+
+export function deriveWorkGraphProtocolId(type, semanticInputs) {
+  if (
+    typeof type !== "string" ||
+    !/^[a-z][a-z0-9-]*$/.test(type) ||
+    !Array.isArray(semanticInputs)
+  ) {
+    throw new WorkGraphDefinitionError("protocol ID type or inputs are invalid");
+  }
+  for (const [index, input] of semanticInputs.entries()) {
+    directId(input, `protocol ID input ${index}`);
+  }
+  return `${WORKGRAPH_ID_NAMESPACE}:${type}:sha256:${framedSha256([
+    WORKGRAPH_ID_NAMESPACE,
+    type,
+    ...semanticInputs,
+  ])}`;
+}
+
+const REFERENCE_KINDS = {
+  assignment: ["TaskAssignment", "assignment"],
+  dispatch: ["TaskDispatch", "dispatch"],
+  lease: ["TaskLease", "lease"],
+  result: ["TaskResult", "result"],
+  evaluation: ["TaskEvaluation", "evaluation"],
+  route: ["TaskRoute", "route"],
+};
+
+function typedReference(role, id) {
+  const [kind, type] = REFERENCE_KINDS[role];
+  validateWorkGraphProtocolId(id, type, `${role} reference id`);
+  return { kind, id };
+}
+
+function validateTypedReference(value, role, nullable = false) {
+  if (nullable && value === null) return null;
+  exactKeys(value, ["kind", "id"], `${role} reference`);
+  const [kind, type] = REFERENCE_KINDS[role];
+  if (value.kind !== kind) {
+    throw new WorkGraphDefinitionError(
+      `${role} reference kind must be ${kind}`,
+    );
+  }
+  validateWorkGraphProtocolId(value.id, type, `${role} reference id`);
+  return value;
+}
+
 export function normalizeTaskAssignment(value) {
   const base = normalizeLifecycleBase(
     value,
     ASSIGNMENT_KEYS,
     "task assignment",
     "assignmentId",
+    "assignment",
   );
   if (
     !Array.isArray(value.permittedExecutors) ||
@@ -1589,15 +1698,28 @@ export function normalizeTaskDispatch(value) {
     DISPATCH_KEYS,
     "task dispatch",
     "dispatchId",
+    "dispatch",
   );
-  directId(value.launchId, "task dispatch launchId");
+  validateWorkGraphProtocolId(
+    value.launchId,
+    "dispatch-launch",
+    "task dispatch launchId",
+  );
   exactKeys(
     value.lease,
     ["leaseId", "assignmentId", "executorId", "slotId"],
     "task dispatch lease",
   );
-  directId(value.lease.leaseId, "task dispatch leaseId");
-  directId(value.lease.assignmentId, "task dispatch assignmentId");
+  validateWorkGraphProtocolId(
+    value.lease.leaseId,
+    "lease",
+    "task dispatch leaseId",
+  );
+  validateWorkGraphProtocolId(
+    value.lease.assignmentId,
+    "assignment",
+    "task dispatch assignmentId",
+  );
   identifier(value.lease.executorId, "task dispatch executorId");
   directId(value.lease.slotId, "task dispatch slotId");
   return {
@@ -1620,7 +1742,7 @@ export function formatTaskDispatch(value) {
     "TaskDispatch",
     normalized.dispatchId,
     normalized,
-    { assignmentId: normalized.lease.assignmentId },
+    { assignment: typedReference("assignment", normalized.lease.assignmentId) },
     {
       launchId: normalized.launchId,
       lease: {
@@ -1637,10 +1759,11 @@ export function parseTaskDispatch(body) {
     body,
     TASK_DISPATCH_MARKER,
     "TaskDispatch",
-    ["assignmentId"],
+    ["assignment"],
     ["launchId", "lease"],
     (envelope) => {
       exactKeys(envelope.data.lease, ["id", "executorId", "slotId"], "TaskDispatch lease");
+      validateTypedReference(envelope.references.assignment, "assignment");
       return {
         dispatchId: envelope.id,
         launchId: envelope.data.launchId,
@@ -1650,7 +1773,7 @@ export function parseTaskDispatch(body) {
         task: taskFromEnvelope(envelope),
         lease: {
           leaseId: envelope.data.lease.id,
-          assignmentId: envelope.references.assignmentId,
+          assignmentId: envelope.references.assignment.id,
           executorId: envelope.data.lease.executorId,
           slotId: envelope.data.lease.slotId,
         },
@@ -1662,15 +1785,25 @@ export function parseTaskDispatch(body) {
 
 export function deriveWorkGraphTaskResultId(taskId, dispatchId, leaseId) {
   validateWorkGraphTaskId(taskId, "task Result taskId");
-  directId(dispatchId, "task Result dispatchId");
-  directId(leaseId, "task Result leaseId");
-  return `workgraph-v1:result:sha256:${framedSha256([taskId, dispatchId, leaseId])}`;
+  validateWorkGraphProtocolId(dispatchId, "dispatch", "task Result dispatchId");
+  validateWorkGraphProtocolId(leaseId, "lease", "task Result leaseId");
+  return deriveWorkGraphProtocolId("result", [taskId, dispatchId, leaseId]);
 }
 
 export function normalizeTaskResult(value) {
-  const base = normalizeLifecycleBase(value, RESULT_KEYS, "task Result", "resultId");
-  directId(value.dispatchId, "task Result dispatchId");
-  directId(value.leaseId, "task Result leaseId");
+  const base = normalizeLifecycleBase(
+    value,
+    RESULT_KEYS,
+    "task Result",
+    "resultId",
+    "result",
+  );
+  validateWorkGraphProtocolId(
+    value.dispatchId,
+    "dispatch",
+    "task Result dispatchId",
+  );
+  validateWorkGraphProtocolId(value.leaseId, "lease", "task Result leaseId");
   executionAttempt(value.attempt, "task Result attempt");
   if (!["succeeded", "failed", "cancelled"].includes(value.outcome)) {
     throw new WorkGraphDefinitionError(
@@ -1698,7 +1831,10 @@ export function taskResultEnvelope(value) {
     "TaskResult",
     normalized.resultId,
     normalized,
-    { dispatchId: normalized.dispatchId, leaseId: normalized.leaseId },
+    {
+      dispatch: typedReference("dispatch", normalized.dispatchId),
+      lease: typedReference("lease", normalized.leaseId),
+    },
     {
       attempt: normalized.attempt,
       outcome: normalized.outcome,
@@ -1744,22 +1880,23 @@ export function deriveWorkGraphTaskEvaluationId(
   resultDigest,
 ) {
   validateWorkGraphTaskId(taskId, "task evaluation taskId");
-  directId(resultId, "task evaluation resultId");
+  validateWorkGraphProtocolId(resultId, "result", "task evaluation resultId");
   digest(resultDigest, "task evaluation resultDigest");
-  return `workgraph-v1:evaluation:sha256:${framedSha256([
+  return deriveWorkGraphProtocolId("evaluation", [
     taskId,
     resultId,
     resultDigest,
-  ])}`;
+  ]);
 }
 
 export function deriveWorkGraphTaskRouteId(taskId, evaluationId) {
   validateWorkGraphTaskId(taskId, "task route taskId");
-  directId(evaluationId, "task route evaluationId");
-  return `workgraph-v1:route:sha256:${framedSha256([
-    taskId,
+  validateWorkGraphProtocolId(
     evaluationId,
-  ])}`;
+    "evaluation",
+    "task route evaluationId",
+  );
+  return deriveWorkGraphProtocolId("route", [taskId, evaluationId]);
 }
 
 export function parseTaskResult(body) {
@@ -1767,20 +1904,24 @@ export function parseTaskResult(body) {
     body,
     TASK_RESULT_MARKER,
     "TaskResult",
-    ["dispatchId", "leaseId"],
+    ["dispatch", "lease"],
     ["attempt", "outcome", "output"],
-    (envelope) => ({
-      resultId: envelope.id,
-      rootIssueId: envelope.rootIssueId,
-      workflowRunId: envelope.workflowRunId,
-      taskId: envelope.taskId,
-      task: taskFromEnvelope(envelope),
-      dispatchId: envelope.references.dispatchId,
-      leaseId: envelope.references.leaseId,
-      attempt: envelope.data.attempt,
-      outcome: envelope.data.outcome,
-      output: envelope.data.output,
-    }),
+    (envelope) => {
+      validateTypedReference(envelope.references.dispatch, "dispatch");
+      validateTypedReference(envelope.references.lease, "lease");
+      return {
+        resultId: envelope.id,
+        rootIssueId: envelope.rootIssueId,
+        workflowRunId: envelope.workflowRunId,
+        taskId: envelope.taskId,
+        task: taskFromEnvelope(envelope),
+        dispatchId: envelope.references.dispatch.id,
+        leaseId: envelope.references.lease.id,
+        attempt: envelope.data.attempt,
+        outcome: envelope.data.outcome,
+        output: envelope.data.output,
+      };
+    },
     formatTaskResult,
   );
 }
@@ -1791,8 +1932,13 @@ export function normalizeTaskEvaluation(value) {
     EVALUATION_KEYS,
     "task evaluation",
     "evaluationId",
+    "evaluation",
   );
-  directId(value.resultId, "task evaluation resultId");
+  validateWorkGraphProtocolId(
+    value.resultId,
+    "result",
+    "task evaluation resultId",
+  );
   digest(value.resultDigest, "task evaluation resultDigest");
   if (
     value.evaluationId !==
@@ -1859,7 +2005,7 @@ export function formatTaskEvaluation(value) {
     "TaskEvaluation",
     normalized.evaluationId,
     normalized,
-    { resultId: normalized.resultId },
+    { result: typedReference("result", normalized.resultId) },
     {
       resultDigest: normalized.resultDigest,
       evaluatorId: normalized.evaluatorId,
@@ -1876,22 +2022,25 @@ export function parseTaskEvaluation(body) {
     body,
     TASK_EVALUATION_MARKER,
     "TaskEvaluation",
-    ["resultId"],
+    ["result"],
     ["resultDigest", "evaluatorId", "attempt", "verdict", "summary", "feedback"],
-    (envelope) => ({
-      evaluationId: envelope.id,
-      rootIssueId: envelope.rootIssueId,
-      workflowRunId: envelope.workflowRunId,
-      taskId: envelope.taskId,
-      task: taskFromEnvelope(envelope),
-      resultId: envelope.references.resultId,
-      resultDigest: envelope.data.resultDigest,
-      evaluatorId: envelope.data.evaluatorId,
-      attempt: envelope.data.attempt,
-      verdict: envelope.data.verdict,
-      summary: envelope.data.summary,
-      feedback: envelope.data.feedback,
-    }),
+    (envelope) => {
+      validateTypedReference(envelope.references.result, "result");
+      return {
+        evaluationId: envelope.id,
+        rootIssueId: envelope.rootIssueId,
+        workflowRunId: envelope.workflowRunId,
+        taskId: envelope.taskId,
+        task: taskFromEnvelope(envelope),
+        resultId: envelope.references.result.id,
+        resultDigest: envelope.data.resultDigest,
+        evaluatorId: envelope.data.evaluatorId,
+        attempt: envelope.data.attempt,
+        verdict: envelope.data.verdict,
+        summary: envelope.data.summary,
+        feedback: envelope.data.feedback,
+      };
+    },
     formatTaskEvaluation,
   );
 }
@@ -1915,9 +2064,14 @@ export function normalizeTaskRoute(value) {
     Object.keys(value),
     "task route",
     "routeId",
+    "route",
   );
-  directId(value.resultId, "task route resultId");
-  directId(value.evaluationId, "task route evaluationId");
+  validateWorkGraphProtocolId(value.resultId, "result", "task route resultId");
+  validateWorkGraphProtocolId(
+    value.evaluationId,
+    "evaluation",
+    "task route evaluationId",
+  );
   if (
     value.routeId !==
     deriveWorkGraphTaskRouteId(value.taskId, value.evaluationId)
@@ -1977,8 +2131,9 @@ export function normalizeTaskRoute(value) {
           "task target requires targetTaskDefinitionId",
         );
       }
-      identifier(
+      validateWorkGraphProtocolId(
         value.targetTaskDefinitionId,
+        "task-definition",
         "task route targetTaskDefinitionId",
       );
     } else if ("targetTaskDefinitionId" in value) {
@@ -2015,7 +2170,10 @@ export function formatTaskRoute(value) {
     "TaskRoute",
     normalized.routeId,
     normalized,
-    { resultId: normalized.resultId, evaluationId: normalized.evaluationId },
+    {
+      result: typedReference("result", normalized.resultId),
+      evaluation: typedReference("evaluation", normalized.evaluationId),
+    },
     {
       evaluationVerdict: normalized.evaluationVerdict,
       orchestratorId: normalized.orchestratorId,
@@ -2035,7 +2193,7 @@ export function parseTaskRoute(body) {
     body,
     TASK_ROUTE_MARKER,
     "TaskRoute",
-    ["resultId", "evaluationId"],
+    ["result", "evaluation"],
     [
       "evaluationVerdict",
       "orchestratorId",
@@ -2047,14 +2205,17 @@ export function parseTaskRoute(body) {
       "selectedOutcome",
       "targetTaskDefinitionId",
     ],
-    (envelope) => ({
+    (envelope) => {
+      validateTypedReference(envelope.references.result, "result");
+      validateTypedReference(envelope.references.evaluation, "evaluation");
+      return {
       routeId: envelope.id,
       rootIssueId: envelope.rootIssueId,
       workflowRunId: envelope.workflowRunId,
       taskId: envelope.taskId,
       task: taskFromEnvelope(envelope),
-      resultId: envelope.references.resultId,
-      evaluationId: envelope.references.evaluationId,
+      resultId: envelope.references.result.id,
+      evaluationId: envelope.references.evaluation.id,
       evaluationVerdict: envelope.data.evaluationVerdict,
       orchestratorId: envelope.data.orchestratorId,
       action: envelope.data.action,
@@ -2074,7 +2235,8 @@ export function parseTaskRoute(body) {
         ? {}
         : { targetTaskDefinitionId: envelope.data.targetTaskDefinitionId }),
       attempt: envelope.data.attempt,
-    }),
+      };
+    },
     formatTaskRoute,
   );
 }
@@ -2086,16 +2248,27 @@ export function deriveWorkGraphTaskErrorId(taskId, stage, code, causeId) {
   }
   identifier(code, "task Error code");
   directId(causeId, "task Error causeId");
-  return `workgraph-v1:error:sha256:${framedSha256([taskId, stage, code, causeId])}`;
+  return deriveWorkGraphProtocolId("error", [taskId, stage, code, causeId]);
 }
 
 export function normalizeTaskError(value) {
-  const base = normalizeLifecycleBase(value, ERROR_KEYS, "task Error", "errorId");
+  const base = normalizeLifecycleBase(
+    value,
+    ERROR_KEYS,
+    "task Error",
+    "errorId",
+    "error",
+  );
   exactKeys(value.references, ERROR_REFERENCE_KEYS, "task Error references");
   const references = {};
-  for (const key of ERROR_REFERENCE_KEYS) {
+  for (const [index, key] of ERROR_REFERENCE_KEYS.entries()) {
+    const role = ERROR_REFERENCE_ROLES[index];
     if (value.references[key] !== null) {
-      directId(value.references[key], `task Error references ${key}`);
+      validateWorkGraphProtocolId(
+        value.references[key],
+        REFERENCE_KINDS[role][1],
+        `task Error references ${key}`,
+      );
     }
     references[key] = value.references[key];
   }
@@ -2150,12 +2323,23 @@ export function normalizeTaskError(value) {
 
 export function formatTaskError(value) {
   const normalized = normalizeTaskError(value);
+  const references = Object.fromEntries(
+    ERROR_REFERENCE_ROLES.map((role, index) => [
+      role,
+      normalized.references[ERROR_REFERENCE_KEYS[index]] === null
+        ? null
+        : typedReference(
+            role,
+            normalized.references[ERROR_REFERENCE_KEYS[index]],
+          ),
+    ]),
+  );
   return formatEnvelope(
     TASK_ERROR_MARKER,
     "TaskError",
     normalized.errorId,
     normalized,
-    normalized.references,
+    references,
     {
       stage: normalized.stage,
       code: normalized.code,
@@ -2173,23 +2357,34 @@ export function parseTaskError(body) {
     body,
     TASK_ERROR_MARKER,
     "TaskError",
-    ERROR_REFERENCE_KEYS,
+    ERROR_REFERENCE_ROLES,
     ["stage", "code", "category", "summary", "retryable", "attempt", "details"],
-    (envelope) => ({
-      errorId: envelope.id,
-      rootIssueId: envelope.rootIssueId,
-      workflowRunId: envelope.workflowRunId,
-      taskId: envelope.taskId,
-      task: taskFromEnvelope(envelope),
-      references: envelope.references,
-      stage: envelope.data.stage,
-      code: envelope.data.code,
-      category: envelope.data.category,
-      summary: envelope.data.summary,
-      retryable: envelope.data.retryable,
-      attempt: envelope.data.attempt,
-      details: envelope.data.details,
-    }),
+    (envelope) => {
+      const references = {};
+      for (const [index, role] of ERROR_REFERENCE_ROLES.entries()) {
+        const reference = validateTypedReference(
+          envelope.references[role],
+          role,
+          true,
+        );
+        references[ERROR_REFERENCE_KEYS[index]] = reference?.id ?? null;
+      }
+      return {
+        errorId: envelope.id,
+        rootIssueId: envelope.rootIssueId,
+        workflowRunId: envelope.workflowRunId,
+        taskId: envelope.taskId,
+        task: taskFromEnvelope(envelope),
+        references,
+        stage: envelope.data.stage,
+        code: envelope.data.code,
+        category: envelope.data.category,
+        summary: envelope.data.summary,
+        retryable: envelope.data.retryable,
+        attempt: envelope.data.attempt,
+        details: envelope.data.details,
+      };
+    },
     formatTaskError,
   );
 }
@@ -2207,8 +2402,9 @@ export function validateTaskRouteAgainstDefinition(
     "task route source context",
   );
   stepId(sourceContext.sourceStepId, "task route sourceStepId");
-  identifier(
+  validateWorkGraphProtocolId(
     sourceContext.taskDefinitionId,
+    "task-definition",
     "task route source taskDefinitionId",
   );
   const source = workflow.steps[sourceContext.sourceStepId];

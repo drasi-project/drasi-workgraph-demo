@@ -19,10 +19,11 @@ The prototype has one protocol:
 
 Every task and lifecycle body uses the strict `workgraph.drasi.io/v1` envelope:
 `kind` identifies the message, direct identity fields remain top-level,
-definition and human-readable task metadata live in `context`, causal IDs live
-in `references`, and message content lives in `data`. `taskKey` and `operation`
-are required everywhere and are validated against the pinned definition. Old
-flat bodies and old marker spellings are rejected. The hierarchy is:
+definition and human-readable task metadata live in `workflowContext`,
+role-keyed causal IDs live as exact `{kind,id}` objects in `references`, and
+message content lives in `data`. `taskKey` and `operation` are required
+everywhere and are validated against the pinned definition. Old flat bodies and
+old marker spellings are rejected. The hierarchy is:
 
 ```text
 Root Issue
@@ -52,8 +53,9 @@ effective compiled policy and bounded verdict, action, and transition choices.
 These roles cannot create or close tasks or mutate the Root Issue. The shared `issue-worker` profile handles all four stages. Lifecycle messages
 use one-based attempts and deterministic claim identities so concurrent retries
 in one reporter process reconcile one immutable comment. Runtime task IDs must
-match `workgraph-v1:task:sha256:<64 lowercase hex>` exactly;
-task-definition IDs remain `wgd-*`.
+match `urn:drasi:workgraph:id:v1:task:sha256:<64 lowercase hex>` exactly.
+All generated protocol identities use the corresponding lowercase type in that
+URN namespace.
 
 The offline proof fixture pins the loopback server/state-store identities, the
 exact ordered 21 generic plus six generated `wg-*` Drasi queries, and a
