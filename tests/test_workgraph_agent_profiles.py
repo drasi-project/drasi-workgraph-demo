@@ -110,12 +110,12 @@ class WorkGraphProfilesTest(unittest.TestCase):
             with self.subTest(reporter_identity=name):
                 self.assertIn(
                     "COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID: "
-                    "${{ vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID }}",
+                    "${{ vars.COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID }}",
                     self.agents[name],
                 )
                 self.assertIn(
                     "COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID: "
-                    "${{ vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID }}",
+                    "${{ vars.COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID }}",
                     self.agents[name],
                 )
         for name in lifecycle_profiles[:2]:
@@ -132,6 +132,49 @@ class WorkGraphProfilesTest(unittest.TestCase):
                 self.assertNotRegex(
                     self.agents[name], r"workgraph/(?:create|assign|dispatch)_task"
                 )
+
+    def test_reporter_identities_map_from_their_own_variables(self):
+        """Each reporter identity reads the identically named variable.
+
+        A bare `vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID` is not a declared
+        repository variable, so any profile referencing it resolves the
+        identity to the empty string: a required identity then fails closed at
+        configuration time, and an optional one silently falls back.
+        """
+        identity = re.compile(
+            r"^\s*(COPILOT_MCP_WORKGRAPH_\w*?_?REPORTER_USER_ID): "
+            r"\$\{\{ vars\.(\S+) \}\}$",
+            re.MULTILINE,
+        )
+        seen = set()
+        for name, content in self.agents.items():
+            with self.subTest(name=name):
+                self.assertNotIn(
+                    "vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID", content
+                )
+                declared = identity.findall(content)
+                self.assertNotEqual(declared, [])
+                for key, source in declared:
+                    self.assertEqual(key, source)
+                    seen.add(key)
+        # Every profile resolves the Route author identity, because worker
+        # tools authenticate a routed scope member's predecessor Route.
+        for name, content in self.agents.items():
+            with self.subTest(route_identity=name):
+                self.assertIn(
+                    "COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID: "
+                    "${{ vars.COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID }}",
+                    content,
+                )
+        self.assertEqual(
+            seen,
+            {
+                "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
+                "COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID",
+                "COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID",
+                "COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID",
+            },
+        )
 
     def test_linear_workflow_uses_only_default_lifecycle_profiles(self):
         for profile in (

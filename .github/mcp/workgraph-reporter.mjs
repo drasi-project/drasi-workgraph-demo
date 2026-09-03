@@ -392,6 +392,14 @@ function envUserId(name) {
   return value;
 }
 
+// An unset variable yields `null` so a caller can fall back, but a variable
+// that is set must still be a well-formed user ID.
+function optionalEnvUserId(name) {
+  const value = process.env[name] ?? "";
+  if (value === "") return null;
+  return envUserId(name);
+}
+
 function apiBaseUrl() {
   const configured = process.env.WORKGRAPH_TEST_GITHUB_API_URL;
   if (!configured) return API;
@@ -454,6 +462,7 @@ function configuration(toolName) {
   }
   const taskTypeId = env("COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID");
   opaque(taskTypeId, "COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID");
+  const resultId = envUserId("COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID");
   const config = {
     token: env("COPILOT_MCP_WORKGRAPH_TOKEN"),
     taskTypeId,
@@ -461,7 +470,16 @@ function configuration(toolName) {
     assignmentId: envUserId(
       "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
     ),
-    resultId: envUserId("COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID"),
+    resultId,
+    // Worker tools read a routed predecessor's Route to validate scoped
+    // ancestry, so every tool needs the Route author identity. Under the
+    // current single-token deployment every lifecycle comment authenticates as
+    // the Result reporter user, so that is the default when a profile does not
+    // inject a separate Route reporter identity. Lifecycle orchestrator tools
+    // still require and use their own explicit value below.
+    routeId:
+      optionalEnvUserId("COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID") ??
+      resultId,
     api: apiBaseUrl(),
   };
   if (toolName === "submit_task_result") {

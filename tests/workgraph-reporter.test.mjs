@@ -11,6 +11,7 @@ import test from "node:test";
 import {
   RESERVED_RUNTIME_INPUT_KEYS,
   TASK_FORK_MARKER,
+  TASK_RESULT_MARKER,
   TASK_ROUTE_MARKER,
   formatRuntimeTask,
   formatTaskAssignment,
@@ -2965,6 +2966,7 @@ function scopedTaskInput(fixture, stepId) {
 
 async function withScopedFlow(options, callback) {
   const fixture = scopedFlowFixture(options.mutate ?? (() => {}));
+  const routeAuthorId = options.routeAuthorId ?? ROUTE_ID;
   const root = rootIssue();
   const issues = new Map([[ROOT_ISSUE_NUMBER, root]]);
   const comments = new Map();
@@ -3004,7 +3006,7 @@ async function withScopedFlow(options, callback) {
         ? [[formatTaskEvaluation(fixture.evaluations[stepId]), EVALUATION_ID]]
         : []),
       ...(fixture.routes[stepId]
-        ? [[formatTaskRoute(fixture.routes[stepId]), ROUTE_ID]]
+        ? [[formatTaskRoute(fixture.routes[stepId]), routeAuthorId]]
         : []),
     ];
     comments.set(
@@ -3017,6 +3019,14 @@ async function withScopedFlow(options, callback) {
         created_at: at(index * 5),
         updated_at: at(index * 5),
       })),
+    );
+  }
+  if (options.omitResultFor) {
+    comments.set(
+      SCOPED_ISSUES[options.omitResultFor].number,
+      comments
+        .get(SCOPED_ISSUES[options.omitResultFor].number)
+        .filter(({ body }) => !body.startsWith(`${TASK_RESULT_MARKER}\n`)),
     );
   }
   if (options.dropOwnerFork === true) {
@@ -3097,13 +3107,28 @@ async function withScopedFlow(options, callback) {
         id: (commentId += 1),
         node_id: `IC_scoped_write_${writes.length}`,
         body,
-        user: { id: EVALUATION_ID, login: "evaluation-reporter" },
+        user: {
+          id: options.role === "worker" ? RESULT_ID : EVALUATION_ID,
+          login: `${options.role ?? "evaluation"}-reporter`,
+        },
         created_at: "2026-08-29T21:00:00Z",
         updated_at: "2026-08-29T21:00:00Z",
       };
       comments.get(number).push(comment);
       writes.push({ number, body });
       return send(201, comment);
+    }
+    if (
+      request.method === "POST" &&
+      url.pathname === "/github/workgraph-v1/lease/validate"
+    ) {
+      const value = await requestBody(request);
+      return send(200, {
+        ...value,
+        attempt: 1,
+        acquiredAt: "2026-08-29T20:00:00Z",
+        expiresAt: "2026-08-29T22:00:00Z",
+      });
     }
     return send(404, { message: `Unhandled ${request.method} ${url.pathname}` });
   });
@@ -3123,8 +3148,20 @@ async function withScopedFlow(options, callback) {
     COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID: String(EVALUATION_ID),
     COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID: String(ROUTE_ID),
     COPILOT_MCP_WORKGRAPH_EVALUATOR_ID: "result-evaluator",
+    COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL:
+      `${origin}/github/workgraph-v1/lease/validate`,
+    COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN: "lease-token",
   });
   delete process.env.COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_ID;
+  // A worker profile on default main injects no Route reporter identity.
+  if (options.routeEnv === "absent") {
+    delete process.env.COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID;
+  }
+  if (options.role === "worker") {
+    delete process.env.COPILOT_MCP_WORKGRAPH_EVALUATOR_ID;
+    process.env.COPILOT_MCP_WORKGRAPH_EXECUTOR_ID =
+      options.executorId ?? "issue-worker";
+  }
   try {
     await callback({ fixture, writes, comments, issues });
   } finally {
@@ -3525,4 +3562,113 @@ test("a fixed child with a malformed inherited scope is rejected", async () => {
       assert.equal(writes.length, 0);
     });
   }
+});
+
+test("worker tools validate a scoped predecessor Route without a Route reporter identity", async () => {
+  // A worker profile on default main injects no
+  // COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID. Under the single-token
+  // deployment every lifecycle comment authenticates as the Result reporter,
+  // so the Route author defaults to that identity.
+  await withScopedFlow(
+    { role: "worker", routeEnv: "absent", routeAuthorId: RESULT_ID },
+    async ({ fixture }) => {
+      const root = await callTool("get_root_issue", {
+        taskLocator: scopedTaskInput(fixture, "fix-cleanup").taskLocator,
+        taskId: fixture.tasks["fix-cleanup"].taskId,
+      });
+      assert.equal(root.taskId, fixture.tasks["fix-cleanup"].taskId);
+      assert.equal(root.rootIssue.issueNumber, ROOT_ISSUE_NUMBER);
+    },
+  );
+
+  // The same default still rejects a Route written by any other actor.
+  await withScopedFlow(
+    { role: "worker", routeEnv: "absent", routeAuthorId: ROUTE_ID },
+    async ({ fixture, writes }) => {
+      await assert.rejects(
+        callTool("get_root_issue", {
+          taskLocator: scopedTaskInput(fixture, "fix-cleanup").taskLocator,
+          taskId: fixture.tasks["fix-cleanup"].taskId,
+        }),
+        /malformed or foreign WorkGraphTaskRoute\/v1/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
+
+  // A profile that does inject a separated Route identity keeps using it.
+  await withScopedFlow(
+    { role: "worker", routeAuthorId: ROUTE_ID },
+    async ({ fixture }) => {
+      const root = await callTool("get_root_issue", {
+        taskLocator: scopedTaskInput(fixture, "fix-cleanup").taskLocator,
+        taskId: fixture.tasks["fix-cleanup"].taskId,
+      });
+      assert.equal(root.taskId, fixture.tasks["fix-cleanup"].taskId);
+    },
+  );
+
+  // ... and that separated identity is still authoritative: a Route written by
+  // the Result reporter is foreign when the profile names a different actor.
+  await withScopedFlow(
+    { role: "worker", routeAuthorId: RESULT_ID },
+    async ({ fixture, writes }) => {
+      await assert.rejects(
+        callTool("get_root_issue", {
+          taskLocator: scopedTaskInput(fixture, "fix-cleanup").taskLocator,
+          taskId: fixture.tasks["fix-cleanup"].taskId,
+        }),
+        /malformed or foreign WorkGraphTaskRoute\/v1/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
+});
+
+test("submit_task_result reports on a routed scope member without a Route identity", async () => {
+  await withScopedFlow(
+    {
+      role: "worker",
+      routeEnv: "absent",
+      routeAuthorId: RESULT_ID,
+      omitResultFor: "fix-cleanup",
+    },
+    async ({ fixture, writes }) => {
+      const input = scopedTaskInput(fixture, "fix-cleanup");
+      const created = await callTool("submit_task_result", {
+        taskLocator: input.taskLocator,
+        taskId: input.taskId,
+        dispatchId: input.dispatchId,
+        leaseId: input.leaseId,
+        outcome: "succeeded",
+        output: { step: "fix-cleanup" },
+      });
+      assert.equal(
+        created.resultId,
+        fixture.artifacts["fix-cleanup"].result.resultId,
+      );
+      assert.equal(created.reconciled, false);
+      assert.equal(writes.length, 1);
+      assert.equal(
+        writes[0].body.startsWith(`${TASK_RESULT_MARKER}\n`),
+        true,
+      );
+    },
+  );
+});
+
+test("an explicitly configured Route reporter identity must still be well formed", async () => {
+  await withScopedFlow(
+    { role: "worker", routeEnv: "absent", routeAuthorId: RESULT_ID },
+    async ({ fixture }) => {
+      process.env.COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID = "0";
+      await assert.rejects(
+        callTool("get_root_issue", {
+          taskLocator: scopedTaskInput(fixture, "fix-cleanup").taskLocator,
+          taskId: fixture.tasks["fix-cleanup"].taskId,
+        }),
+        /COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID must be a positive integer/,
+      );
+    },
+  );
 });

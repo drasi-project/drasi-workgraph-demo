@@ -284,6 +284,20 @@ add:
 - exactly one of `COPILOT_MCP_WORKGRAPH_EVALUATOR_ID` or
   `COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_ID`
 
+`COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID` is read by every tool, because a
+worker reading a routed scope member must authenticate the predecessor's Route.
+It is required for lifecycle tools and optional elsewhere: when a worker profile
+does not inject it, the Route author defaults to
+`COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID`, which is correct for the
+current single-token deployment where every lifecycle comment authenticates as
+the Result reporter user. A profile that names a separated Route identity keeps
+using it, and that identity remains authoritative: a Route written by any other
+actor is still rejected as foreign. When the variable is set it must be a
+positive integer.
+
+Every worker profile that exposes `get_root_issue` or `submit_task_result`
+declares it so separated identities work without a reporter change.
+
 Run the offline contract tests with:
 
 ```bash
