@@ -4,7 +4,7 @@ WorkGraphWorkflowDefinition/v1
 {
   "workflowDefinitionId": "human-parity",
   "version": "v1",
-  "digest": "sha256:4bbe20c60f75704cadc78b8a6a9f528ad4fa751ee0364d835d1b21421d36e766",
+  "digest": "sha256:eb2bc431310d28a7edec861dcffd65b0252c7109038bb94c871e69f835a0ea45",
   "trigger": "workgraph",
   "defaults": {
     "evaluator": "result-evaluator",
@@ -87,27 +87,27 @@ WorkGraphWorkflowDefinition/v1
       "taskDefinition": {
         "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:be759edffb7f7b6570a341a8911397434ed2d6719aad1e90a0d10e82939ae65d",
         "taskKey": "review",
-        "operation": "inspect-issue",
+        "operation": "normalize-issue",
         "routing": {
           "permittedExecutors": [
-            "issue-validator",
             "issue-worker"
           ]
         },
         "staticInputs": {},
         "instructions": {
-          "summary": "Inspect the drafted proposal and report what it commits to.",
-          "details": "Summarize the proposal faithfully and add no commitment the draft does not make, because the human evaluator grades this summary against the draft rather than against their own judgement of the Issue.",
+          "summary": "Normalize the verified Root Issue into a structured summary.",
+          "details": "Read the Root Issue title and body returned by the reporter and restate them as a normalized summary. Use only what the Root Issue says; do not infer, judge, or add anything it does not state.",
           "acceptanceCriteria": [
-            "The summary reflects only what the proposal states.",
-            "Every listed check appears in the summary."
+            "The summary restates the Root Issue title.",
+            "The summary restates what the Root Issue body asks for.",
+            "The summary adds no claim the Root Issue does not make."
           ]
         },
         "children": []
       },
       "executionPolicies": {
         "urn:drasi:workgraph:id:v1:task-definition:sha256:be759edffb7f7b6570a341a8911397434ed2d6719aad1e90a0d10e82939ae65d": {
-          "workerId": "issue-validator",
+          "workerId": "issue-worker",
           "evaluatorId": "human-agentofreality",
           "orchestratorId": "workflow-coordinator",
           "maxReworkAttempts": 3

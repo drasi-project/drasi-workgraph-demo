@@ -4020,39 +4020,27 @@ test("a lifecycle artifact may cite the Response it was reported from", async ()
   });
 });
 
-test("a non-preferred permitted candidate is authorized for its own attempt", async () => {
-  // `review` permits [issue-validator, issue-worker]; the canonical first
-  // candidate is the policy default, but membership is what authorizes the
-  // lease, so a Dispatch held by issue-worker must be accepted.
+test("the selected Dispatch authorizes the reporting profile by set membership", async () => {
+  // Every pinned fixture names one permitted executor, so the live workflows
+  // stay performable by their default-main profiles. Membership, not equality
+  // to `policy.workerId`, is still what authorizes: candidate-set ordering,
+  // preference, membership, and separation of duties are covered against the
+  // compiler in the definition suite.
   const review = HUMAN.steps.review;
   const policy =
     review.executionPolicies[review.taskDefinition.taskDefinitionId];
   assert.deepEqual(review.taskDefinition.routing.permittedExecutors, [
-    "issue-validator",
     "issue-worker",
   ]);
-  assert.equal(policy.workerId, "issue-validator");
+  assert.equal(policy.workerId, "issue-worker");
 
-  const nonPreferred = {
-    compiled: HUMAN,
-    stepId: "review",
-    dispatchExecutorId: "issue-worker",
-  };
+  const onReview = { compiled: HUMAN, stepId: "review" };
 
-  // Evaluator snapshot: the Dispatch leases the non-preferred candidate.
-  await withFakeLifecycle(nonPreferred, async ({ data }) => {
-    const snapshot = await callTool("get_task_snapshot", data.input);
-    assert.equal(snapshot.taskId, data.task.taskId);
-    assert.equal(snapshot.sourceStepId, "review");
-    assert.equal(data.dispatch.lease.executorId, "issue-worker");
-    assert.notEqual(data.dispatch.lease.executorId, policy.workerId);
-  });
-
-  // Worker Result: the reporting profile is authorized by the selected
-  // Dispatch, not by the policy default.
+  // The permitted member that holds the Dispatch reports normally.
   await withFakeLifecycle(
-    { ...nonPreferred, role: "worker", omitResult: true },
+    { ...onReview, role: "worker", omitResult: true },
     async ({ data, writes }) => {
+      assert.equal(data.dispatch.lease.executorId, "issue-worker");
       const created = await callTool("submit_task_result", {
         taskLocator: data.input.taskLocator,
         taskId: data.input.taskId,
@@ -4066,13 +4054,14 @@ test("a non-preferred permitted candidate is authorized for its own attempt", as
     },
   );
 
-  // The policy default is not authorized when it does not hold the lease.
+  // A profile that does not hold the selected Dispatch is not authorized,
+  // even though it is a real actor elsewhere in this workflow.
   await withFakeLifecycle(
     {
-      ...nonPreferred,
+      ...onReview,
       role: "worker",
       omitResult: true,
-      executorId: "issue-validator",
+      executorId: "human-agentofreality",
     },
     async ({ data, writes }) => {
       await assert.rejects(
@@ -4090,13 +4079,9 @@ test("a non-preferred permitted candidate is authorized for its own attempt", as
     },
   );
 
-  // An executor outside the permitted set is rejected as a foreign Dispatch.
+  // A Dispatch leasing an executor outside the permitted set is foreign.
   await withFakeLifecycle(
-    {
-      compiled: HUMAN,
-      stepId: "review",
-      dispatchExecutorId: "issue-info-requester",
-    },
+    { ...onReview, dispatchExecutorId: "issue-info-requester" },
     async ({ data }) => {
       await assert.rejects(
         callTool("get_task_snapshot", data.input),
@@ -4104,6 +4089,26 @@ test("a non-preferred permitted candidate is authorized for its own attempt", as
       );
     },
   );
+
+  // The human worker step is pinned the same way: one permitted actor, which
+  // is also the policy default, and an agent evaluator that may not execute
+  // the task it grades.
+  const draft = HUMAN.steps.draft;
+  const draftPolicy =
+    draft.executionPolicies[draft.taskDefinition.taskDefinitionId];
+  assert.deepEqual(draft.taskDefinition.routing.permittedExecutors, [
+    "human-agentofreality",
+  ]);
+  assert.equal(draftPolicy.workerId, "human-agentofreality");
+  assert.equal(draftPolicy.evaluatorId, "result-evaluator");
+  for (const step of [draft, review]) {
+    const stepPolicy =
+      step.executionPolicies[step.taskDefinition.taskDefinitionId];
+    for (const executor of step.taskDefinition.routing.permittedExecutors) {
+      assert.notEqual(executor, stepPolicy.evaluatorId);
+      assert.notEqual(executor, stepPolicy.orchestratorId);
+    }
+  }
 });
 
 test("exactly one immutable Response sidecar is accepted per consumed reply", async () => {

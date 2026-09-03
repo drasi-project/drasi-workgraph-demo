@@ -2683,11 +2683,8 @@ function humanParityWorkflow(instructions) {
         },
         review: {
           type: "task",
-          operation: "inspect-issue",
-          worker: {
-            candidates: ["issue-worker", "issue-validator"],
-            selection: "first-available",
-          },
+          operation: "normalize-issue",
+          worker: "issue-worker",
           evaluator: "human-agentofreality",
           inputs: {},
           instructions: instructions.review,
@@ -2724,15 +2721,15 @@ test("human parity compiles a human worker and a human evaluator identically", a
   assert.deepEqual(draft.taskDefinition.routing.permittedExecutors, [
     "human-agentofreality",
   ]);
-  // Authored order carries no priority: the compiled set is sorted, and the
-  // canonical first candidate is the policy default.
+  // The live fixture stays on the generic agent worker so the default-main
+  // profile can perform it from the verified Root Issue alone.
   assert.deepEqual(review.taskDefinition.routing.permittedExecutors, [
-    "issue-validator",
     "issue-worker",
   ]);
+  assert.equal(review.taskDefinition.operation, "normalize-issue");
   assert.equal(
     review.executionPolicies[review.taskDefinition.taskDefinitionId].workerId,
-    "issue-validator",
+    "issue-worker",
   );
   assert.equal(
     draft.executionPolicies[draft.taskDefinition.taskDefinitionId].workerId,

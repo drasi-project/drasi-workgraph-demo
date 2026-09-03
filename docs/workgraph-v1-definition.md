@@ -141,8 +141,10 @@ permitted executor may also be the task's evaluator or orchestrator.
 `.github/workgraph/workflows/human-parity.yaml` exercises both directions in
 sequence: a human worker graded by the `result-evaluator` agent, then the
 `issue-worker` agent graded by the `human-agentofreality` evaluator, to the
-`completed` terminal. The kernel's authoring parser accepts no block scalars, so
-`details` is a single-line string.
+`completed` terminal. Each step is performable from the verified Root Issue
+alone, so neither depends on reading a predecessor's Result. The kernel's
+authoring parser accepts no block scalars, so `details` is a single-line
+string.
 
 ## Normalized inbound evidence
 

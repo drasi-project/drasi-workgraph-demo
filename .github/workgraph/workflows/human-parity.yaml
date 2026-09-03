@@ -29,20 +29,17 @@ spec:
       next: review
     review:
       type: task
-      operation: inspect-issue
-      worker:
-        candidates:
-          - issue-worker
-          - issue-validator
-        selection: first-available
+      operation: normalize-issue
+      worker: issue-worker
       evaluator: human-agentofreality
       inputs: {}
       instructions:
-        summary: Inspect the drafted proposal and report what it commits to.
-        details: Summarize the proposal faithfully and add no commitment the draft does not make, because the human evaluator grades this summary against the draft rather than against their own judgement of the Issue.
+        summary: Normalize the verified Root Issue into a structured summary.
+        details: Read the Root Issue title and body returned by the reporter and restate them as a normalized summary. Use only what the Root Issue says; do not infer, judge, or add anything it does not state.
         acceptanceCriteria:
-          - The summary reflects only what the proposal states.
-          - Every listed check appears in the summary.
+          - The summary restates the Root Issue title.
+          - The summary restates what the Root Issue body asks for.
+          - The summary adds no claim the Root Issue does not make.
       next: completed
     completed:
       type: terminal

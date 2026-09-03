@@ -8,7 +8,7 @@
     "workflowDefinitionId": "human-parity",
     "rootIssue": {
       "title": "Human parity WorkGraph proof",
-      "body": "Exercise a human worker graded by an agent evaluator, then an agent worker graded by a human evaluator.",
+      "body": "Exercise a human worker graded by an agent evaluator, then an agent worker normalizing the same Root Issue graded by a human evaluator.",
       "labels": [
         "workgraph"
       ]
@@ -29,6 +29,7 @@
         "result": {
           "outcome": "succeeded",
           "output": {
+            "summary": "The Root Issue asks for a human parity proof across both executor kinds.",
             "step": "review"
           }
         },
