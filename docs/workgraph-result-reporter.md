@@ -14,7 +14,8 @@ worker and lifecycle reporting. It exposes exactly five tools:
 The reporter is fixed to `drasi-project/drasi-workgraph-demo`. It rejects
 unknown arguments, unexpected Issue identities, foreign actors, noncanonical
 bodies, duplicate protocol comments, a missing exact `workgraph` admission label,
-closed task ancestry for new work, changed Root Issue content, stale Leases, and
+closed task ancestry for new work (excluding the intentionally closed routed
+predecessor chain), changed Root Issue content, stale Leases, and
 conflicting retries.
 
 Lifecycle tools pin the committed compiled fixtures in
@@ -111,6 +112,15 @@ A routed successor inside a scope additionally carries the existing
   member's task ID, and carries exactly one Route advancing to that member's
   step and task definition;
 - the predecessor chain reaches the entry without repeating a task.
+
+A routed predecessor is closed as soon as its canonical Advance Route is
+persisted, so a successor is normally validated against a closed chain. The
+predecessor's authority is that immutable Route plus the shared run, scope, and
+deterministic successor identity — never its Issue state — so both a transient
+open predecessor and a normal closed one are accepted, while an Issue whose
+state is not `open` or `closed` is not a trusted task at all. Openness is still
+required for the task being reported on, its owning container, and its
+recursive container chain.
 
 Scopes nest: an entry task may own its own `flowEntries`, and ancestry climbs
 one container at a time until it reaches an ordinary top-level task. A nested

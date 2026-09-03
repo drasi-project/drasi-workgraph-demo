@@ -1109,11 +1109,11 @@ async function validateFlowScopeAncestry(
         "scoped task predecessor is not a task of the same owning container",
       );
     }
-    if (requireOpen && predecessor.issue.state !== "open") {
-      throw new WorkGraphReporterError(
-        "lifecycle reporting requires an open scoped predecessor chain",
-      );
-    }
+    // A routed predecessor is intentionally closed once its canonical Advance
+    // Route is persisted, so the successor is evaluated against a historical
+    // chain. Its authority is the immutable Route, the shared run and scope,
+    // and the deterministic successor identity below, never its Issue state.
+    // The current task and the owning container are still required to be open.
     const predecessorCompiled = validateLifecycleTask(
       predecessor.task,
       "Scope predecessor",

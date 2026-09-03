@@ -2992,9 +2992,17 @@ async function withScopedFlow(options, callback) {
   let commentId = 500;
   const at = (minutes) =>
     `2026-08-29T20:${String(minutes).padStart(2, "0")}:00Z`;
+  const closed = new Set(options.closedIssues ?? []);
   for (const [stepId, issue] of Object.entries(SCOPED_ISSUES)) {
-    issues.set(issue.number, taskIssue(issue.number, issue.nodeId,
-      fixture.tasks[stepId]));
+    const taskIssueBody = taskIssue(
+      issue.number,
+      issue.nodeId,
+      fixture.tasks[stepId],
+    );
+    // A routed predecessor is closed once its Advance Route is persisted.
+    if (closed.has(stepId)) taskIssueBody.state = "closed";
+    if (options.invalidState === stepId) taskIssueBody.state = "merged";
+    issues.set(issue.number, taskIssueBody);
     const artifact = fixture.artifacts[stepId];
     const bodies = [
       ...(artifact.fork ? [[formatTaskFork(artifact.fork), ASSIGNMENT_ID]] : []),
@@ -3669,6 +3677,136 @@ test("an explicitly configured Route reporter identity must still be well formed
         }),
         /COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID must be a positive integer/,
       );
+    },
+  );
+});
+
+test("a routed scope member evaluates against its closed predecessor", async () => {
+  // `fix` closes once its canonical Advance Route to `fix-cleanup` is
+  // persisted, so the successor is always evaluated against a closed
+  // predecessor. Authority comes from that immutable Route, not Issue state.
+  await withScopedFlow(
+    { closedIssues: ["fix"] },
+    async ({ fixture, writes }) => {
+      const input = scopedTaskInput(fixture, "fix-cleanup");
+      const snapshot = await callTool("get_task_snapshot", input);
+      assert.equal(snapshot.taskId, fixture.tasks["fix-cleanup"].taskId);
+      assert.equal(snapshot.sourceStepId, "fix-cleanup");
+      assert.equal(snapshot.existingEvaluation, null);
+
+      const created = await callTool("submit_task_evaluation", {
+        taskLocator: input.taskLocator,
+        taskId: input.taskId,
+        resultId: input.resultId,
+        evaluationId: snapshot.evaluationId,
+        verdict: "accepted",
+        summary: "Accepted.",
+        feedback: "",
+      });
+      assert.equal(created.evaluationId, snapshot.evaluationId);
+      assert.equal(writes.length, 1);
+      assert.equal(
+        writes[0].number,
+        SCOPED_ISSUES["fix-cleanup"].number,
+      );
+    },
+  );
+
+  // The nested scope behaves the same: `audit` closes before `audit-verify`.
+  await withScopedFlow({ closedIssues: ["audit"] }, async ({ fixture }) => {
+    const snapshot = await callTool(
+      "get_task_snapshot",
+      scopedTaskInput(fixture, "audit-verify"),
+    );
+    assert.equal(snapshot.taskId, fixture.tasks["audit-verify"].taskId);
+  });
+
+  // A predecessor that is still transiently open is equally acceptable.
+  await withScopedFlow({}, async ({ fixture }) => {
+    const snapshot = await callTool(
+      "get_task_snapshot",
+      scopedTaskInput(fixture, "fix-cleanup"),
+    );
+    assert.equal(snapshot.taskId, fixture.tasks["fix-cleanup"].taskId);
+  });
+
+  // The worker path is unchanged by a closed predecessor.
+  await withScopedFlow(
+    { role: "worker", closedIssues: ["fix"] },
+    async ({ fixture }) => {
+      const root = await callTool("get_root_issue", {
+        taskLocator: scopedTaskInput(fixture, "fix-cleanup").taskLocator,
+        taskId: fixture.tasks["fix-cleanup"].taskId,
+      });
+      assert.equal(root.rootIssue.issueNumber, ROOT_ISSUE_NUMBER);
+    },
+  );
+});
+
+test("a closed predecessor still requires its matching canonical Route", async () => {
+  await withScopedFlow(
+    { closedIssues: ["fix"], dropPredecessorRoute: true },
+    async ({ fixture, writes }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", scopedTaskInput(fixture, "fix-cleanup")),
+        /predecessor has no single Route advancing to it/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
+
+  await withScopedFlow(
+    {
+      closedIssues: ["fix"],
+      mutate: (fixture) => {
+        fixture.routes.fix.targetStepId = "fix-complete";
+        fixture.routes.fix.targetStepKind = "terminal";
+        delete fixture.routes.fix.targetTaskDefinitionId;
+      },
+    },
+    async ({ fixture, writes }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", scopedTaskInput(fixture, "fix-cleanup")),
+        /predecessor has no single Route advancing to it/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
+
+  // A predecessor Issue with a state the contract does not define is not a
+  // trusted task at all.
+  await withScopedFlow(
+    { closedIssues: ["fix"], invalidState: "fix" },
+    async ({ fixture, writes }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", scopedTaskInput(fixture, "fix-cleanup")),
+        /predecessor is not a task of the same owning container/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
+});
+
+test("closing the current task or its owning container still fails closed", async () => {
+  await withScopedFlow(
+    { closedIssues: ["fix-cleanup"] },
+    async ({ fixture, writes }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", scopedTaskInput(fixture, "fix-cleanup")),
+        /lifecycle reporting requires an open Task/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
+
+  await withScopedFlow(
+    { closedIssues: ["run"] },
+    async ({ fixture, writes }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", scopedTaskInput(fixture, "fix-cleanup")),
+        /lifecycle reporting requires an open scope owning container/,
+      );
+      assert.equal(writes.length, 0);
     },
   );
 });
