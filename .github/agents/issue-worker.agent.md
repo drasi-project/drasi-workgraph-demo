@@ -43,3 +43,16 @@ Write one canonical `WorkGraphTaskResult/v1` on the existing task. Never create
 a nested task, change the Root Issue, choose a route, or evaluate a Result.
 The reporter emits the strict TaskResult envelope with required task context,
 causal Dispatch/Lease references, and your output under `data.output`.
+
+A task may pin actor-neutral `instructions`: a `summary`, optional `details`,
+ordered `acceptanceCriteria`, and an optional `resultSchema`. They describe what
+the task asks for in terms a human executor and an agent executor read
+identically. Satisfy every acceptance criterion and shape the output to
+`resultSchema` when one is pinned.
+
+A task's `permittedExecutors` may name more than one actor. Membership is what
+authorizes execution, so verify your own executor ID is a member rather than
+assuming it is the only one. When the work you are reporting was authored by a
+human, the runtime normalizes their reply into a canonical
+`WorkGraphTaskResponse/v1` on this task; that evidence carries no authority, and
+the Result may cite it as provenance. Never copy its raw text into `output`.

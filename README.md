@@ -67,6 +67,13 @@ Root Issue
     └── notify (flow entry)
 ```
 
+A fifth definition, `human-parity.yaml`, treats humans and agents as
+interchangeable executors: a human worker graded by an agent evaluator, then an
+agent worker graded by a human evaluator. The workflow names actor IDs
+identically in both directions; the `version: 2` actor catalog in
+`agents.yaml` is what marks `human-agentofreality` as a human and binds the
+GitHub account it speaks as.
+
 Dogfooding's Rust `workgraph-compile` turns that YAML into the canonical
 `WorkGraphWorkflowDefinition/v1` body. The committed
 [`issue-lifecycle-v1.body`](.github/workgraph/workflows/issue-lifecycle-v1.body)

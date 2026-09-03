@@ -7,12 +7,18 @@ import {
   DEFAULT_MAX_REWORK_ATTEMPTS,
   MAX_TASK_DEFINITION_CHILDREN,
   MAX_TASK_DEFINITION_DEPTH,
+  MAX_TASK_DEFINITION_EXECUTORS,
+  MAX_TASK_RESPONSE_BODY_BYTES,
   RESERVED_RUNTIME_INPUT_KEYS,
   RUNTIME_TASK_MARKER,
   TASK_ERROR_MARKER,
   TASK_FORK_MARKER,
   TASK_JOIN_MARKER,
+  decodeWorkGraphText,
   deriveWorkGraphProtocolId,
+  deriveWorkGraphResponseBodyDigest,
+  deriveWorkGraphTaskResponseId,
+  encodeWorkGraphText,
   deriveWorkGraphTaskEvaluationId,
   deriveWorkGraphTaskErrorId,
   deriveWorkGraphTaskForkId,
@@ -26,6 +32,7 @@ import {
   formatTaskFork,
   formatTaskJoin,
   formatTaskResult,
+  formatTaskResponse,
   formatTaskRoute,
   formatCompiledWorkflowDefinition,
   formatRuntimeTask,
@@ -38,6 +45,7 @@ import {
   parseTaskDispatch,
   parseTaskError,
   parseTaskFork,
+  parseTaskResponse,
   parseTaskJoin,
   parseWorkGraphTaskAction,
   parseTaskResult,
@@ -46,6 +54,10 @@ import {
   parseRuntimeTask,
   parseWorkflowDefinition,
   resolveCompiledFlowScopes,
+  startsWithWorkGraphMention,
+  taskResultDigest,
+  workerSelectorCandidates,
+  workerSelectorPreferred,
   validateRootRuntimeTask,
   validateTaskRouteAgainstDefinition,
 } from "../.github/mcp/workgraph-v1-definition.mjs";
@@ -718,7 +730,7 @@ test("linear v1 authoring and test case match the compiled sequence", async () =
   wrongWorker.steps.c.executionPolicies[cId].workerId = "other-worker";
   assert.throws(
     () => normalizeCompiledWorkflowDefinition(wrongWorker),
-    /must match the task routing executor/,
+    /workerId must be one of its permitted executors/,
   );
 });
 
@@ -2639,4 +2651,541 @@ test("authored scope fork depth bounds recursive children like the compiler", as
     },
   };
   assert.doesNotThrow(() => normalizeIssueWorkflow(atBound));
+});
+
+const HUMAN_EXPECTED_PATH =
+  ".github/workgraph/fixtures/v1/human-parity.expected.json";
+const HUMAN_DEFINITION_PATH =
+  ".github/workgraph/workflows/human-parity-v1.body";
+const HUMAN_TEST_CASE_PATH = ".github/workgraph/tests/human-parity-v1.json";
+
+function humanParityWorkflow(instructions) {
+  return {
+    apiVersion: "workgraph.drasi.io/v1",
+    kind: "IssueWorkflow",
+    metadata: { id: "human-parity" },
+    spec: {
+      trigger: "workgraph",
+      initial: "draft",
+      defaults: {
+        evaluator: "result-evaluator",
+        orchestrator: "workflow-coordinator",
+        maxReworkAttempts: 3,
+      },
+      steps: {
+        draft: {
+          type: "task",
+          operation: "draft-proposal",
+          worker: "human-agentofreality",
+          inputs: {},
+          instructions: instructions.draft,
+          next: "review",
+        },
+        review: {
+          type: "task",
+          operation: "inspect-issue",
+          worker: {
+            candidates: ["issue-worker", "issue-validator"],
+            selection: "first-available",
+          },
+          evaluator: "human-agentofreality",
+          inputs: {},
+          instructions: instructions.review,
+          next: "completed",
+        },
+        completed: { type: "terminal", outcome: "completed" },
+      },
+    },
+  };
+}
+
+test("human parity compiles a human worker and a human evaluator identically", async () => {
+  const [yaml, expected, testCase] = await Promise.all([
+    read(".github/workgraph/workflows/human-parity.yaml"),
+    read(HUMAN_EXPECTED_PATH).then(JSON.parse),
+    read(HUMAN_TEST_CASE_PATH).then(JSON.parse),
+  ]);
+  const definition = expected.workgraphDefinition;
+  assert.equal(
+    expected.canonicalDefinitionBody,
+    await read(HUMAN_DEFINITION_PATH),
+  );
+  assert.deepEqual(normalizeCompiledWorkflowDefinition(definition), definition);
+  assert.deepEqual(
+    parseCompiledWorkflowDefinition(expected.canonicalDefinitionBody),
+    definition,
+  );
+  assert.deepEqual(expected.queryBundle.queries, []);
+
+  // A workflow references an actor ID identically whoever executes it: the
+  // human worker and the agent worker are the same shape.
+  const draft = definition.steps.draft;
+  const review = definition.steps.review;
+  assert.deepEqual(draft.taskDefinition.routing.permittedExecutors, [
+    "human-agentofreality",
+  ]);
+  // Authored order carries no priority: the compiled set is sorted, and the
+  // canonical first candidate is the policy default.
+  assert.deepEqual(review.taskDefinition.routing.permittedExecutors, [
+    "issue-validator",
+    "issue-worker",
+  ]);
+  assert.equal(
+    review.executionPolicies[review.taskDefinition.taskDefinitionId].workerId,
+    "issue-validator",
+  );
+  assert.equal(
+    draft.executionPolicies[draft.taskDefinition.taskDefinitionId].workerId,
+    "human-agentofreality",
+  );
+  assert.equal(
+    draft.executionPolicies[draft.taskDefinition.taskDefinitionId].evaluatorId,
+    "result-evaluator",
+  );
+  assert.equal(
+    review.executionPolicies[review.taskDefinition.taskDefinitionId].evaluatorId,
+    "human-agentofreality",
+  );
+  assert.equal(review.transition.targetStepId, "completed");
+  assert.equal(definition.steps.completed.outcome, "completed");
+
+  // Instructions are actor-neutral content pinned at a position.
+  for (const step of [draft, review]) {
+    const { instructions } = step.taskDefinition;
+    assert.ok(instructions.summary.length > 0);
+    assert.ok(instructions.acceptanceCriteria.length >= 2);
+  }
+  assert.deepEqual(draft.taskDefinition.instructions.resultSchema, {
+    proposal: "string",
+    rationale: "string",
+  });
+  assert.equal("resultSchema" in review.taskDefinition.instructions, false);
+  assert.match(yaml, /^      worker: human-agentofreality$/m);
+  assert.match(yaml, /^        acceptanceCriteria:$/m);
+
+  assert.deepEqual(
+    normalizeIssueWorkflow(
+      humanParityWorkflow({
+        draft: expected.definition.spec.steps.draft.instructions,
+        review: expected.definition.spec.steps.review.instructions,
+      }),
+    ),
+    expected.definition,
+  );
+  assert.deepEqual(testCase.spec.expected.topLevelTaskKeys, [
+    "draft",
+    "review",
+  ]);
+  assert.deepEqual(testCase.spec.expected.taskParents, {
+    draft: null,
+    review: null,
+  });
+  assert.equal(testCase.spec.expected.terminalOutcome, "completed");
+  assert.deepEqual(Object.keys(testCase.spec.steps).sort(), [
+    "draft",
+    "review",
+  ]);
+});
+
+test("a candidate worker set canonicalizes to a sorted permitted executor set", async () => {
+  const expected = JSON.parse(await read(HUMAN_EXPECTED_PATH));
+  const instructions = {
+    draft: expected.definition.spec.steps.draft.instructions,
+    review: expected.definition.spec.steps.review.instructions,
+  };
+  const withCandidates = (candidates) => {
+    const workflow = humanParityWorkflow(instructions);
+    workflow.spec.steps.draft.worker = {
+      candidates,
+      selection: "first-available",
+    };
+    return workflow;
+  };
+
+  // Authored order carries no priority: it is preserved in the authored
+  // definition and sorted into the compiled permitted set.
+  const authored = normalizeIssueWorkflow(
+    withCandidates(["zulu-actor", "human-agentofreality"]),
+  );
+  assert.deepEqual(authored.spec.steps.draft.worker, {
+    candidates: ["zulu-actor", "human-agentofreality"],
+    selection: "first-available",
+  });
+  assert.deepEqual(
+    workerSelectorCandidates(authored.spec.steps.draft.worker),
+    ["human-agentofreality", "zulu-actor"],
+  );
+  assert.equal(
+    workerSelectorPreferred(authored.spec.steps.draft.worker),
+    "human-agentofreality",
+  );
+  // A single-candidate set is the scalar form.
+  assert.deepEqual(workerSelectorCandidates("solo-actor"), ["solo-actor"]);
+  assert.equal(workerSelectorPreferred("solo-actor"), "solo-actor");
+  assert.deepEqual(
+    workerSelectorCandidates(
+      normalizeIssueWorkflow(withCandidates(["human-agentofreality"])).spec
+        .steps.draft.worker,
+    ),
+    ["human-agentofreality"],
+  );
+
+  assert.throws(
+    () => normalizeIssueWorkflow(withCandidates([])),
+    new RegExp(
+      `candidates must contain 1-${MAX_TASK_DEFINITION_EXECUTORS} entries`,
+    ),
+  );
+  assert.throws(
+    () => normalizeIssueWorkflow(withCandidates(["a-actor", "a-actor"])),
+    /repeats candidate 'a-actor'/,
+  );
+  assert.throws(
+    () => normalizeIssueWorkflow(withCandidates(["Actor"])),
+    /must be 1-64 lowercase letters/,
+  );
+  assert.throws(() => {
+    const workflow = withCandidates(["a-actor"]);
+    workflow.spec.steps.draft.worker.selection = "round-robin";
+    return normalizeIssueWorkflow(workflow);
+  }, /selection must be first-available/);
+  assert.throws(() => {
+    const workflow = humanParityWorkflow(instructions);
+    workflow.spec.steps.draft.worker = { candidates: ["a-actor"] };
+    return normalizeIssueWorkflow(workflow);
+  }, /properties must be exactly/);
+
+  // Separation of duties holds for the whole permitted set.
+  const compiled = clone(expected.workgraphDefinition);
+  const draft = compiled.steps.draft;
+  const draftId = draft.taskDefinition.taskDefinitionId;
+  draft.taskDefinition.routing.permittedExecutors = [
+    "human-agentofreality",
+    "result-evaluator",
+  ];
+  compiled.root = draft.taskDefinition;
+  assert.throws(
+    () => normalizeCompiledWorkflowDefinition(compiled),
+    /must not permit its evaluator 'result-evaluator' to execute the task/,
+  );
+  draft.taskDefinition.routing.permittedExecutors = [
+    "human-agentofreality",
+    "workflow-coordinator",
+  ];
+  assert.throws(
+    () => normalizeCompiledWorkflowDefinition(compiled),
+    /must not permit its orchestrator 'workflow-coordinator' to execute the task/,
+  );
+  // Membership authorizes execution; the policy default must be a member.
+  draft.taskDefinition.routing.permittedExecutors = ["some-other-actor"];
+  assert.throws(
+    () => normalizeCompiledWorkflowDefinition(compiled),
+    /workerId must be one of its permitted executors/,
+  );
+  draft.taskDefinition.routing.permittedExecutors = [
+    "human-agentofreality",
+    "some-other-actor",
+  ];
+  assert.doesNotThrow(() => normalizeCompiledWorkflowDefinition(compiled));
+  assert.equal(
+    draft.executionPolicies[draftId].workerId,
+    "human-agentofreality",
+  );
+});
+
+const RESPONSE_TASK_ID = protocolId("task", "response-task");
+const RESPONSE_RUN_ID = protocolId("workflow-run", "response-run");
+const RESPONSE_DEFINITION_ID = protocolId("task-definition", "response-def");
+const RESPONSE_DISPATCH_ID = protocolId("dispatch", "response-dispatch");
+const RESPONSE_LEASE_ID = protocolId("lease", "response-lease");
+const RESPONSE_RESULT_ID = protocolId("result", "response-result");
+const RESPONSE_COMMENT_NODE_ID = "IC_kwDOAbcdef4AbCdE";
+const RESPONSE_AUTHOR_NODE_ID = "MDQ6VXNlcjQwMjEyNDM=";
+
+function responseTaskIdentity() {
+  return {
+    taskId: RESPONSE_TASK_ID,
+    workflowRunId: RESPONSE_RUN_ID,
+    workflowDefinitionId: "human-parity",
+    workflowDefinitionVersion: "v1",
+    workflowDefinitionDigest: `sha256:${"a".repeat(64)}`,
+    taskDefinitionId: RESPONSE_DEFINITION_ID,
+    taskKey: "draft",
+    operation: "draft-proposal",
+  };
+}
+
+function workerResponse(body = "@workgraph here is the proposal.") {
+  const subject = {
+    role: "worker",
+    dispatchId: RESPONSE_DISPATCH_ID,
+    leaseId: RESPONSE_LEASE_ID,
+  };
+  return {
+    responseId: deriveWorkGraphTaskResponseId(
+      RESPONSE_TASK_ID,
+      subject,
+      RESPONSE_COMMENT_NODE_ID,
+      RESPONSE_AUTHOR_NODE_ID,
+    ),
+    rootIssueId: "I_human_root",
+    workflowRunId: RESPONSE_RUN_ID,
+    taskId: RESPONSE_TASK_ID,
+    task: responseTaskIdentity(),
+    actorId: "human-agentofreality",
+    role: "worker",
+    dispatchId: RESPONSE_DISPATCH_ID,
+    leaseId: RESPONSE_LEASE_ID,
+    commentNodeId: RESPONSE_COMMENT_NODE_ID,
+    authorDatabaseId: 4021243,
+    authorNodeId: RESPONSE_AUTHOR_NODE_ID,
+    authorLogin: "agentofreality",
+    bodyDigest: deriveWorkGraphResponseBodyDigest(body),
+    createdRevision: 1,
+    updatedRevision: 1,
+    body,
+  };
+}
+
+test("TaskResponse evidence is role and subject bound and carries raw text verbatim", () => {
+  const payload = workerResponse();
+  const body = formatTaskResponse(payload);
+  assert.match(body, /^WorkGraphTaskResponse\/v1\n\n```json\n/);
+  assert.deepEqual(parseTaskResponse(body), payload);
+
+  // Real replies contain CRLF and fenced code blocks; hex transport keeps the
+  // envelope canonical while leaving the authored text untouched.
+  const raw = "@WorkGraph done.\r\n\r\n```json\n{\"ok\": true}\n```\r\n";
+  const encoded = workerResponse(raw);
+  const parsed = parseTaskResponse(formatTaskResponse(encoded));
+  assert.equal(parsed.body, raw);
+  assert.deepEqual(decodeWorkGraphText(encodeWorkGraphText(raw), "body"), raw);
+  assert.equal(encodeWorkGraphText("").data, "");
+  assert.throws(
+    () => decodeWorkGraphText({ encoding: "utf-8-hex", data: "abc" }, "body"),
+    /even number of hex digits/,
+  );
+  assert.throws(
+    () => decodeWorkGraphText({ encoding: "utf-8-hex", data: "AB" }, "body"),
+    /lowercase hex digits/,
+  );
+  assert.throws(
+    () => decodeWorkGraphText({ encoding: "base64", data: "" }, "body"),
+    /encoding must be 'utf-8-hex'/,
+  );
+  assert.throws(
+    () => decodeWorkGraphText({ encoding: "utf-8-hex", data: "ff" }, "body"),
+    /must decode to UTF-8/,
+  );
+
+  // The mention is an exact, case-insensitive login boundary.
+  for (const opening of ["@workgraph x", "@WorkGraph x", "@WORKGRAPH", "  \n@Workgraph:"]) {
+    assert.equal(startsWithWorkGraphMention(opening), true, opening);
+  }
+  for (const opening of ["@workgraphs x", "@workgraph-bot x", "hello @workgraph", ""]) {
+    assert.equal(startsWithWorkGraphMention(opening), false, opening);
+  }
+  assert.throws(
+    () => formatTaskResponse(workerResponse("no mention here")),
+    /must open with '@workgraph'/,
+  );
+
+  // Evidence names exactly the subject its role answers.
+  const evaluatorSubject = { role: "evaluator", resultId: RESPONSE_RESULT_ID };
+  const evaluator = {
+    ...workerResponse("@workgraph looks right."),
+    role: "evaluator",
+    dispatchId: undefined,
+    leaseId: undefined,
+    resultId: RESPONSE_RESULT_ID,
+  };
+  delete evaluator.dispatchId;
+  delete evaluator.leaseId;
+  evaluator.responseId = deriveWorkGraphTaskResponseId(
+    RESPONSE_TASK_ID,
+    evaluatorSubject,
+    RESPONSE_COMMENT_NODE_ID,
+    RESPONSE_AUTHOR_NODE_ID,
+  );
+  assert.deepEqual(
+    parseTaskResponse(formatTaskResponse(evaluator)),
+    evaluator,
+  );
+  // The same comment yields a different identity per role and per subject.
+  assert.notEqual(evaluator.responseId, workerResponse().responseId);
+  assert.notEqual(
+    deriveWorkGraphTaskResponseId(
+      RESPONSE_TASK_ID,
+      { role: "worker", dispatchId: RESPONSE_DISPATCH_ID, leaseId: protocolId("lease", "other") },
+      RESPONSE_COMMENT_NODE_ID,
+      RESPONSE_AUTHOR_NODE_ID,
+    ),
+    workerResponse().responseId,
+  );
+
+  assert.throws(
+    () => formatTaskResponse({ ...workerResponse(), leaseId: undefined }),
+    /worker evidence must reference its lease/,
+  );
+  assert.throws(
+    () => formatTaskResponse({ ...workerResponse(), resultId: RESPONSE_RESULT_ID }),
+    /worker evidence must not reference a result/,
+  );
+  assert.throws(
+    () => formatTaskResponse({ ...evaluator, dispatchId: RESPONSE_DISPATCH_ID }),
+    /evaluator evidence must not reference a dispatch or lease/,
+  );
+  assert.throws(
+    () => formatTaskResponse({ ...workerResponse(), bodyDigest: `sha256:${"0".repeat(64)}` }),
+    /bodyDigest does not match its body/,
+  );
+  assert.throws(
+    () => formatTaskResponse({ ...workerResponse(), responseId: protocolId("response", "forged") }),
+    /responseId is not canonical/,
+  );
+  assert.throws(
+    () => formatTaskResponse({ ...workerResponse(), authorLogin: "-bad" }),
+    /authorLogin must be 1-39/,
+  );
+  assert.throws(
+    () => formatTaskResponse({ ...workerResponse(), authorDatabaseId: 0 }),
+    /authorDatabaseId must be a positive safe integer/,
+  );
+  assert.throws(
+    () => formatTaskResponse({ ...workerResponse(), createdRevision: 2, updatedRevision: 1 }),
+    /updatedRevision must not precede createdRevision/,
+  );
+  const oversized = `@workgraph ${"x".repeat(MAX_TASK_RESPONSE_BODY_BYTES)}`;
+  assert.throws(
+    () => formatTaskResponse(workerResponse(oversized)),
+    new RegExp(`body must be 1-${MAX_TASK_RESPONSE_BODY_BYTES} bytes`),
+  );
+});
+
+test("Result and Evaluation carry optional Response provenance without changing legacy bytes", async () => {
+  const response = workerResponse();
+  const reference = { kind: "TaskResponse", id: response.responseId };
+  const result = {
+    resultId: deriveWorkGraphTaskResultId(
+      RESPONSE_TASK_ID,
+      RESPONSE_DISPATCH_ID,
+      RESPONSE_LEASE_ID,
+    ),
+    rootIssueId: "I_human_root",
+    workflowRunId: RESPONSE_RUN_ID,
+    taskId: RESPONSE_TASK_ID,
+    task: responseTaskIdentity(),
+    dispatchId: RESPONSE_DISPATCH_ID,
+    leaseId: RESPONSE_LEASE_ID,
+    attempt: 1,
+    outcome: "succeeded",
+    output: { proposal: "done" },
+  };
+  const plain = formatTaskResult(result);
+  assert.equal(plain.includes("response"), false);
+  assert.deepEqual(parseTaskResult(plain), result);
+
+  const attributed = { ...result, response: reference };
+  const attributedBody = formatTaskResult(attributed);
+  assert.match(attributedBody, /"response": \{/);
+  assert.deepEqual(parseTaskResult(attributedBody), attributed);
+  // Provenance never participates in identity.
+  assert.equal(attributed.resultId, result.resultId);
+  assert.equal(taskResultDigest(attributed) === taskResultDigest(result), false);
+  assert.throws(
+    () => formatTaskResult({ ...result, response: { kind: "TaskResult", id: reference.id } }),
+    /response reference kind must be TaskResponse/,
+  );
+
+  const resultDigest = taskResultDigest(result);
+  const evaluation = {
+    evaluationId: deriveWorkGraphTaskEvaluationId(
+      RESPONSE_TASK_ID,
+      result.resultId,
+      resultDigest,
+    ),
+    rootIssueId: "I_human_root",
+    workflowRunId: RESPONSE_RUN_ID,
+    taskId: RESPONSE_TASK_ID,
+    task: responseTaskIdentity(),
+    resultId: result.resultId,
+    resultDigest,
+    evaluatorId: "human-agentofreality",
+    attempt: 1,
+    verdict: "accepted",
+    summary: "Accepted.",
+    feedback: "",
+  };
+  const plainEvaluation = formatTaskEvaluation(evaluation);
+  assert.equal(plainEvaluation.includes("response"), false);
+  assert.deepEqual(parseTaskEvaluation(plainEvaluation), evaluation);
+  const attributedEvaluation = { ...evaluation, response: reference };
+  assert.deepEqual(
+    parseTaskEvaluation(formatTaskEvaluation(attributedEvaluation)),
+    attributedEvaluation,
+  );
+  assert.equal(attributedEvaluation.evaluationId, evaluation.evaluationId);
+
+  // Every committed body predates Response and instructions and is unchanged.
+  for (const name of [
+    "issue-lifecycle",
+    "fork-join-lifecycle",
+    "mixed-control-flow",
+    "scoped-control-flow",
+  ]) {
+    const body = await read(`.github/workgraph/workflows/${name}-v1.body`);
+    assert.equal(body.includes("instructions"), false);
+    assert.equal(body.includes("TaskResponse"), false);
+    assert.equal(
+      formatCompiledWorkflowDefinition(parseCompiledWorkflowDefinition(body)),
+      body,
+    );
+    const expected = JSON.parse(
+      await read(`.github/workgraph/fixtures/v1/${name}.expected.json`),
+    );
+    assert.equal(expected.canonicalDefinitionBody, body);
+    assert.equal(expected.definitionDigest, expected.workgraphDefinition.digest);
+  }
+  assert.equal(COMPILED_OUTPUT.definitionDigest, COMPILED_FIXTURE.digest);
+});
+
+test("hex transport is byte-faithful for a BOM and every digest survives it", () => {
+  // A leading U+FEFF is content, not framing. A decoder that consumes it would
+  // return different text than was encoded and break the body digest binding.
+  const bom = "\uFEFF";
+  for (const raw of [
+    `${bom}@workgraph done.`,
+    `@workgraph ${bom} mid-body BOM`,
+    `@workgraph trailing${bom}`,
+    `${bom}${bom}@workgraph doubled`,
+  ]) {
+    const encoded = encodeWorkGraphText(raw);
+    assert.equal(
+      encoded.data,
+      Buffer.from(raw, "utf8").toString("hex"),
+      "hex is the exact UTF-8 bytes",
+    );
+    const decoded = decodeWorkGraphText(encoded, "task Response body");
+    assert.equal(decoded, raw);
+    assert.equal(decoded.length, raw.length);
+    assert.equal(
+      deriveWorkGraphResponseBodyDigest(decoded),
+      deriveWorkGraphResponseBodyDigest(raw),
+    );
+  }
+  assert.equal(encodeWorkGraphText(bom).data, "efbbbf");
+  assert.equal(decodeWorkGraphText({ encoding: "utf-8-hex", data: "efbbbf" }, "b"), bom);
+
+  // The mention scan uses Unicode White_Space, which excludes U+FEFF, so a
+  // BOM-prefixed body does not address the protocol.
+  assert.equal(startsWithWorkGraphMention(`${bom}@workgraph done.`), false);
+  assert.equal(startsWithWorkGraphMention("\u00a0@workgraph done."), true);
+  assert.equal(startsWithWorkGraphMention("\r\n  @workgraph done."), true);
+
+  // A full envelope round-trip preserves a mid-body BOM byte for byte.
+  const raw = `@workgraph review${bom} complete.\r\n`;
+  const payload = { ...workerResponse(raw) };
+  const parsed = parseTaskResponse(formatTaskResponse(payload));
+  assert.equal(parsed.body, raw);
+  assert.equal(parsed.bodyDigest, deriveWorkGraphResponseBodyDigest(raw));
 });

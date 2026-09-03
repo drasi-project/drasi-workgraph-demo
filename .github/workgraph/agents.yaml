@@ -1,26 +1,42 @@
-version: 1
-agents:
-  - agentId: issue-validator
+version: 2
+actors:
+  - actorId: issue-validator
+    kind: agent
     slots: 1
     leaseDuration: PT30M
-  - agentId: issue-coordinator
+  - actorId: issue-coordinator
+    kind: agent
     slots: 1
     leaseDuration: PT15M
-  - agentId: issue-worker
+  - actorId: issue-worker
+    kind: agent
     slots: 2
     leaseDuration: PT30M
-  - agentId: result-evaluator
+  - actorId: result-evaluator
+    kind: agent
     slots: 1
     leaseDuration: PT15M
-  - agentId: issue-validation-evaluator
+  - actorId: issue-validation-evaluator
+    kind: agent
     slots: 1
     leaseDuration: PT15M
-  - agentId: workflow-coordinator
+  - actorId: workflow-coordinator
+    kind: agent
     slots: 1
     leaseDuration: PT15M
-  - agentId: validation-stage-coordinator
+  - actorId: validation-stage-coordinator
+    kind: agent
     slots: 1
     leaseDuration: PT15M
-  - agentId: issue-info-requester
+  - actorId: issue-info-requester
+    kind: agent
     slots: 1
     leaseDuration: PT30M
+  - actorId: human-agentofreality
+    kind: human
+    slots: 1
+    leaseDuration: PT8H
+    github:
+      databaseId: 4021243
+      nodeId: "MDQ6VXNlcjQwMjEyNDM="
+      login: agentofreality

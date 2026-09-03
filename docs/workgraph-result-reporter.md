@@ -18,9 +18,15 @@ closed task ancestry for new work (excluding the intentionally closed routed
 predecessor chain), changed Root Issue content, stale Leases, and
 conflicting retries.
 
+A task definition may permit more than one executor. Membership in
+`routing.permittedExecutors` is what authorizes a lease, so `policy.workerId` is
+only the canonical default: every Dispatch must lease a permitted member, and
+the currently selected Dispatch is what authorizes the reporting profile.
+
 Lifecycle tools pin the committed compiled fixtures in
 `.github/workgraph/fixtures/v1/` (`issue-lifecycle`, `fork-join-lifecycle`,
-`mixed-control-flow`, and `scoped-control-flow`). They resolve the
+`mixed-control-flow`, `scoped-control-flow`, and `human-parity`). They resolve
+the
 task's source step and effective evaluator, orchestrator, and rework maximum
 from that compiled definition. They require the latest immutable Dispatch and
 its exact canonical Result, derive the canonical TaskResult envelope digest,
@@ -131,6 +137,33 @@ the scoped step root it climbs to. The initial run task stays the unique initial
 task directly under the ordinary Root Issue.
 Legacy trunk and fixed-child ancestry is unchanged, and Result, Evaluation, and
 Route submission are unchanged; only context validation is scope-aware.
+
+## Normalized inbound evidence
+
+A `WorkGraphTaskResponse/v1` comment records that a specific GitHub account
+replied on a task. The reporter treats it as evidence, never authority: it
+verifies the comment is written by the trusted runtime actor and identifies this
+exact task, and otherwise leaves it alone.
+
+Evidence is broker-authored. The runtime writes the sidecar as the **Result
+reporter** identity, the same actor that writes a Result, because evidence is
+reported rather than assigned. A sidecar authored by the assignment reporter —
+the actor that writes Fork, Join, Assignment, and Dispatch — or by any other
+lifecycle identity is rejected as foreign.
+
+Exactly one immutable sidecar exists per consumed raw reply. A raw reply edited
+before it was consumed leaves one sidecar whose `updatedRevision` exceeds its
+`createdRevision`; the reporter accepts that. The sidecar comment itself is
+immutable like every other protocol comment, and a repeated `responseId` on one
+task is rejected whether or not any artifact cites it.
+
+A Result or Evaluation may cite the Response it was reported from through
+`references.response`. When it does, the reporter requires that evidence to
+exist exactly once on the same task, to carry the matching role (`worker` for a
+Result, `evaluator` for an Evaluation), and to answer the same subject: the
+Result's Dispatch and Lease, or the Evaluation's Result. Provenance cannot be
+borrowed from another attempt or another role. An artifact without a `response`
+reference is validated exactly as before.
 
 ## Root Issue reader
 

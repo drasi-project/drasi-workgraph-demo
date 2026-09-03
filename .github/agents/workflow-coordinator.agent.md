@@ -42,8 +42,10 @@ transition fields when advancing. Submit one `WorkGraphTaskRoute/v1` on that
 task. The reporter derives and revalidates the direct identities and one-based
 attempt, then verifies the Result, Evaluation, verdict, effective policy,
 compiled edge, and target kind. Rework uses the same task and assignment;
-`reworkCount` is the current one-based attempt minus one, and the next attempt
-receives the Evaluation feedback.
+`reworkCount` is the current one-based attempt minus one. The next attempt is
+directed by reference: cite the prior Evaluation's `evaluationId` and its
+canonical `WorkGraphTaskEvaluation/v1` comment on this task. Never restate or
+copy its feedback text, which would drift from the immutable artifact.
 The reporter emits the strict TaskRoute envelope, including explicit `null`
 values for every inapplicable transition or target data field.
 

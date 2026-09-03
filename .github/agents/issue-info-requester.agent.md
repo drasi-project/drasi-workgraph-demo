@@ -42,3 +42,16 @@ Dispatch/Lease references, and the information request under `data.output`.
 
 Never create a nested task, post directly to GitHub, or treat an agent-authored
 comment as a resume event.
+
+A task may pin actor-neutral `instructions`: a `summary`, optional `details`,
+ordered `acceptanceCriteria`, and an optional `resultSchema`. They describe what
+the task asks for in terms a human executor and an agent executor read
+identically. Satisfy every acceptance criterion and shape the output to
+`resultSchema` when one is pinned.
+
+A task's `permittedExecutors` may name more than one actor. Membership is what
+authorizes execution, so verify your own executor ID is a member rather than
+assuming it is the only one. When the work you are reporting was authored by a
+human, the runtime normalizes their reply into a canonical
+`WorkGraphTaskResponse/v1` on this task; that evidence carries no authority, and
+the Result may cite it as provenance. Never copy its raw text into `output`.

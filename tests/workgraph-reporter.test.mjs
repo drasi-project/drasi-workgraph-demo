@@ -25,6 +25,9 @@ import {
   deriveWorkGraphProtocolId,
   deriveWorkGraphTaskForkId,
   deriveWorkGraphTaskJoinId,
+  deriveWorkGraphTaskResponseId,
+  deriveWorkGraphResponseBodyDigest,
+  formatTaskResponse,
 } from "../.github/mcp/workgraph-v1-definition.mjs";
 import {
   canonicalTaskResultEnvelopeJson,
@@ -102,6 +105,7 @@ const COMPILED = JSON.parse(
     "utf8",
   ),
 ).workgraphDefinition;
+const DEFAULT_COMPILED = COMPILED;
 
 function fixture() {
   const contentDigest = deriveWorkGraphRootIssueContentDigest(
@@ -604,6 +608,8 @@ function formatWithClaimedEnvelopeId(format, payload, idKey, canonicalId) {
 }
 
 function lifecycleFixture({
+  compiled: COMPILED = DEFAULT_COMPILED,
+  dispatchExecutorId = null,
   stepId = "c",
   childKey = null,
   attempt = 1,
@@ -702,7 +708,7 @@ function lifecycleFixture({
     lease: {
       leaseId: protocolId("lease", `${stepId}-${index}`),
       assignmentId: protocolId("assignment", stepId),
-      executorId: policy.workerId,
+      executorId: dispatchExecutorId ?? policy.workerId,
       slotId: `${policy.workerId}-slot-1`,
     },
   }));
@@ -1090,7 +1096,10 @@ async function withFakeLifecycle(options, callback) {
     COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN: "lease-token",
   });
   if (role === "worker") {
-    process.env.COPILOT_MCP_WORKGRAPH_EXECUTOR_ID = data.policy.workerId;
+    // The actor that actually holds the selected Dispatch, which may be a
+    // non-preferred member of the permitted set.
+    process.env.COPILOT_MCP_WORKGRAPH_EXECUTOR_ID =
+      options.executorId ?? data.dispatch.lease.executorId;
     delete process.env.COPILOT_MCP_WORKGRAPH_EVALUATOR_ID;
     delete process.env.COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_ID;
   } else if (role === "evaluator") {
@@ -3862,4 +3871,458 @@ test("the scoped Run container reports through the generic worker executor", asy
       assert.equal(writes.length, 0);
     },
   );
+});
+
+const HUMAN = JSON.parse(
+  readFileSync(
+    new URL(
+      "../.github/workgraph/fixtures/v1/human-parity.expected.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+).workgraphDefinition;
+
+test("the reporter pins the human parity workflow and its actor-neutral instructions", () => {
+  // A workflow references an actor ID identically; only the actor catalog
+  // decides whether that actor is an agent or a human.
+  const draft = HUMAN.steps.draft;
+  const review = HUMAN.steps.review;
+  assert.deepEqual(draft.taskDefinition.routing.permittedExecutors, [
+    "human-agentofreality",
+  ]);
+  assert.equal(
+    draft.executionPolicies[draft.taskDefinition.taskDefinitionId].workerId,
+    "human-agentofreality",
+  );
+  assert.equal(
+    review.executionPolicies[review.taskDefinition.taskDefinitionId]
+      .evaluatorId,
+    "human-agentofreality",
+  );
+  assert.ok(draft.taskDefinition.instructions.acceptanceCriteria.length >= 2);
+});
+
+test("a lifecycle artifact may cite the Response it was reported from", async () => {
+  await withFakeLifecycle({ verdict: null }, async ({ data, comments }) => {
+    const taskComments = comments.get(CHILD_TASK_NUMBER);
+    const subject = {
+      role: "worker",
+      dispatchId: data.dispatch.dispatchId,
+      leaseId: data.dispatch.lease.leaseId,
+    };
+    const body = "@workgraph I finished the draft.";
+    const response = {
+      responseId: deriveWorkGraphTaskResponseId(
+        data.task.taskId,
+        subject,
+        "IC_human_reply",
+        "MDQ6VXNlcjQwMjEyNDM=",
+      ),
+      rootIssueId: data.task.rootIssueId,
+      workflowRunId: data.task.workflowRunId,
+      taskId: data.task.taskId,
+      task: {
+        taskId: data.task.taskId,
+        workflowRunId: data.task.workflowRunId,
+        workflowDefinitionId: data.task.workflowDefinitionId,
+        workflowDefinitionVersion: data.task.workflowDefinitionVersion,
+        workflowDefinitionDigest: data.task.workflowDefinitionDigest,
+        taskDefinitionId: data.task.taskDefinitionId,
+        taskKey: data.task.taskKey,
+        operation: data.task.operation,
+      },
+      actorId: "human-agentofreality",
+      role: "worker",
+      dispatchId: subject.dispatchId,
+      leaseId: subject.leaseId,
+      commentNodeId: "IC_human_reply",
+      authorDatabaseId: 4021243,
+      authorNodeId: "MDQ6VXNlcjQwMjEyNDM=",
+      authorLogin: "agentofreality",
+      bodyDigest: deriveWorkGraphResponseBodyDigest(body),
+      createdRevision: 1,
+      updatedRevision: 1,
+      body,
+    };
+    taskComments.push({
+      id: 260,
+      node_id: "IC_response",
+      body: formatTaskResponse(response),
+      user: { id: RESULT_ID, login: "result-reporter" },
+      created_at: "2026-08-29T20:20:00Z",
+      updated_at: "2026-08-29T20:20:00Z",
+    });
+
+    // Evidence alone changes nothing: the snapshot still reads normally.
+    const before = await callTool("get_task_snapshot", data.input);
+    assert.equal(before.taskId, data.task.taskId);
+
+    // A Result that cites it must match its role and its exact subject.
+    const resultEntry = taskComments.find(({ body: text }) =>
+      text.startsWith("WorkGraphTaskResult/v1\n"),
+    );
+    const parsed = parseTaskResult(resultEntry.body);
+    resultEntry.body = formatTaskResult({
+      ...parsed,
+      response: { kind: "TaskResponse", id: response.responseId },
+    });
+    const cited = await callTool("get_task_snapshot", data.input);
+    assert.equal(cited.result.resultId, parsed.resultId);
+
+    // Foreign provenance fails closed.
+    resultEntry.body = formatTaskResult({
+      ...parsed,
+      response: {
+        kind: "TaskResponse",
+        id: deriveWorkGraphProtocolId("response", ["absent"]),
+      },
+    });
+    await assert.rejects(
+      callTool("get_task_snapshot", data.input),
+      /missing or duplicate WorkGraphTaskResponse\/v1/,
+    );
+
+    // Evaluator evidence cannot back a worker artifact.
+    const evaluatorSubject = { role: "evaluator", resultId: parsed.resultId };
+    const evaluatorBody = "@workgraph looks right to me.";
+    const evaluatorResponse = {
+      ...response,
+      role: "evaluator",
+      resultId: parsed.resultId,
+      body: evaluatorBody,
+      bodyDigest: deriveWorkGraphResponseBodyDigest(evaluatorBody),
+      responseId: deriveWorkGraphTaskResponseId(
+        data.task.taskId,
+        evaluatorSubject,
+        "IC_human_reply",
+        "MDQ6VXNlcjQwMjEyNDM=",
+      ),
+    };
+    delete evaluatorResponse.dispatchId;
+    delete evaluatorResponse.leaseId;
+    taskComments.push({
+      id: 261,
+      node_id: "IC_response_evaluator",
+      body: formatTaskResponse(evaluatorResponse),
+      user: { id: RESULT_ID, login: "result-reporter" },
+      created_at: "2026-08-29T20:21:00Z",
+      updated_at: "2026-08-29T20:21:00Z",
+    });
+    resultEntry.body = formatTaskResult({
+      ...parsed,
+      response: { kind: "TaskResponse", id: evaluatorResponse.responseId },
+    });
+    await assert.rejects(
+      callTool("get_task_snapshot", data.input),
+      /references evaluator evidence for a worker artifact/,
+    );
+  });
+});
+
+test("a non-preferred permitted candidate is authorized for its own attempt", async () => {
+  // `review` permits [issue-validator, issue-worker]; the canonical first
+  // candidate is the policy default, but membership is what authorizes the
+  // lease, so a Dispatch held by issue-worker must be accepted.
+  const review = HUMAN.steps.review;
+  const policy =
+    review.executionPolicies[review.taskDefinition.taskDefinitionId];
+  assert.deepEqual(review.taskDefinition.routing.permittedExecutors, [
+    "issue-validator",
+    "issue-worker",
+  ]);
+  assert.equal(policy.workerId, "issue-validator");
+
+  const nonPreferred = {
+    compiled: HUMAN,
+    stepId: "review",
+    dispatchExecutorId: "issue-worker",
+  };
+
+  // Evaluator snapshot: the Dispatch leases the non-preferred candidate.
+  await withFakeLifecycle(nonPreferred, async ({ data }) => {
+    const snapshot = await callTool("get_task_snapshot", data.input);
+    assert.equal(snapshot.taskId, data.task.taskId);
+    assert.equal(snapshot.sourceStepId, "review");
+    assert.equal(data.dispatch.lease.executorId, "issue-worker");
+    assert.notEqual(data.dispatch.lease.executorId, policy.workerId);
+  });
+
+  // Worker Result: the reporting profile is authorized by the selected
+  // Dispatch, not by the policy default.
+  await withFakeLifecycle(
+    { ...nonPreferred, role: "worker", omitResult: true },
+    async ({ data, writes }) => {
+      const created = await callTool("submit_task_result", {
+        taskLocator: data.input.taskLocator,
+        taskId: data.input.taskId,
+        dispatchId: data.input.dispatchId,
+        leaseId: data.input.leaseId,
+        outcome: "succeeded",
+        output: { step: "review" },
+      });
+      assert.equal(created.resultId, data.result.resultId);
+      assert.equal(writes.length, 1);
+    },
+  );
+
+  // The policy default is not authorized when it does not hold the lease.
+  await withFakeLifecycle(
+    {
+      ...nonPreferred,
+      role: "worker",
+      omitResult: true,
+      executorId: "issue-validator",
+    },
+    async ({ data, writes }) => {
+      await assert.rejects(
+        callTool("submit_task_result", {
+          taskLocator: data.input.taskLocator,
+          taskId: data.input.taskId,
+          dispatchId: data.input.dispatchId,
+          leaseId: data.input.leaseId,
+          outcome: "succeeded",
+          output: { step: "review" },
+        }),
+        /reporter executor profile is not authorized for this task/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
+
+  // An executor outside the permitted set is rejected as a foreign Dispatch.
+  await withFakeLifecycle(
+    {
+      compiled: HUMAN,
+      stepId: "review",
+      dispatchExecutorId: "issue-info-requester",
+    },
+    async ({ data }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", data.input),
+        /malformed, foreign, or duplicate Dispatch/,
+      );
+    },
+  );
+});
+
+test("exactly one immutable Response sidecar is accepted per consumed reply", async () => {
+  const sidecar = (data, { updatedRevision = 1, commentNodeId = "IC_human_reply" } = {}) => {
+    const subject = {
+      role: "worker",
+      dispatchId: data.dispatch.dispatchId,
+      leaseId: data.dispatch.lease.leaseId,
+    };
+    const body = "@workgraph the edited draft is final.";
+    return {
+      responseId: deriveWorkGraphTaskResponseId(
+        data.task.taskId,
+        subject,
+        commentNodeId,
+        "MDQ6VXNlcjQwMjEyNDM=",
+      ),
+      rootIssueId: data.task.rootIssueId,
+      workflowRunId: data.task.workflowRunId,
+      taskId: data.task.taskId,
+      task: {
+        taskId: data.task.taskId,
+        workflowRunId: data.task.workflowRunId,
+        workflowDefinitionId: data.task.workflowDefinitionId,
+        workflowDefinitionVersion: data.task.workflowDefinitionVersion,
+        workflowDefinitionDigest: data.task.workflowDefinitionDigest,
+        taskDefinitionId: data.task.taskDefinitionId,
+        taskKey: data.task.taskKey,
+        operation: data.task.operation,
+      },
+      actorId: "human-agentofreality",
+      role: "worker",
+      dispatchId: subject.dispatchId,
+      leaseId: subject.leaseId,
+      commentNodeId,
+      authorDatabaseId: 4021243,
+      authorNodeId: "MDQ6VXNlcjQwMjEyNDM=",
+      authorLogin: "agentofreality",
+      bodyDigest: deriveWorkGraphResponseBodyDigest(body),
+      createdRevision: 1,
+      updatedRevision,
+      body,
+    };
+  };
+
+  // The raw reply was edited before it was consumed, so the one sidecar
+  // records a later revision than the one the comment was created at. The
+  // sidecar itself is written once and never rewritten.
+  await withFakeLifecycle({ verdict: null }, async ({ data, comments }) => {
+    const taskComments = comments.get(CHILD_TASK_NUMBER);
+    const payload = sidecar(data, { updatedRevision: 4 });
+    assert.ok(payload.updatedRevision > payload.createdRevision);
+    taskComments.push({
+      id: 270,
+      node_id: "IC_sidecar",
+      body: formatTaskResponse(payload),
+      user: { id: RESULT_ID, login: "result-reporter" },
+      created_at: "2026-08-29T20:20:00Z",
+      updated_at: "2026-08-29T20:20:00Z",
+    });
+    const snapshot = await callTool("get_task_snapshot", data.input);
+    assert.equal(snapshot.taskId, data.task.taskId);
+    // A later raw revision does not change the evidence identity.
+    assert.equal(
+      payload.responseId,
+      sidecar(data, { updatedRevision: 1 }).responseId,
+    );
+  });
+
+  // The sidecar comment is immutable: an edited sidecar is rejected.
+  await withFakeLifecycle({ verdict: null }, async ({ data, comments }) => {
+    comments.get(CHILD_TASK_NUMBER).push({
+      id: 271,
+      node_id: "IC_sidecar_edited",
+      body: formatTaskResponse(sidecar(data)),
+      user: { id: RESULT_ID, login: "result-reporter" },
+      created_at: "2026-08-29T20:20:00Z",
+      updated_at: "2026-08-29T20:25:00Z",
+    });
+    await assert.rejects(
+      callTool("get_task_snapshot", data.input),
+      /edited or lacks immutable revision evidence/,
+    );
+  });
+
+  // The same responseId must never be written twice, cited or not.
+  await withFakeLifecycle({ verdict: null }, async ({ data, comments }) => {
+    const payload = sidecar(data);
+    for (const [index, revision] of [1, 4].entries()) {
+      comments.get(CHILD_TASK_NUMBER).push({
+        id: 280 + index,
+        node_id: `IC_sidecar_dup_${index}`,
+        body: formatTaskResponse({ ...payload, updatedRevision: revision }),
+        user: { id: RESULT_ID, login: "result-reporter" },
+        created_at: `2026-08-29T20:2${index}:00Z`,
+        updated_at: `2026-08-29T20:2${index}:00Z`,
+      });
+    }
+    await assert.rejects(
+      callTool("get_task_snapshot", data.input),
+      /duplicate WorkGraphTaskResponse\/v1 sidecar/,
+    );
+  });
+
+  // A distinct raw comment is distinct evidence, so two sidecars coexist.
+  await withFakeLifecycle({ verdict: null }, async ({ data, comments }) => {
+    for (const [index, node] of ["IC_human_reply", "IC_human_reply_2"].entries()) {
+      comments.get(CHILD_TASK_NUMBER).push({
+        id: 290 + index,
+        node_id: `IC_sidecar_pair_${index}`,
+        body: formatTaskResponse(sidecar(data, { commentNodeId: node })),
+        user: { id: RESULT_ID, login: "result-reporter" },
+        created_at: `2026-08-29T20:3${index}:00Z`,
+        updated_at: `2026-08-29T20:3${index}:00Z`,
+      });
+    }
+    const snapshot = await callTool("get_task_snapshot", data.input);
+    assert.equal(snapshot.taskId, data.task.taskId);
+  });
+});
+
+test("the Response sidecar is reporter-authored, never assigner-authored", async () => {
+  // These are separated identities in this deployment, so an evidence sidecar
+  // written by the wrong actor is detectable rather than incidentally valid.
+  assert.notEqual(ASSIGNMENT_ID, RESULT_ID);
+
+  const sidecarBody = (data) => {
+    const subject = {
+      role: "worker",
+      dispatchId: data.dispatch.dispatchId,
+      leaseId: data.dispatch.lease.leaseId,
+    };
+    const body = "@workgraph reporting the human reply.";
+    return formatTaskResponse({
+      responseId: deriveWorkGraphTaskResponseId(
+        data.task.taskId,
+        subject,
+        "IC_human_reply",
+        "MDQ6VXNlcjQwMjEyNDM=",
+      ),
+      rootIssueId: data.task.rootIssueId,
+      workflowRunId: data.task.workflowRunId,
+      taskId: data.task.taskId,
+      task: {
+        taskId: data.task.taskId,
+        workflowRunId: data.task.workflowRunId,
+        workflowDefinitionId: data.task.workflowDefinitionId,
+        workflowDefinitionVersion: data.task.workflowDefinitionVersion,
+        workflowDefinitionDigest: data.task.workflowDefinitionDigest,
+        taskDefinitionId: data.task.taskDefinitionId,
+        taskKey: data.task.taskKey,
+        operation: data.task.operation,
+      },
+      actorId: "human-agentofreality",
+      role: "worker",
+      dispatchId: subject.dispatchId,
+      leaseId: subject.leaseId,
+      commentNodeId: "IC_human_reply",
+      authorDatabaseId: 4021243,
+      authorNodeId: "MDQ6VXNlcjQwMjEyNDM=",
+      authorLogin: "agentofreality",
+      bodyDigest: deriveWorkGraphResponseBodyDigest(body),
+      createdRevision: 1,
+      updatedRevision: 1,
+      body,
+    });
+  };
+
+  // The runtime writes evidence as the reporter actor, the identity that also
+  // writes a Result.
+  await withFakeLifecycle({ verdict: null }, async ({ data, comments }) => {
+    comments.get(CHILD_TASK_NUMBER).push({
+      id: 300,
+      node_id: "IC_sidecar_reporter",
+      body: sidecarBody(data),
+      user: { id: RESULT_ID, login: "result-reporter" },
+      created_at: "2026-08-29T20:20:00Z",
+      updated_at: "2026-08-29T20:20:00Z",
+    });
+    const snapshot = await callTool("get_task_snapshot", data.input);
+    assert.equal(snapshot.taskId, data.task.taskId);
+  });
+
+  // The assigner writes Fork, Join, Assignment, and Dispatch; a sidecar it
+  // authored is foreign evidence.
+  await withFakeLifecycle({ verdict: null }, async ({ data, comments }) => {
+    comments.get(CHILD_TASK_NUMBER).push({
+      id: 301,
+      node_id: "IC_sidecar_assigner",
+      body: sidecarBody(data),
+      user: { id: ASSIGNMENT_ID, login: "assigner" },
+      created_at: "2026-08-29T20:20:00Z",
+      updated_at: "2026-08-29T20:20:00Z",
+    });
+    await assert.rejects(
+      callTool("get_task_snapshot", data.input),
+      /malformed or foreign WorkGraphTaskResponse\/v1/,
+    );
+  });
+
+  // So is one authored by any other lifecycle identity.
+  for (const [id, login] of [
+    [EVALUATION_ID, "evaluation-reporter"],
+    [ROUTE_ID, "route-reporter"],
+    [LAUNCHER_ID, "launcher"],
+  ]) {
+    await withFakeLifecycle({ verdict: null }, async ({ data, comments }) => {
+      comments.get(CHILD_TASK_NUMBER).push({
+        id: 302,
+        node_id: "IC_sidecar_foreign",
+        body: sidecarBody(data),
+        user: { id, login },
+        created_at: "2026-08-29T20:20:00Z",
+        updated_at: "2026-08-29T20:20:00Z",
+      });
+      await assert.rejects(
+        callTool("get_task_snapshot", data.input),
+        /malformed or foreign WorkGraphTaskResponse\/v1/,
+      );
+    });
+  }
 });

@@ -1,0 +1,50 @@
+{
+  "apiVersion": "drasi.io/v1",
+  "kind": "WorkGraphTestCase",
+  "metadata": {
+    "id": "human-parity"
+  },
+  "spec": {
+    "workflowDefinitionId": "human-parity",
+    "rootIssue": {
+      "title": "Human parity WorkGraph proof",
+      "body": "Exercise a human worker graded by an agent evaluator, then an agent worker graded by a human evaluator.",
+      "labels": [
+        "workgraph"
+      ]
+    },
+    "steps": {
+      "draft": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "proposal": "Pin the reporter identity so worker tools can authenticate a routed Route.",
+            "rationale": "Worker profiles inject no Route reporter identity on default main.",
+            "step": "draft"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "review": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "step": "review"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      }
+    },
+    "expected": {
+      "topLevelTaskKeys": [
+        "draft",
+        "review"
+      ],
+      "taskParents": {
+        "draft": null,
+        "review": null
+      },
+      "terminalOutcome": "completed"
+    }
+  }
+}

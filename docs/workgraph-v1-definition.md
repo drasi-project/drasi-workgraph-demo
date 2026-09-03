@@ -106,6 +106,82 @@ compiler output and
 `canonicalDefinitionBody`. `node scripts/check-workgraph-compiler.mjs` compares
 all four Demo workflows against the sibling compiler byte-for-byte.
 
+## Human and agent parity
+
+A workflow references an actor ID identically whoever executes it. Only the
+`version: 2` actor catalog in `.github/workgraph/agents.yaml` decides whether an
+actor is an `agent` (which names a custom-agent profile, defaulting to its own
+ID) or a `human` (which binds the exact GitHub `databaseId`, `nodeId`, and
+`login` that person speaks as). A human worker takes a normal Assignment,
+Lease, and Dispatch; a human evaluator takes none, exactly like an agent
+evaluator.
+
+A task definition may pin optional actor-neutral `instructions`: a `summary`,
+optional `details`, ordered `acceptanceCriteria`, and an optional
+`resultSchema`. Nothing in them names an executor, a role, or a transport, so
+the same text is what an agent is handed and what a human reads. Instructions
+are content at a position, never identity: they do not change the path-derived
+`taskDefinitionId`, and are pinned by the workflow digest like operation,
+inputs, and routing already are.
+
+`worker` accepts either the original scalar form or a candidate set:
+
+```yaml
+      worker:
+        candidates: [human-agentofreality, issue-worker]
+        selection: first-available
+```
+
+Authored order carries no priority. Candidates are canonicalized into sorted
+order as `routing.permittedExecutors`, and the canonical first candidate becomes
+`policy.workerId` as the default. Membership is what authorizes execution, so a
+single-candidate set compiles byte-identically to the equivalent scalar. No
+permitted executor may also be the task's evaluator or orchestrator.
+
+`.github/workgraph/workflows/human-parity.yaml` exercises both directions in
+sequence: a human worker graded by the `result-evaluator` agent, then the
+`issue-worker` agent graded by the `human-agentofreality` evaluator, to the
+`completed` terminal. The kernel's authoring parser accepts no block scalars, so
+`details` is a single-line string.
+
+## Normalized inbound evidence
+
+`WorkGraphTaskResponse/v1` is one comment an actor wrote against a task,
+normalized into evidence. It is not authority: it records that a specific GitHub
+account said something on a specific task at a specific revision, and binds the
+raw body by digest so a later edit is detectable. Deciding whether that evidence
+becomes a Result or an Evaluation stays with the trusted writer, so a Response
+carries no `resultDigest`, no outcome, and no verdict.
+
+Evidence is bound to the exact lifecycle subject it answers, in the references
+and in `responseId`, so one comment cannot be replayed across attempts or roles.
+`worker` evidence references its Dispatch and Lease and never a Result;
+`evaluator` evidence references its Result and never a Dispatch or Lease.
+
+Only a comment whose first non-empty line opens with `@workgraph` is normalized,
+matched case-insensitively on an exact login boundary, so `@workgraphs` is a
+different account. Leading whitespace is skipped using Unicode `White_Space`,
+which excludes U+FEFF, so a body opening with a byte order mark does not
+address the protocol. Everything after the mention is untrusted prose that may
+quote reserved marker names freely. The raw body is transported hex-encoded as
+`{encoding: "utf-8-hex", data}` up to 16 KiB, so CRLF, fenced code blocks, and a
+byte order mark anywhere in the text survive the envelope byte for byte and the
+body still matches its digest.
+
+The sidecar is written by the runtime as the Result reporter identity, because
+evidence is reported rather than assigned.
+
+Exactly one immutable Response sidecar is written per consumed raw reply. The
+raw comment may be edited freely before it is consumed, and the sidecar records
+where it landed, so `updatedRevision` may exceed `createdRevision`. After
+consumption the sidecar is never rewritten or duplicated, and neither is the
+Result or Evaluation it backs: `responseId` does not change, so a repeated
+`responseId` on one task is rejected.
+
+Result and Evaluation may carry an optional `references.response` naming that
+evidence. It never participates in ID derivation and is omitted when absent, so
+every pre-Response body and digest stays byte-identical.
+
 ## Runtime message envelope
 
 Every task and lifecycle body contains exactly `apiVersion`, `kind`, `id`,

@@ -88,16 +88,60 @@ class WorkGraphProfilesTest(unittest.TestCase):
                     [tool.removeprefix("workgraph/") for tool in EXPECTED_TOOLS[name]],
                 )
 
-    def test_agent_capacity_registers_every_profile_once(self):
+    def test_actor_catalog_registers_every_profile_and_the_human_actor(self):
+        """The `version: 2` actor catalog is the single executor namespace.
+
+        A workflow references an actor ID identically whoever executes it; only
+        this catalog decides whether that actor is an agent or a human.
+        """
+        self.assertRegex(self.agent_config, r"(?m)^version: 2$")
+        self.assertNotRegex(self.agent_config, r"(?m)^agents:$")
         entries = re.findall(
-            r"  - agentId: ([A-Za-z0-9._-]+)\n"
+            r"  - actorId: ([A-Za-z0-9._-]+)\n"
+            r"    kind: (agent|human)\n"
             r"    slots: (\d+)\n"
-            r"    leaseDuration: ([A-Z0-9]+)\n",
+            r"    leaseDuration: (P[A-Z0-9]+)\n",
             self.agent_config,
         )
-        self.assertEqual([name for name, _, _ in entries], list(EXPECTED_TOOLS))
-        self.assertEqual(len(entries), len(set(name for name, _, _ in entries)))
-        self.assertTrue(all(int(slots) > 0 for _, slots, _ in entries))
+        actor_ids = [actor_id for actor_id, _, _, _ in entries]
+        self.assertEqual(len(actor_ids), len(set(actor_ids)))
+        self.assertTrue(all(int(slots) > 0 for _, _, slots, _ in entries))
+        # Every custom-agent profile is an agent actor, with its original
+        # capacity and the default `customAgent` (its own actor ID).
+        agents = [actor_id for actor_id, kind, _, _ in entries if kind == "agent"]
+        self.assertEqual(agents, list(EXPECTED_TOOLS))
+        self.assertNotIn("customAgent:", self.agent_config)
+        self.assertEqual(
+            [(actor_id, slots, duration) for actor_id, kind, slots, duration in entries
+             if kind == "agent"],
+            [
+                ("issue-validator", "1", "PT30M"),
+                ("issue-coordinator", "1", "PT15M"),
+                ("issue-worker", "2", "PT30M"),
+                ("result-evaluator", "1", "PT15M"),
+                ("issue-validation-evaluator", "1", "PT15M"),
+                ("workflow-coordinator", "1", "PT15M"),
+                ("validation-stage-coordinator", "1", "PT15M"),
+                ("issue-info-requester", "1", "PT30M"),
+            ],
+        )
+        # Exactly one human actor, bound to the exact GitHub account it speaks
+        # as. A human actor has no custom-agent profile by construction.
+        humans = [
+            (actor_id, slots, duration)
+            for actor_id, kind, slots, duration in entries
+            if kind == "human"
+        ]
+        self.assertEqual(humans, [("human-agentofreality", "1", "PT8H")])
+        self.assertNotIn("human-agentofreality", EXPECTED_TOOLS)
+        self.assertIn(
+            "    github:\n"
+            "      databaseId: 4021243\n"
+            '      nodeId: "MDQ6VXNlcjQwMjEyNDM="\n'
+            "      login: agentofreality\n",
+            self.agent_config,
+        )
+        self.assertEqual(self.agent_config.count("    github:\n"), 1)
 
     def test_evaluators_and_coordinators_write_on_existing_tasks(self):
         lifecycle_profiles = (

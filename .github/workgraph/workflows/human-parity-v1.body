@@ -1,0 +1,123 @@
+WorkGraphWorkflowDefinition/v1
+
+```json
+{
+  "workflowDefinitionId": "human-parity",
+  "version": "v1",
+  "digest": "sha256:4bbe20c60f75704cadc78b8a6a9f528ad4fa751ee0364d835d1b21421d36e766",
+  "trigger": "workgraph",
+  "defaults": {
+    "evaluator": "result-evaluator",
+    "orchestrator": "workflow-coordinator",
+    "maxReworkAttempts": 3
+  },
+  "initialStepId": "draft",
+  "root": {
+    "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:a861658d75ce4144fbb36a0216c2a8fd592b1f281c9b2b38dbe9003482d82699",
+    "taskKey": "draft",
+    "operation": "draft-proposal",
+    "routing": {
+      "permittedExecutors": [
+        "human-agentofreality"
+      ]
+    },
+    "staticInputs": {},
+    "instructions": {
+      "summary": "Draft the remediation proposal for this Issue.",
+      "details": "Read the Root Issue and write the proposal you would hand to an implementer, then reply on this task with a comment that opens with the WorkGraph mention and states the proposal in your own words.",
+      "acceptanceCriteria": [
+        "The proposal names the change being proposed.",
+        "The proposal states why the change is needed.",
+        "The proposal lists the checks that would prove it worked."
+      ],
+      "resultSchema": {
+        "proposal": "string",
+        "rationale": "string"
+      }
+    },
+    "children": []
+  },
+  "steps": {
+    "completed": {
+      "type": "terminal",
+      "outcome": "completed"
+    },
+    "draft": {
+      "type": "task",
+      "taskDefinition": {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:a861658d75ce4144fbb36a0216c2a8fd592b1f281c9b2b38dbe9003482d82699",
+        "taskKey": "draft",
+        "operation": "draft-proposal",
+        "routing": {
+          "permittedExecutors": [
+            "human-agentofreality"
+          ]
+        },
+        "staticInputs": {},
+        "instructions": {
+          "summary": "Draft the remediation proposal for this Issue.",
+          "details": "Read the Root Issue and write the proposal you would hand to an implementer, then reply on this task with a comment that opens with the WorkGraph mention and states the proposal in your own words.",
+          "acceptanceCriteria": [
+            "The proposal names the change being proposed.",
+            "The proposal states why the change is needed.",
+            "The proposal lists the checks that would prove it worked."
+          ],
+          "resultSchema": {
+            "proposal": "string",
+            "rationale": "string"
+          }
+        },
+        "children": []
+      },
+      "executionPolicies": {
+        "urn:drasi:workgraph:id:v1:task-definition:sha256:a861658d75ce4144fbb36a0216c2a8fd592b1f281c9b2b38dbe9003482d82699": {
+          "workerId": "human-agentofreality",
+          "evaluatorId": "result-evaluator",
+          "orchestratorId": "workflow-coordinator",
+          "maxReworkAttempts": 3
+        }
+      },
+      "transition": {
+        "type": "next",
+        "targetStepId": "review"
+      }
+    },
+    "review": {
+      "type": "task",
+      "taskDefinition": {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:be759edffb7f7b6570a341a8911397434ed2d6719aad1e90a0d10e82939ae65d",
+        "taskKey": "review",
+        "operation": "inspect-issue",
+        "routing": {
+          "permittedExecutors": [
+            "issue-validator",
+            "issue-worker"
+          ]
+        },
+        "staticInputs": {},
+        "instructions": {
+          "summary": "Inspect the drafted proposal and report what it commits to.",
+          "details": "Summarize the proposal faithfully and add no commitment the draft does not make, because the human evaluator grades this summary against the draft rather than against their own judgement of the Issue.",
+          "acceptanceCriteria": [
+            "The summary reflects only what the proposal states.",
+            "Every listed check appears in the summary."
+          ]
+        },
+        "children": []
+      },
+      "executionPolicies": {
+        "urn:drasi:workgraph:id:v1:task-definition:sha256:be759edffb7f7b6570a341a8911397434ed2d6719aad1e90a0d10e82939ae65d": {
+          "workerId": "issue-validator",
+          "evaluatorId": "human-agentofreality",
+          "orchestratorId": "workflow-coordinator",
+          "maxReworkAttempts": 3
+        }
+      },
+      "transition": {
+        "type": "next",
+        "targetStepId": "completed"
+      }
+    }
+  }
+}
+```

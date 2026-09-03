@@ -1,0 +1,49 @@
+apiVersion: workgraph.drasi.io/v1
+kind: IssueWorkflow
+metadata:
+  id: human-parity
+
+spec:
+  trigger: workgraph
+  initial: draft
+  defaults:
+    evaluator: result-evaluator
+    orchestrator: workflow-coordinator
+    maxReworkAttempts: 3
+  steps:
+    draft:
+      type: task
+      operation: draft-proposal
+      worker: human-agentofreality
+      inputs: {}
+      instructions:
+        summary: Draft the remediation proposal for this Issue.
+        details: Read the Root Issue and write the proposal you would hand to an implementer, then reply on this task with a comment that opens with the WorkGraph mention and states the proposal in your own words.
+        acceptanceCriteria:
+          - The proposal names the change being proposed.
+          - The proposal states why the change is needed.
+          - The proposal lists the checks that would prove it worked.
+        resultSchema:
+          proposal: string
+          rationale: string
+      next: review
+    review:
+      type: task
+      operation: inspect-issue
+      worker:
+        candidates:
+          - issue-worker
+          - issue-validator
+        selection: first-available
+      evaluator: human-agentofreality
+      inputs: {}
+      instructions:
+        summary: Inspect the drafted proposal and report what it commits to.
+        details: Summarize the proposal faithfully and add no commitment the draft does not make, because the human evaluator grades this summary against the draft rather than against their own judgement of the Issue.
+        acceptanceCriteria:
+          - The summary reflects only what the proposal states.
+          - Every listed check appears in the summary.
+      next: completed
+    completed:
+      type: terminal
+      outcome: completed

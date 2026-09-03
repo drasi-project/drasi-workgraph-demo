@@ -11,6 +11,14 @@ export const TASK_RESULT_MARKER = "WorkGraphTaskResult/v1";
 export const TASK_EVALUATION_MARKER = "WorkGraphTaskEvaluation/v1";
 export const TASK_ROUTE_MARKER = "WorkGraphTaskRoute/v1";
 export const TASK_ERROR_MARKER = "WorkGraphTaskError/v1";
+// Normalized inbound evidence: one comment an actor wrote against a task.
+// A Response carries no lifecycle authority; the raw body it quotes is never
+// protocol and is transported hex-encoded so it cannot disturb the envelope.
+export const TASK_RESPONSE_MARKER = "WorkGraphTaskResponse/v1";
+// Addressing convention, not authority. Matched case-insensitively because
+// GitHub mentions are, but only on an exact login boundary.
+export const TASK_RESPONSE_MENTION = "@workgraph";
+export const WORKGRAPH_TEXT_ENCODING = "utf-8-hex";
 export const WORKGRAPH_API_VERSION = "workgraph.drasi.io/v1";
 export const WORKFLOW_AUTHORING_API_VERSION = WORKGRAPH_API_VERSION;
 export const DEFAULT_MAX_REWORK_ATTEMPTS = 3;
@@ -18,6 +26,16 @@ export const MAX_TASK_DEFINITION_CHILDREN = 16;
 export const MAX_TASK_DEFINITION_DEPTH = 4;
 export const MAX_WORKGRAPH_BODY_BYTES = 64 * 1024;
 export const MAX_TASK_DEFINITION_EXECUTORS = 8;
+// Bounds of the optional actor-neutral task instructions. They are pinned into
+// the canonical definition body, which stays under MAX_WORKGRAPH_BODY_BYTES.
+export const MAX_TASK_INSTRUCTIONS_SUMMARY_BYTES = 4 * 1024;
+export const MAX_TASK_INSTRUCTIONS_DETAILS_BYTES = 16 * 1024;
+export const MAX_TASK_INSTRUCTIONS_CRITERIA = 16;
+export const MAX_TASK_INSTRUCTIONS_CRITERION_BYTES = 1024;
+// Bound of the raw inbound comment body a normalized Response may carry.
+export const MAX_TASK_RESPONSE_BODY_BYTES = 16 * 1024;
+// Bound of a normalized Response author login, matching GitHub's own limit.
+export const MAX_TASK_RESPONSE_LOGIN_BYTES = 39;
 // Runtime writes these into `resolvedInputs` for generated entry, routed
 // scope, and routed successor tasks, so a definition may not author them.
 export const RESERVED_SUCCESSOR_INPUT_KEY = "workgraphPredecessorTaskId";
@@ -44,6 +62,7 @@ const RESERVED_MARKERS = [
   TASK_EVALUATION_MARKER,
   TASK_ROUTE_MARKER,
   TASK_ERROR_MARKER,
+  TASK_RESPONSE_MARKER,
 ];
 const DEFINITION_KEYS = [
   "workflowDefinitionId",
@@ -61,7 +80,7 @@ const TASK_DEFINITION_KEYS = [
 ];
 // `flowEntries` is additive: a definition that owns no routed scope omits it
 // entirely, so every pre-flow canonical body and digest stays byte-identical.
-const TASK_DEFINITION_OPTIONAL_KEYS = ["flowEntries"];
+const TASK_DEFINITION_OPTIONAL_KEYS = ["instructions", "flowEntries"];
 const ROUTING_KEYS = ["permittedExecutors"];
 const RUNTIME_TASK_KEYS = [
   "taskId",
@@ -137,6 +156,70 @@ function taskDefinitionKeys(value, context) {
         .join(", ")} with optional ${TASK_DEFINITION_OPTIONAL_KEYS.join(", ")}`,
     );
   }
+}
+
+// Actor-neutral instructions: the same text an agent executor is handed and a
+// human executor reads. Content at a position, never identity, so they never
+// change the path-derived taskDefinitionId.
+function normalizeTaskInstructions(value, context) {
+  exactAllowedKeys(
+    value,
+    ["summary", "acceptanceCriteria"],
+    ["summary", "details", "acceptanceCriteria", "resultSchema"],
+    context,
+  );
+  const boundedText = (text, max, label) => {
+    if (
+      typeof text !== "string" ||
+      text.trim() === "" ||
+      new TextEncoder().encode(text).length > max ||
+      !ordinaryText(text)
+    ) {
+      throw new WorkGraphDefinitionError(
+        `${label} must be 1-${max} characters of ordinary LF text without a reserved WorkGraph marker`,
+      );
+    }
+    return text;
+  };
+  const normalized = {
+    summary: boundedText(
+      value.summary,
+      MAX_TASK_INSTRUCTIONS_SUMMARY_BYTES,
+      `${context} summary`,
+    ),
+  };
+  if (value.details !== undefined) {
+    normalized.details = boundedText(
+      value.details,
+      MAX_TASK_INSTRUCTIONS_DETAILS_BYTES,
+      `${context} details`,
+    );
+  }
+  if (
+    !Array.isArray(value.acceptanceCriteria) ||
+    value.acceptanceCriteria.length < 1 ||
+    value.acceptanceCriteria.length > MAX_TASK_INSTRUCTIONS_CRITERIA
+  ) {
+    throw new WorkGraphDefinitionError(
+      `${context} acceptanceCriteria must contain 1-${MAX_TASK_INSTRUCTIONS_CRITERIA} entries`,
+    );
+  }
+  normalized.acceptanceCriteria = value.acceptanceCriteria.map(
+    (criterion, index) =>
+      boundedText(
+        criterion,
+        MAX_TASK_INSTRUCTIONS_CRITERION_BYTES,
+        `${context} acceptanceCriteria[${index}]`,
+      ),
+  );
+  if (value.resultSchema !== undefined) {
+    normalized.resultSchema = canonicalData(
+      value.resultSchema,
+      `${context} resultSchema`,
+      0,
+    );
+  }
+  return normalized;
 }
 
 // Declaration-local `flowEntries` invariants: ordered unique step IDs sharing
@@ -440,6 +523,14 @@ function normalizeTaskDefinition(task, context, depth, identities) {
       permittedExecutors: [...task.routing.permittedExecutors],
     },
     staticInputs: dataMap(task.staticInputs, `${context}.staticInputs`),
+    ...(task.instructions === undefined
+      ? {}
+      : {
+          instructions: normalizeTaskInstructions(
+            task.instructions,
+            `${context}.instructions`,
+          ),
+        }),
     children: task.children.map((child, index) =>
       normalizeTaskDefinition(
         child,
@@ -665,7 +756,16 @@ function parseEnvelopeBody(
     envelope.workflowContext,
     `${kind} workflowContext`,
   );
-  exactKeys(envelope.references, referenceKeys, `${kind} references`);
+  if (Array.isArray(referenceKeys)) {
+    exactKeys(envelope.references, referenceKeys, `${kind} references`);
+  } else {
+    exactAllowedKeys(
+      envelope.references,
+      referenceKeys.required,
+      [...referenceKeys.required, ...referenceKeys.optional],
+      `${kind} references`,
+    );
+  }
   exactKeys(envelope.data, dataKeys, `${kind} data`);
   const value = fromEnvelope(envelope);
   if (formatter(value) !== body) {
@@ -795,6 +895,7 @@ const TASK_STEP_KEYS = [
   "outcomes",
   "children",
   "flowEntries",
+  "instructions",
 ];
 const CHILD_TASK_KEYS = [
   "operation",
@@ -805,6 +906,7 @@ const CHILD_TASK_KEYS = [
   "maxReworkAttempts",
   "children",
   "flowEntries",
+  "instructions",
 ];
 const CHILDREN_KEYS = ["join", "tasks"];
 const WAIT_STEP_KEYS = ["type", "event", "next"];
@@ -1075,6 +1177,59 @@ function normalizeChildren(value, workflowDefaults, context, depth, label) {
   return { join: value.join, tasks };
 }
 
+// The authored worker selector. The scalar form is the original v1 contract.
+// The object form authorizes a candidate *set* so a human actor and an agent
+// actor are interchangeable on the same task. Authored order carries no
+// priority: it is preserved in the authored definition and canonicalized by
+// sorting into the compiled `permittedExecutors`.
+function normalizeWorkerSelector(value, context) {
+  if (typeof value === "string") {
+    identifier(value, context);
+    return value;
+  }
+  exactKeys(value, ["candidates", "selection"], context);
+  if (value.selection !== "first-available") {
+    throw new WorkGraphDefinitionError(
+      `${context}.selection must be first-available`,
+    );
+  }
+  if (
+    !Array.isArray(value.candidates) ||
+    value.candidates.length < 1 ||
+    value.candidates.length > MAX_TASK_DEFINITION_EXECUTORS
+  ) {
+    throw new WorkGraphDefinitionError(
+      `${context} candidates must contain 1-${MAX_TASK_DEFINITION_EXECUTORS} entries`,
+    );
+  }
+  const seen = new Set();
+  for (const candidate of value.candidates) {
+    identifier(candidate, `${context} candidate`);
+    if (seen.has(candidate)) {
+      throw new WorkGraphDefinitionError(
+        `${context} repeats candidate '${candidate}'`,
+      );
+    }
+    seen.add(candidate);
+  }
+  return { candidates: [...value.candidates], selection: value.selection };
+}
+
+// Every authorized executor in canonical (sorted) order. A single-candidate
+// set therefore compiles identically to the equivalent scalar form.
+export function workerSelectorCandidates(worker) {
+  return typeof worker === "string"
+    ? [worker]
+    : [...worker.candidates].sort(utf8Compare);
+}
+
+// The canonical default executor: first in canonical order. This is the
+// default `policy.workerId`, not a priority claim: any permitted executor may
+// end up holding the lease.
+export function workerSelectorPreferred(worker) {
+  return workerSelectorCandidates(worker)[0];
+}
+
 function normalizeChildTask(value, workflowDefaults, context, depth, label) {
   exactAllowedKeys(
     value,
@@ -1083,7 +1238,14 @@ function normalizeChildTask(value, workflowDefaults, context, depth, label) {
     context,
   );
   identifier(value.operation, `${context}.operation`);
-  identifier(value.worker, `${context}.worker`);
+  const worker = normalizeWorkerSelector(value.worker, `${context}.worker`);
+  const instructions =
+    value.instructions === undefined
+      ? undefined
+      : normalizeTaskInstructions(
+          value.instructions,
+          `${context}.instructions`,
+        );
   const children =
     "children" in value
       ? normalizeChildren(
@@ -1102,8 +1264,9 @@ function normalizeChildTask(value, workflowDefaults, context, depth, label) {
   );
   const normalized = {
     operation: value.operation,
-    worker: value.worker,
+    worker,
     inputs: dataMap(value.inputs ?? {}, `${context}.inputs`),
+    ...(instructions === undefined ? {} : { instructions }),
     evaluator: null,
     orchestrator: null,
     maxReworkAttempts: null,
@@ -1161,7 +1324,14 @@ function normalizeWorkflowStep(id, value, stepIds) {
     context,
   );
   identifier(value.operation, `${context}.operation`);
-  identifier(value.worker, `${context}.worker`);
+  const worker = normalizeWorkerSelector(value.worker, `${context}.worker`);
+  const instructions =
+    value.instructions === undefined
+      ? undefined
+      : normalizeTaskInstructions(
+          value.instructions,
+          `${context}.instructions`,
+        );
   const label = `step '${id}'`;
   const children =
     "children" in value
@@ -1182,8 +1352,9 @@ function normalizeWorkflowStep(id, value, stepIds) {
   const normalized = {
     type: value.type,
     operation: value.operation,
-    worker: value.worker,
+    worker,
     inputs: dataMap(value.inputs ?? {}, `${context}.inputs`),
+    ...(instructions === undefined ? {} : { instructions }),
     evaluator: null,
     orchestrator: null,
     maxReworkAttempts: null,
@@ -1619,6 +1790,14 @@ function normalizeCompiledTaskDefinition(value, context, depth = 0) {
     operation: value.operation,
     routing: { permittedExecutors: [...value.routing.permittedExecutors] },
     staticInputs: dataMap(value.staticInputs, `${context}.staticInputs`),
+    ...(value.instructions === undefined
+      ? {}
+      : {
+          instructions: normalizeTaskInstructions(
+            value.instructions,
+            `${context}.instructions`,
+          ),
+        }),
     children: value.children.map((child, index) =>
       normalizeCompiledTaskDefinition(
         child,
@@ -1719,12 +1898,26 @@ function validateCompiledPolicies(taskDefinition, policies, context) {
   }
   for (const [taskDefinitionId, task] of tasks) {
     const policy = policies[taskDefinitionId];
-    if (
-      !isDeepStrictEqual(task.routing.permittedExecutors, [policy.workerId])
-    ) {
+    // Permitted executors are a set: any member may end up holding the lease,
+    // so workerId only has to be a member, not the sole entry.
+    if (!task.routing.permittedExecutors.includes(policy.workerId)) {
       throw new WorkGraphDefinitionError(
-        `${context}.${taskDefinitionId}.workerId must match the task routing executor`,
+        `${context}.${taskDefinitionId}.workerId must be one of its permitted executors`,
       );
+    }
+    // No actor grades or routes its own work. Because any permitted executor
+    // can hold the lease, separation of duties holds for the whole set.
+    for (const executor of task.routing.permittedExecutors) {
+      if (executor === policy.evaluatorId) {
+        throw new WorkGraphDefinitionError(
+          `${context}.${taskDefinitionId} must not permit its evaluator '${executor}' to execute the task`,
+        );
+      }
+      if (executor === policy.orchestratorId) {
+        throw new WorkGraphDefinitionError(
+          `${context}.${taskDefinitionId} must not permit its orchestrator '${executor}' to execute the task`,
+        );
+      }
     }
   }
 }
@@ -1971,8 +2164,33 @@ export function normalizeCompiledWorkflowDefinition(definition) {
   };
 }
 
-function normalizeLifecycleBase(value, keys, label, idField, idType) {
-  exactKeys(value, keys, label);
+function normalizeLifecycleBase(
+  value,
+  keys,
+  label,
+  idField,
+  idType,
+  optionalKeys = EMPTY_KEYS,
+) {
+  if (optionalKeys.length === 0) {
+    exactKeys(value, keys, label);
+  } else {
+    // Same wording as exactKeys: the optional provenance reference must not
+    // change how a malformed lifecycle payload is reported.
+    if (!object(value)) {
+      throw new WorkGraphDefinitionError(`${label} must be an object`);
+    }
+    const known = new Set([...keys, ...optionalKeys]);
+    const present = Object.keys(value);
+    if (
+      keys.some((key) => !present.includes(key)) ||
+      present.some((key) => !known.has(key))
+    ) {
+      throw new WorkGraphDefinitionError(
+        `${label} properties must be exactly ${[...keys].sort().join(", ")}`,
+      );
+    }
+  }
   validateWorkGraphProtocolId(value[idField], idType, `${label} ${idField}`);
   workflowRunIdentifier(value.rootIssueId, `${label} rootIssueId`);
   validateWorkGraphProtocolId(
@@ -2060,6 +2278,7 @@ const REFERENCE_KINDS = {
   result: ["TaskResult", "result"],
   evaluation: ["TaskEvaluation", "evaluation"],
   route: ["TaskRoute", "route"],
+  response: ["TaskResponse", "response"],
 };
 
 function typedReference(role, id) {
@@ -2553,6 +2772,7 @@ export function normalizeTaskResult(value) {
     "task Result",
     "resultId",
     "result",
+    ["response"],
   );
   validateWorkGraphProtocolId(
     value.dispatchId,
@@ -2574,6 +2794,13 @@ export function normalizeTaskResult(value) {
     attempt: value.attempt,
     outcome: value.outcome,
     output: lifecycleData(value.output, "task Result output"),
+    // Provenance only: never part of Result ID derivation, and omitted so
+    // every pre-Response Result body and digest stays byte-identical.
+    ...(value.response === undefined || value.response === null
+      ? {}
+      : {
+          response: validateTypedReference(value.response, "response"),
+        }),
   };
 }
 
@@ -2590,6 +2817,7 @@ export function taskResultEnvelope(value) {
     {
       dispatch: typedReference("dispatch", normalized.dispatchId),
       lease: typedReference("lease", normalized.leaseId),
+      ...(normalized.response ? { response: normalized.response } : {}),
     },
     {
       attempt: normalized.attempt,
@@ -2660,7 +2888,7 @@ export function parseTaskResult(body) {
     body,
     TASK_RESULT_MARKER,
     "TaskResult",
-    ["dispatch", "lease"],
+    { required: ["dispatch", "lease"], optional: ["response"] },
     ["attempt", "outcome", "output"],
     (envelope) => {
       validateTypedReference(envelope.references.dispatch, "dispatch");
@@ -2676,6 +2904,9 @@ export function parseTaskResult(body) {
         attempt: envelope.data.attempt,
         outcome: envelope.data.outcome,
         output: envelope.data.output,
+        ...(envelope.references.response === undefined
+          ? {}
+          : { response: envelope.references.response }),
       };
     },
     formatTaskResult,
@@ -2689,6 +2920,7 @@ export function normalizeTaskEvaluation(value) {
     "task evaluation",
     "evaluationId",
     "evaluation",
+    ["response"],
   );
   validateWorkGraphProtocolId(
     value.resultId,
@@ -2751,6 +2983,12 @@ export function normalizeTaskEvaluation(value) {
     verdict: value.verdict,
     summary: value.summary,
     feedback: value.feedback,
+    // Provenance only: never part of Evaluation ID derivation.
+    ...(value.response === undefined || value.response === null
+      ? {}
+      : {
+          response: validateTypedReference(value.response, "response"),
+        }),
   };
 }
 
@@ -2761,7 +2999,10 @@ export function formatTaskEvaluation(value) {
     "TaskEvaluation",
     normalized.evaluationId,
     normalized,
-    { result: typedReference("result", normalized.resultId) },
+    {
+      result: typedReference("result", normalized.resultId),
+      ...(normalized.response ? { response: normalized.response } : {}),
+    },
     {
       resultDigest: normalized.resultDigest,
       evaluatorId: normalized.evaluatorId,
@@ -2778,7 +3019,7 @@ export function parseTaskEvaluation(body) {
     body,
     TASK_EVALUATION_MARKER,
     "TaskEvaluation",
-    ["result"],
+    { required: ["result"], optional: ["response"] },
     ["resultDigest", "evaluatorId", "attempt", "verdict", "summary", "feedback"],
     (envelope) => {
       validateTypedReference(envelope.references.result, "result");
@@ -2795,9 +3036,385 @@ export function parseTaskEvaluation(body) {
         verdict: envelope.data.verdict,
         summary: envelope.data.summary,
         feedback: envelope.data.feedback,
+        ...(envelope.references.response === undefined
+          ? {}
+          : { response: envelope.references.response }),
       };
     },
     formatTaskEvaluation,
+  );
+}
+
+const RESPONSE_KEYS = [
+  "responseId",
+  "rootIssueId",
+  "workflowRunId",
+  "taskId",
+  "task",
+  "actorId",
+  "role",
+  "commentNodeId",
+  "authorDatabaseId",
+  "authorNodeId",
+  "authorLogin",
+  "bodyDigest",
+  "createdRevision",
+  "updatedRevision",
+  "body",
+];
+const RESPONSE_OPTIONAL_KEYS = ["dispatchId", "leaseId", "resultId"];
+const MAX_SAFE_REVISION = Number.MAX_SAFE_INTEGER;
+
+// Raw human text travels hex-encoded so CRLF and fenced code blocks survive
+// the envelope untouched while the envelope itself stays canonical.
+export function encodeWorkGraphText(text) {
+  return {
+    encoding: WORKGRAPH_TEXT_ENCODING,
+    data: Buffer.from(text, "utf8").toString("hex"),
+  };
+}
+
+export function decodeWorkGraphText(value, context) {
+  exactKeys(value, ["encoding", "data"], context);
+  if (value.encoding !== WORKGRAPH_TEXT_ENCODING) {
+    throw new WorkGraphDefinitionError(
+      `${context} encoding must be '${WORKGRAPH_TEXT_ENCODING}'`,
+    );
+  }
+  if (typeof value.data !== "string" || value.data.length % 2 !== 0) {
+    throw new WorkGraphDefinitionError(
+      `${context} data must be an even number of hex digits`,
+    );
+  }
+  if (!/^[0-9a-f]*$/.test(value.data)) {
+    throw new WorkGraphDefinitionError(
+      `${context} data must be lowercase hex digits`,
+    );
+  }
+  const bytes = Buffer.from(value.data, "hex");
+  // `ignoreBOM` keeps a leading U+FEFF as a character instead of consuming it,
+  // so decoding is byte-faithful and the body still matches its digest.
+  const text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  try {
+    return text.decode(bytes);
+  } catch {
+    throw new WorkGraphDefinitionError(`${context} data must decode to UTF-8`);
+  }
+}
+
+export function deriveWorkGraphResponseBodyDigest(body) {
+  if (typeof body !== "string") {
+    throw new WorkGraphDefinitionError("task Response body must be text");
+  }
+  return `sha256:${framedSha256(["workgraph-v1-task-response-body", body])}`;
+}
+
+// Evidence identity binds the role and the exact lifecycle subject, so one
+// comment cannot be replayed across attempts or across roles. The body digest
+// is excluded: an edit keeps one stable identity and records the change.
+export function deriveWorkGraphTaskResponseId(
+  taskId,
+  subject,
+  commentNodeId,
+  authorNodeId,
+) {
+  validateWorkGraphTaskId(taskId, "task Response taskId");
+  opaqueResponseId(commentNodeId, "task Response commentNodeId");
+  opaqueResponseId(authorNodeId, "task Response authorNodeId");
+  const parts = [taskId, subject.role];
+  if (subject.role === "worker") {
+    validateWorkGraphProtocolId(
+      subject.dispatchId,
+      "dispatch",
+      "task Response dispatch",
+    );
+    validateWorkGraphProtocolId(subject.leaseId, "lease", "task Response lease");
+    parts.push(subject.dispatchId, subject.leaseId);
+  } else if (subject.role === "evaluator") {
+    validateWorkGraphProtocolId(
+      subject.resultId,
+      "result",
+      "task Response result",
+    );
+    parts.push(subject.resultId);
+  } else {
+    throw new WorkGraphDefinitionError(
+      "task Response role must be worker or evaluator",
+    );
+  }
+  parts.push(commentNodeId, authorNodeId);
+  return deriveWorkGraphProtocolId("response", parts);
+}
+
+function opaqueResponseId(value, context) {
+  workflowRunIdentifier(value, context);
+}
+
+function githubLogin(value, context) {
+  if (
+    typeof value !== "string" ||
+    !/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/.test(value) ||
+    new TextEncoder().encode(value).length > MAX_TASK_RESPONSE_LOGIN_BYTES
+  ) {
+    throw new WorkGraphDefinitionError(
+      `${context} must be 1-${MAX_TASK_RESPONSE_LOGIN_BYTES} alphanumerics or hyphens and cannot start or end in a hyphen`,
+    );
+  }
+}
+
+function responseRevision(value, context) {
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_SAFE_REVISION) {
+    throw new WorkGraphDefinitionError(
+      `${context} must be a safe integer of at least 1`,
+    );
+  }
+}
+
+// The mention is addressing, not authority: it only decides whether a comment
+// is about the protocol. Matched case-insensitively on an exact login
+// boundary, so `@workgraphs` is a different account and is not accepted.
+export function startsWithWorkGraphMention(body) {
+  if (typeof body !== "string") return false;
+  // Unicode White_Space only, matching the canonical trim: U+FEFF is a format
+  // character, not whitespace, so a body opening with a BOM does not address
+  // the protocol.
+  const first = body
+    .split("\n")
+    .map((line) => line.replace(/^\p{White_Space}+/u, ""))
+    .find((line) => line !== "");
+  if (first === undefined) return false;
+  const mention = first.slice(0, TASK_RESPONSE_MENTION.length);
+  if (mention.toLowerCase() !== TASK_RESPONSE_MENTION) return false;
+  const next = first.slice(TASK_RESPONSE_MENTION.length, TASK_RESPONSE_MENTION.length + 1);
+  return next === "" || !/[\p{L}\p{N}_-]/u.test(next);
+}
+
+// Evidence names exactly the lifecycle subject its role answers.
+function responseSubject(value) {
+  if (value.role === "worker") {
+    if (value.dispatchId === undefined || value.dispatchId === null) {
+      throw new WorkGraphDefinitionError(
+        "task Response worker evidence must reference its dispatch",
+      );
+    }
+    if (value.leaseId === undefined || value.leaseId === null) {
+      throw new WorkGraphDefinitionError(
+        "task Response worker evidence must reference its lease",
+      );
+    }
+    if (value.resultId !== undefined && value.resultId !== null) {
+      throw new WorkGraphDefinitionError(
+        "task Response worker evidence must not reference a result",
+      );
+    }
+    return {
+      role: "worker",
+      dispatchId: value.dispatchId,
+      leaseId: value.leaseId,
+    };
+  }
+  if (value.role === "evaluator") {
+    if (value.resultId === undefined || value.resultId === null) {
+      throw new WorkGraphDefinitionError(
+        "task Response evaluator evidence must reference its result",
+      );
+    }
+    if (
+      (value.dispatchId !== undefined && value.dispatchId !== null) ||
+      (value.leaseId !== undefined && value.leaseId !== null)
+    ) {
+      throw new WorkGraphDefinitionError(
+        "task Response evaluator evidence must not reference a dispatch or lease",
+      );
+    }
+    return { role: "evaluator", resultId: value.resultId };
+  }
+  throw new WorkGraphDefinitionError(
+    "task Response role must be worker or evaluator",
+  );
+}
+
+export function normalizeTaskResponse(value) {
+  const base = normalizeLifecycleBase(
+    value,
+    RESPONSE_KEYS,
+    "task Response",
+    "responseId",
+    "response",
+    RESPONSE_OPTIONAL_KEYS,
+  );
+  identifier(value.actorId, "task Response actorId");
+  const subject = responseSubject(value);
+  opaqueResponseId(value.commentNodeId, "task Response commentNodeId");
+  opaqueResponseId(value.authorNodeId, "task Response authorNodeId");
+  if (
+    !Number.isSafeInteger(value.authorDatabaseId) ||
+    value.authorDatabaseId < 1
+  ) {
+    throw new WorkGraphDefinitionError(
+      "task Response authorDatabaseId must be a positive safe integer",
+    );
+  }
+  githubLogin(value.authorLogin, "task Response authorLogin");
+  digest(value.bodyDigest, "task Response bodyDigest");
+  responseRevision(value.createdRevision, "task Response createdRevision");
+  responseRevision(value.updatedRevision, "task Response updatedRevision");
+  if (value.updatedRevision < value.createdRevision) {
+    throw new WorkGraphDefinitionError(
+      "task Response updatedRevision must not precede createdRevision",
+    );
+  }
+  // The raw body is transported hex-encoded, so it is deliberately not held to
+  // the envelope's text rules: CRLF and fenced code blocks are what real
+  // replies look like. Only size and non-emptiness apply.
+  if (
+    typeof value.body !== "string" ||
+    value.body.trim() === "" ||
+    new TextEncoder().encode(value.body).length > MAX_TASK_RESPONSE_BODY_BYTES
+  ) {
+    throw new WorkGraphDefinitionError(
+      `task Response body must be 1-${MAX_TASK_RESPONSE_BODY_BYTES} bytes of text`,
+    );
+  }
+  if (!startsWithWorkGraphMention(value.body)) {
+    throw new WorkGraphDefinitionError(
+      `task Response body must open with '${TASK_RESPONSE_MENTION}'`,
+    );
+  }
+  if (value.bodyDigest !== deriveWorkGraphResponseBodyDigest(value.body)) {
+    throw new WorkGraphDefinitionError(
+      "task Response bodyDigest does not match its body",
+    );
+  }
+  if (
+    value.responseId !==
+    deriveWorkGraphTaskResponseId(
+      value.taskId,
+      subject,
+      value.commentNodeId,
+      value.authorNodeId,
+    )
+  ) {
+    throw new WorkGraphDefinitionError(
+      "task Response responseId is not canonical",
+    );
+  }
+  return {
+    responseId: value.responseId,
+    ...base,
+    actorId: value.actorId,
+    role: value.role,
+    ...(subject.role === "worker"
+      ? { dispatchId: subject.dispatchId, leaseId: subject.leaseId }
+      : { resultId: subject.resultId }),
+    commentNodeId: value.commentNodeId,
+    authorDatabaseId: value.authorDatabaseId,
+    authorNodeId: value.authorNodeId,
+    authorLogin: value.authorLogin,
+    bodyDigest: value.bodyDigest,
+    createdRevision: value.createdRevision,
+    updatedRevision: value.updatedRevision,
+    body: value.body,
+  };
+}
+
+export function formatTaskResponse(value) {
+  const normalized = normalizeTaskResponse(value);
+  return formatEnvelope(
+    TASK_RESPONSE_MARKER,
+    "TaskResponse",
+    normalized.responseId,
+    normalized,
+    normalized.role === "worker"
+      ? {
+          dispatch: typedReference("dispatch", normalized.dispatchId),
+          lease: typedReference("lease", normalized.leaseId),
+        }
+      : { result: typedReference("result", normalized.resultId) },
+    {
+      actorId: normalized.actorId,
+      role: normalized.role,
+      comment: {
+        nodeId: normalized.commentNodeId,
+        author: {
+          databaseId: normalized.authorDatabaseId,
+          nodeId: normalized.authorNodeId,
+          login: normalized.authorLogin,
+        },
+        bodyDigest: normalized.bodyDigest,
+        createdRevision: normalized.createdRevision,
+        updatedRevision: normalized.updatedRevision,
+        body: encodeWorkGraphText(normalized.body),
+      },
+    },
+  );
+}
+
+export function parseTaskResponse(body) {
+  return parseEnvelopeBody(
+    body,
+    TASK_RESPONSE_MARKER,
+    "TaskResponse",
+    { required: [], optional: ["dispatch", "lease", "result"] },
+    ["actorId", "role", "comment"],
+    (envelope) => {
+      const comment = envelope.data.comment;
+      exactKeys(
+        comment,
+        [
+          "nodeId",
+          "author",
+          "bodyDigest",
+          "createdRevision",
+          "updatedRevision",
+          "body",
+        ],
+        "TaskResponse comment",
+      );
+      exactKeys(
+        comment.author,
+        ["databaseId", "nodeId", "login"],
+        "TaskResponse comment author",
+      );
+      const references = {};
+      if (envelope.references.dispatch !== undefined) {
+        references.dispatchId = validateTypedReference(
+          envelope.references.dispatch,
+          "dispatch",
+        ).id;
+      }
+      if (envelope.references.lease !== undefined) {
+        references.leaseId = validateTypedReference(
+          envelope.references.lease,
+          "lease",
+        ).id;
+      }
+      if (envelope.references.result !== undefined) {
+        references.resultId = validateTypedReference(
+          envelope.references.result,
+          "result",
+        ).id;
+      }
+      return {
+        responseId: envelope.id,
+        rootIssueId: envelope.rootIssueId,
+        workflowRunId: envelope.workflowRunId,
+        taskId: envelope.taskId,
+        task: taskFromEnvelope(envelope),
+        actorId: envelope.data.actorId,
+        role: envelope.data.role,
+        ...references,
+        commentNodeId: comment.nodeId,
+        authorDatabaseId: comment.author.databaseId,
+        authorNodeId: comment.author.nodeId,
+        authorLogin: comment.author.login,
+        bodyDigest: comment.bodyDigest,
+        createdRevision: comment.createdRevision,
+        updatedRevision: comment.updatedRevision,
+        body: decodeWorkGraphText(comment.body, "task Response body"),
+      };
+    },
+    formatTaskResponse,
   );
 }
 

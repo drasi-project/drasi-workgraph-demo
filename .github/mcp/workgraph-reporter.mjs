@@ -37,8 +37,10 @@ import {
   parseTaskFork,
   parseTaskJoin,
   parseTaskResult,
+  parseTaskResponse,
   parseTaskRoute,
   resolveCompiledFlowScopes,
+  TASK_RESPONSE_MARKER,
   taskResultDigest,
   validateTaskRouteAgainstDefinition,
 } from "./workgraph-v1-definition.mjs";
@@ -109,6 +111,7 @@ for (const workflowDefinitionId of [
   "issue-lifecycle",
   "mixed-control-flow",
   "scoped-control-flow",
+  "human-parity",
 ]) {
   const fixture = JSON.parse(
     readFileSync(
@@ -1657,22 +1660,100 @@ function validateTaskActionPrefix(
   }
 }
 
+// Normalized inbound evidence a human actor's raw comment was projected into.
+//
+// A Response sidecar is broker-authored: the runtime writes it as the reporter
+// actor, the same identity that writes a Result, not as the assigner that
+// writes Fork, Join, Assignment, and Dispatch. Evidence is reported, not
+// assigned.
+//
+// Exactly one immutable sidecar is written per consumed raw response. The raw
+// comment may be edited freely before it is consumed, and the sidecar records
+// where it landed: `updatedRevision` may exceed `createdRevision`. Once
+// written the sidecar is never rewritten or duplicated, so `markedComments`
+// holds the sidecar comment itself immutable and a repeated responseId fails
+// whether or not any artifact cites it.
+function taskResponses(comments, task, config) {
+  const responses = markedComments(
+    comments,
+    TASK_RESPONSE_MARKER,
+    parseTaskResponse,
+  ).map((entry) =>
+    validateProtocolComment(entry, config.resultId, TASK_RESPONSE_MARKER),
+  );
+  for (const { payload } of responses) {
+    if (
+      payload.rootIssueId !== task.rootIssueId ||
+      payload.workflowRunId !== task.workflowRunId ||
+      payload.taskId !== task.taskId ||
+      !sameTaskIdentity(payload.task, task)
+    ) {
+      throw new WorkGraphReporterError(
+        "task has a WorkGraphTaskResponse/v1 for a different task identity",
+      );
+    }
+  }
+  if (
+    new Set(responses.map(({ payload }) => payload.responseId)).size !==
+    responses.length
+  ) {
+    throw new WorkGraphReporterError(
+      "task has a duplicate WorkGraphTaskResponse/v1 sidecar",
+    );
+  }
+  return responses;
+}
+
+// A lifecycle artifact may cite the Response it was reported from. When it
+// does, that evidence must exist on this task and must answer exactly the
+// subject the artifact reports on, so provenance cannot be borrowed from
+// another attempt or another role.
+function validateResponseProvenance(payload, responses, role, subject, label) {
+  if (payload.response === undefined) return;
+  const matches = responses.filter(
+    ({ payload: response }) => response.responseId === payload.response.id,
+  );
+  if (matches.length !== 1) {
+    throw new WorkGraphReporterError(
+      `${label} references a missing or duplicate WorkGraphTaskResponse/v1`,
+    );
+  }
+  const [{ payload: response }] = matches;
+  if (response.role !== role) {
+    throw new WorkGraphReporterError(
+      `${label} references ${response.role} evidence for a ${role} artifact`,
+    );
+  }
+  for (const [field, expected] of Object.entries(subject)) {
+    if (response[field] !== expected) {
+      throw new WorkGraphReporterError(
+        `${label} references evidence for a different ${field}`,
+      );
+    }
+  }
+}
+
+// Every actor authorized to execute this task. Membership authorizes the
+// lease; `policy.workerId` is only the canonical default, so a non-preferred
+// candidate that actually holds the Dispatch is equally authorized.
+function permittedExecutors(context) {
+  if (context.compiled) {
+    return context.compiled.taskDefinition.routing.permittedExecutors;
+  }
+  return [
+    context.task.taskDefinitionId === ROOT_TASK_DEFINITION_ID
+      ? "issue-coordinator"
+      : "issue-validator",
+  ];
+}
+
 function resultContext(context, input, config, expectedBody) {
   const dispatches = markedComments(
     context.comments,
     TASK_DISPATCH_MARKER,
     parseTaskDispatch,
   );
-  const expectedExecutor = context.compiled
-    ? context.compiled.policy.workerId
-    : context.task.taskDefinitionId === ROOT_TASK_DEFINITION_ID
-      ? "issue-coordinator"
-      : "issue-validator";
-  if (config.executorId !== expectedExecutor) {
-    throw new WorkGraphReporterError(
-      "reporter executor profile is not authorized for this task",
-    );
-  }
+  const permitted = permittedExecutors(context);
   if (
     dispatches.length === 0 ||
     dispatches.some(
@@ -1680,7 +1761,9 @@ function resultContext(context, input, config, expectedBody) {
         !payload ||
         comment.user?.id !== config.assignmentId ||
         !dispatchMatchesTask(payload, context.task) ||
-        payload.lease.executorId !== expectedExecutor,
+        // Every Dispatch must lease a permitted executor; which member holds
+        // the lease is decided per attempt, not by the policy default.
+        !permitted.includes(payload.lease.executorId),
     ) ||
     new Set(dispatches.map(({ payload }) => payload.dispatchId)).size !==
       dispatches.length ||
@@ -1709,6 +1792,13 @@ function resultContext(context, input, config, expectedBody) {
   if (dispatch !== dispatches.at(-1).payload) {
     throw new WorkGraphReporterError(
       "Dispatch and Lease are not the current selected attempt",
+    );
+  }
+  // The selected Dispatch names the actor that actually holds this attempt's
+  // lease, so it is what authorizes the reporting profile or broker.
+  if (config.executorId !== dispatch.lease.executorId) {
+    throw new WorkGraphReporterError(
+      "reporter executor profile is not authorized for this task",
     );
   }
   const results = markedComments(
@@ -2183,7 +2273,11 @@ function lifecycleArtifacts(context, input, config, requireCurrent = true) {
     dispatches.some(
       ({ payload }) =>
         !dispatchMatchesTask(payload, context.task) ||
-        payload.lease.executorId !== context.policy.workerId,
+        // Membership, not the policy default: a non-preferred candidate may
+        // hold this attempt's lease.
+        !context.taskDefinition.routing.permittedExecutors.includes(
+          payload.lease.executorId,
+        ),
     ) ||
     new Set(dispatches.map(({ payload }) => payload.dispatchId)).size !==
       dispatches.length ||
@@ -2221,6 +2315,15 @@ function lifecycleArtifacts(context, input, config, requireCurrent = true) {
   ).map((entry) =>
     validateProtocolComment(entry, config.resultId, TASK_RESULT_MARKER),
   );
+  for (const { payload } of results) {
+    validateResponseProvenance(
+      payload,
+      taskResponses(context.comments, context.task, config),
+      "worker",
+      { dispatchId: payload.dispatchId, leaseId: payload.leaseId },
+      "Result",
+    );
+  }
   if (
     results.some(
       ({ payload }) =>
@@ -2291,6 +2394,25 @@ function lifecycleArtifacts(context, input, config, requireCurrent = true) {
       TASK_EVALUATION_MARKER,
     ),
   );
+  const responses = taskResponses(context.comments, context.task, config);
+  for (const { payload } of results) {
+    validateResponseProvenance(
+      payload,
+      responses,
+      "worker",
+      { dispatchId: payload.dispatchId, leaseId: payload.leaseId },
+      "Result",
+    );
+  }
+  for (const { payload } of evaluations) {
+    validateResponseProvenance(
+      payload,
+      responses,
+      "evaluator",
+      { resultId: payload.resultId },
+      "Evaluation",
+    );
+  }
   const evaluationResults = new Map(
     results.map((entry) => [entry.payload.resultId, entry]),
   );
