@@ -1762,7 +1762,7 @@ function scopedWorkflow() {
         maxReworkAttempts: 3,
       },
       steps: {
-        run: task("coordinate-issue", "issue-coordinator", "completed", {
+        run: task("coordinate-issue", "issue-worker", "completed", {
           flowEntries: ["fix", "notify"],
         }),
         completed: { type: "terminal", outcome: "completed" },

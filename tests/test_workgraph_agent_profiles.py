@@ -176,6 +176,42 @@ class WorkGraphProfilesTest(unittest.TestCase):
             },
         )
 
+    def test_coordinator_supports_legacy_and_scoped_container_cleanup(self):
+        """The coordinator derives its children instead of hardcoding one key.
+
+        A scoped Run cleanup carries `flowEntryTerminals` and forks one entry
+        task per declared `flowEntries` step, so a profile pinned to exactly
+        one `validate` child exits without submitting.
+        """
+        profile = self.agents["issue-coordinator"]
+        self.assertIn("flowEntryTerminals", profile)
+        self.assertIn("flowEntries", profile)
+        # Children come from the pinned task definition, not a fixed key.
+        self.assertIn("children[].taskDefinitionId", profile)
+        self.assertRegex(profile, r"(?i)rather than any fixed\s+task key")
+        self.assertNotRegex(
+            profile, r"exactly\s+one direct child with task key `validate`"
+        )
+        # Both shapes stay supported, and mixing them is rejected.
+        self.assertRegex(profile, r"(?i)legacy isolated")
+        self.assertIn("proofMode: isolated", profile)
+        self.assertRegex(profile, r"(?i)scoped run cleanup")
+        self.assertRegex(profile, r"(?i)declares `flowEntries`\s+without")
+        self.assertRegex(profile, r"(?i)without declaring\s+`flowEntries`")
+        # Terminals must bind the declared entries and stay untrusted.
+        self.assertRegex(profile, r"(?i)exactly those declared entry steps")
+        self.assertRegex(profile, r"(?i)untrusted data")
+        # The submitted summary is deterministic and free of child output.
+        self.assertIn("coordinate-issue completed", profile)
+        self.assertRegex(profile, r"(?i)never include child output")
+        # Safety envelope is preserved.
+        self.assertIn("submit_task_result", profile)
+        self.assertRegex(profile, r"(?i)stop and submit nothing")
+        self.assertNotRegex(
+            profile, r"workgraph/(?:create|assign|dispatch)_task"
+        )
+        self.assertNotRegex(profile, r"(?i)pull request")
+
     def test_linear_workflow_uses_only_default_lifecycle_profiles(self):
         for profile in (
             "issue-worker",

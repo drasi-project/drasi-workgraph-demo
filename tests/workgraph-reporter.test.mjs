@@ -3810,3 +3810,56 @@ test("closing the current task or its owning container still fails closed", asyn
     },
   );
 });
+
+test("the scoped Run container reports through the generic worker executor", async () => {
+  // The default-main issue-coordinator profile pins a five-key context and a
+  // single `validate` child, so the scoped Run cleanup uses the generic
+  // issue-worker executor instead.
+  assert.deepEqual(SCOPED.root.routing.permittedExecutors, ["issue-worker"]);
+  assert.equal(
+    SCOPED.steps.run.executionPolicies[SCOPED.root.taskDefinitionId].workerId,
+    "issue-worker",
+  );
+  assert.deepEqual(SCOPED.root.flowEntries, ["fix", "notify"]);
+
+  await withScopedFlow(
+    { role: "worker", executorId: "issue-worker", omitResultFor: "run" },
+    async ({ fixture, writes }) => {
+      const input = scopedTaskInput(fixture, "run");
+      const created = await callTool("submit_task_result", {
+        taskLocator: input.taskLocator,
+        taskId: input.taskId,
+        dispatchId: input.dispatchId,
+        leaseId: input.leaseId,
+        outcome: "succeeded",
+        output: { childCount: 2, step: "run" },
+      });
+      assert.equal(
+        created.resultId,
+        fixture.artifacts.run.result.resultId,
+      );
+      assert.equal(writes.length, 1);
+      assert.equal(writes[0].number, SCOPED_ISSUES.run.number);
+    },
+  );
+
+  // A stale coordinator executor is no longer authorized for this task.
+  await withScopedFlow(
+    { role: "worker", executorId: "issue-coordinator", omitResultFor: "run" },
+    async ({ fixture, writes }) => {
+      const input = scopedTaskInput(fixture, "run");
+      await assert.rejects(
+        callTool("submit_task_result", {
+          taskLocator: input.taskLocator,
+          taskId: input.taskId,
+          dispatchId: input.dispatchId,
+          leaseId: input.leaseId,
+          outcome: "succeeded",
+          output: { childCount: 2, step: "run" },
+        }),
+        /reporter executor profile is not authorized for this task/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
+});

@@ -4,7 +4,7 @@ WorkGraphWorkflowDefinition/v1
 {
   "workflowDefinitionId": "scoped-control-flow",
   "version": "v1",
-  "digest": "sha256:e5f955b3dbfa1b9797fa3c3b77eeed545a3d0dbca5a653a6928edae26aa90352",
+  "digest": "sha256:c06e816c545a8b2d3b6b9ec69b08d86a70b180ccdbd36cb890a57f5d73631f75",
   "trigger": "workgraph",
   "defaults": {
     "evaluator": "result-evaluator",
@@ -18,7 +18,7 @@ WorkGraphWorkflowDefinition/v1
     "operation": "coordinate-issue",
     "routing": {
       "permittedExecutors": [
-        "issue-coordinator"
+        "issue-worker"
       ]
     },
     "staticInputs": {},
@@ -216,7 +216,7 @@ WorkGraphWorkflowDefinition/v1
         "operation": "coordinate-issue",
         "routing": {
           "permittedExecutors": [
-            "issue-coordinator"
+            "issue-worker"
           ]
         },
         "staticInputs": {},
@@ -228,7 +228,7 @@ WorkGraphWorkflowDefinition/v1
       },
       "executionPolicies": {
         "urn:drasi:workgraph:id:v1:task-definition:sha256:c66af8b05f13df2e6d8551010b5944d6d26dd3b28ac0b8aa6a8d18e0329d7141": {
-          "workerId": "issue-coordinator",
+          "workerId": "issue-worker",
           "evaluatorId": "result-evaluator",
           "orchestratorId": "workflow-coordinator",
           "maxReworkAttempts": 3

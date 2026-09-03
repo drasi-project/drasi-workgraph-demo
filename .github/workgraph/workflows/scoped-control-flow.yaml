@@ -14,7 +14,7 @@ spec:
     run:
       type: task
       operation: coordinate-issue
-      worker: issue-coordinator
+      worker: issue-worker
       inputs: {}
       flowEntries:
         - fix
