@@ -38,6 +38,7 @@ import {
   parseTaskJoin,
   parseTaskResult,
   parseTaskRoute,
+  resolveCompiledFlowScopes,
   taskResultDigest,
   validateTaskRouteAgainstDefinition,
 } from "./workgraph-v1-definition.mjs";
@@ -91,11 +92,23 @@ const TASK_IDENTITY_KEYS = [
   "taskKey",
   "operation",
 ];
+// Reserved runtime inputs that bind a task to the routed scope its owning
+// container launched. They are written as a set or not at all.
+const SCOPE_INPUT_KEYS = [
+  "workgraphScopeEntryStepId",
+  "workgraphScopeEntryTaskId",
+  "workgraphScopeParentTaskId",
+];
+const PREDECESSOR_INPUT_KEY = "workgraphPredecessorTaskId";
+const MAX_SCOPE_MEMBER_TRACE = 32;
+const MAX_TASK_ANCESTRY_HOPS = 16;
 const COMPILED_WORKFLOWS = new Map();
+const COMPILED_FLOW_SCOPES = new Map();
 for (const workflowDefinitionId of [
   "fork-join-lifecycle",
   "issue-lifecycle",
   "mixed-control-flow",
+  "scoped-control-flow",
 ]) {
   const fixture = JSON.parse(
     readFileSync(
@@ -118,6 +131,10 @@ for (const workflowDefinitionId of [
     throw new Error("pinned compiled WorkGraph fixture catalog is inconsistent");
   }
   COMPILED_WORKFLOWS.set(workflowDefinitionId, workflow);
+  COMPILED_FLOW_SCOPES.set(
+    workflowDefinitionId,
+    resolveCompiledFlowScopes(workflow),
+  );
 }
 
 function compiledWorkflowForTask(task) {
@@ -812,6 +829,452 @@ function validateRootAdmission(
   return { input, currentDigest };
 }
 
+function compiledStepId(value, label) {
+  if (
+    typeof value !== "string" ||
+    !/^[a-z][a-z0-9-]{0,63}$/.test(value) ||
+    value.endsWith("-")
+  ) {
+    throw new WorkGraphReporterError(`${label} must be a lowercase step ID`);
+  }
+  return value;
+}
+
+// The reserved scope binding a task carries, or `null` for an ordinary trunk
+// or fixed-child task. The three scope inputs are all-or-none. A pinned
+// definition can never author them: normalization rejects a compiled workflow
+// whose scope or successor tasks declare a reserved key as a static input.
+function scopeInputs(task, label) {
+  const inputs = task.resolvedInputs ?? {};
+  const present = SCOPE_INPUT_KEYS.filter((key) => key in inputs);
+  if (present.length === 0) return null;
+  if (present.length !== SCOPE_INPUT_KEYS.length) {
+    throw new WorkGraphReporterError(
+      `${label} reserved scope inputs must all be present or all absent`,
+    );
+  }
+  const scope = {
+    entryStepId: compiledStepId(
+      inputs.workgraphScopeEntryStepId,
+      `${label} workgraphScopeEntryStepId`,
+    ),
+    entryTaskId: canonicalTaskId(
+      inputs.workgraphScopeEntryTaskId,
+      `${label} workgraphScopeEntryTaskId`,
+    ),
+    parentTaskId: canonicalTaskId(
+      inputs.workgraphScopeParentTaskId,
+      `${label} workgraphScopeParentTaskId`,
+    ),
+    predecessorTaskId:
+      PREDECESSOR_INPUT_KEY in inputs
+        ? canonicalTaskId(
+            inputs[PREDECESSOR_INPUT_KEY],
+            `${label} ${PREDECESSOR_INPUT_KEY}`,
+          )
+        : null,
+  };
+  if (scope.entryTaskId === scope.parentTaskId) {
+    throw new WorkGraphReporterError(
+      `${label} scope entry and owning container must differ`,
+    );
+  }
+  return scope;
+}
+
+// The three reserved scope strings, ignoring the routed predecessor, which
+// only a routed step root carries.
+function sameFlowScope(left, right) {
+  if (left === null || right === null) return left === right;
+  return (
+    left.entryStepId === right.entryStepId &&
+    left.entryTaskId === right.entryTaskId &&
+    left.parentTaskId === right.parentTaskId
+  );
+}
+
+function compiledTransitionTargets(transition) {
+  return transition.type === "next"
+    ? [transition.targetStepId]
+    : Object.values(transition.targets);
+}
+
+function sameWorkflowPins(left, right) {
+  return (
+    left.rootIssueId === right.rootIssueId &&
+    left.workflowRunId === right.workflowRunId &&
+    left.workflowDefinitionId === right.workflowDefinitionId &&
+    left.workflowDefinitionVersion === right.workflowDefinitionVersion &&
+    left.workflowDefinitionDigest === right.workflowDefinitionDigest
+  );
+}
+
+// The task definition IDs a definition forks through its `flowEntries`, in
+// canonical declaration order.
+function flowEntryDefinitionIds(workflow, taskDefinition) {
+  return (taskDefinition.flowEntries ?? []).map((entryStepId) => {
+    const step = workflow.steps[entryStepId];
+    if (!step || step.type !== "task") {
+      throw new WorkGraphReporterError(
+        "declared flow entry does not resolve to a compiled task step",
+      );
+    }
+    return step.taskDefinition.taskDefinitionId;
+  });
+}
+
+function scopeMemberIndex(children, config) {
+  const members = new Map();
+  for (const child of children) {
+    if (
+      child?.type?.name !== TASK_TYPE_NAME ||
+      child?.type?.node_id !== config.taskTypeId ||
+      child?.user?.id !== config.launcherId
+    ) {
+      continue;
+    }
+    let candidate;
+    try {
+      candidate = taskIssue(
+        child,
+        { issueNumber: child.number, issueNodeId: child.node_id },
+        config,
+        "Scope member candidate",
+      );
+    } catch {
+      continue;
+    }
+    members.set(candidate.taskId, { issue: child, task: candidate });
+  }
+  return members;
+}
+
+// Validates one scoped task against the routed scope its reserved inputs
+// claim, and returns the owning container so ancestry can continue upward.
+// The entry root is gated by the owner's Fork; every other member is gated by
+// its predecessor's Route and traces back to the entry without a cycle.
+async function validateFlowScopeAncestry(
+  task,
+  compiled,
+  scope,
+  parentLink,
+  github,
+  config,
+  requireOpen,
+) {
+  const workflow = compiled.workflow;
+  const flow = COMPILED_FLOW_SCOPES.get(workflow.workflowDefinitionId);
+  const definitionScope = flow?.scopes.get(scope.entryStepId);
+  if (!definitionScope) {
+    throw new WorkGraphReporterError(
+      "task scope entry step is not a compiled flow entry",
+    );
+  }
+  if (!compiled.isStepRoot || !definitionScope.stepIds.has(compiled.sourceStepId)) {
+    throw new WorkGraphReporterError(
+      "scoped task step does not belong to its declared flow scope",
+    );
+  }
+  for (const target of compiledTransitionTargets(compiled.source.transition)) {
+    if (!definitionScope.stepIds.has(target)) {
+      throw new WorkGraphReporterError(
+        "scoped task transitions outside its declared flow scope",
+      );
+    }
+  }
+
+  const ownerIssue = await github.issue(parentLink.number);
+  linkedIssue(
+    ownerIssue,
+    parentLink.number,
+    parentLink.node_id,
+    "scoped task owning container parent",
+  );
+  if (requireOpen && ownerIssue.state !== "open") {
+    throw new WorkGraphReporterError(
+      "lifecycle reporting requires an open scope owning container",
+    );
+  }
+  const ownerTask = taskIssue(
+    ownerIssue,
+    { issueNumber: ownerIssue.number, issueNodeId: ownerIssue.node_id },
+    config,
+    "Scope owning container",
+  );
+  const ownerCompiled = validateLifecycleTask(
+    ownerTask,
+    "Scope owning container",
+    workflow,
+  );
+  if (
+    ownerTask.taskId !== scope.parentTaskId ||
+    ownerTask.taskDefinitionId !== definitionScope.ownerTaskDefinitionId ||
+    !sameWorkflowPins(ownerTask, task)
+  ) {
+    throw new WorkGraphReporterError(
+      "scoped task native parent is not its declared scope owning container",
+    );
+  }
+
+  const [ownerComments, ownerChildren] = await Promise.all([
+    github.comments(ownerIssue.number),
+    github.subIssues(ownerIssue.number),
+  ]);
+  const forks = markedComments(
+    ownerComments,
+    TASK_FORK_MARKER,
+    parseTaskFork,
+  ).map((entry) =>
+    validateProtocolComment(entry, config.assignmentId, TASK_FORK_MARKER),
+  );
+  if (forks.length !== 1 || !dispatchMatchesTask(forks[0].payload, ownerTask)) {
+    throw new WorkGraphReporterError(
+      "scope owning container requires exactly one matching Fork",
+    );
+  }
+  const fork = forks[0].payload;
+  const entryDefinitionId = workflow.steps[scope.entryStepId].taskDefinition
+    .taskDefinitionId;
+  const forkedEntry = fork.children.find(
+    (child) =>
+      child.taskDefinitionId === entryDefinitionId &&
+      child.taskId === scope.entryTaskId,
+  );
+  if (!forkedEntry) {
+    throw new WorkGraphReporterError(
+      "scope owning container Fork does not name the declared flow entry task",
+    );
+  }
+  const members = scopeMemberIndex(ownerChildren, config);
+
+  let current = { task, compiled, scope };
+  const visited = new Set([task.taskId]);
+  for (let hop = 0; hop <= MAX_SCOPE_MEMBER_TRACE; hop += 1) {
+    if (current.task.taskId === scope.entryTaskId) {
+      if (current.scope.predecessorTaskId !== null) {
+        throw new WorkGraphReporterError(
+          "flow entry task must not declare a routed predecessor",
+        );
+      }
+      if (
+        current.compiled.sourceStepId !== scope.entryStepId ||
+        current.task.taskDefinitionId !== entryDefinitionId
+      ) {
+        throw new WorkGraphReporterError(
+          "flow entry task does not realize its declared entry step",
+        );
+      }
+      return { task: ownerTask, compiled: ownerCompiled, issue: ownerIssue };
+    }
+    if (
+      fork.children.some((child) => child.taskId === current.task.taskId)
+    ) {
+      throw new WorkGraphReporterError(
+        "routed scope member must not be a forked child of its owning container",
+      );
+    }
+    const predecessorTaskId = current.scope.predecessorTaskId;
+    if (predecessorTaskId === null) {
+      throw new WorkGraphReporterError(
+        `routed scope member requires ${PREDECESSOR_INPUT_KEY}`,
+      );
+    }
+    if (visited.has(predecessorTaskId)) {
+      throw new WorkGraphReporterError(
+        "scoped task predecessor chain is cyclic",
+      );
+    }
+    visited.add(predecessorTaskId);
+    const predecessor = members.get(predecessorTaskId);
+    if (!predecessor) {
+      throw new WorkGraphReporterError(
+        "scoped task predecessor is not a task of the same owning container",
+      );
+    }
+    if (requireOpen && predecessor.issue.state !== "open") {
+      throw new WorkGraphReporterError(
+        "lifecycle reporting requires an open scoped predecessor chain",
+      );
+    }
+    const predecessorCompiled = validateLifecycleTask(
+      predecessor.task,
+      "Scope predecessor",
+      workflow,
+    );
+    const predecessorScope = scopeInputs(
+      predecessor.task,
+      "Scope predecessor",
+    );
+    if (
+      !predecessorScope ||
+      predecessorScope.entryStepId !== scope.entryStepId ||
+      predecessorScope.entryTaskId !== scope.entryTaskId ||
+      predecessorScope.parentTaskId !== scope.parentTaskId ||
+      !sameWorkflowPins(predecessor.task, task)
+    ) {
+      throw new WorkGraphReporterError(
+        "scoped task predecessor belongs to a different flow scope",
+      );
+    }
+    if (
+      !predecessorCompiled.isStepRoot ||
+      !definitionScope.stepIds.has(predecessorCompiled.sourceStepId)
+    ) {
+      throw new WorkGraphReporterError(
+        "scoped task predecessor step does not belong to the same flow scope",
+      );
+    }
+    if (
+      current.task.taskId !==
+      deriveWorkGraphProtocolId("task", [
+        task.workflowRunId,
+        predecessorTaskId,
+        current.task.taskDefinitionId,
+      ])
+    ) {
+      throw new WorkGraphReporterError(
+        "routed scope member identity does not derive from its predecessor",
+      );
+    }
+    const routes = markedComments(
+      await github.comments(predecessor.issue.number),
+      TASK_ROUTE_MARKER,
+      parseTaskRoute,
+    ).map((entry) =>
+      validateProtocolComment(entry, config.routeId, TASK_ROUTE_MARKER),
+    );
+    const routed = routes.filter(
+      ({ payload }) =>
+        payload.taskId === predecessor.task.taskId &&
+        payload.action === "advance" &&
+        payload.targetStepId === current.compiled.sourceStepId &&
+        payload.targetStepKind === "task" &&
+        payload.targetTaskDefinitionId === current.task.taskDefinitionId,
+    );
+    if (routed.length !== 1) {
+      throw new WorkGraphReporterError(
+        "scoped task predecessor has no single Route advancing to it",
+      );
+    }
+    current = {
+      task: predecessor.task,
+      compiled: predecessorCompiled,
+      scope: predecessorScope,
+    };
+  }
+  throw new WorkGraphReporterError(
+    "scoped task predecessor chain does not reach its flow entry",
+  );
+}
+
+// Walks a task's native ancestry up to its ordinary Root Issue. A scoped task
+// climbs to its owning container first; an ordinary nested child climbs its
+// compiled parent chain; a step root's parent is the Root Issue itself.
+async function resolveAncestryRootIssue(
+  task,
+  compiled,
+  parentLink,
+  github,
+  config,
+  { requireOpen = false, strict = false } = {},
+) {
+  let currentTask = task;
+  let currentCompiled = compiled;
+  let currentLink = parentLink;
+  for (let hop = 0; hop <= MAX_TASK_ANCESTRY_HOPS; hop += 1) {
+    const scope = scopeInputs(currentTask, "Task");
+    // Only a scoped step root is validated against its routed scope. A nested
+    // fixed child inherits the same scope strings but has no step of its own,
+    // so it first follows its compiled parent chain to that step root.
+    if (scope && currentCompiled.isStepRoot) {
+      const owner = await validateFlowScopeAncestry(
+        currentTask,
+        currentCompiled,
+        scope,
+        currentLink,
+        github,
+        config,
+        requireOpen,
+      );
+      currentTask = owner.task;
+      currentCompiled = owner.compiled;
+      currentLink = await github.parent(owner.issue.number);
+      continue;
+    }
+    if (currentCompiled.isStepRoot) {
+      const rootIssueCandidate = await github.issue(currentLink.number);
+      linkedIssue(
+        rootIssueCandidate,
+        currentLink.number,
+        currentLink.node_id,
+        "top-level task Root Issue parent",
+      );
+      return rootIssueCandidate;
+    }
+    if (scope !== null && scope.predecessorTaskId !== null) {
+      throw new WorkGraphReporterError(
+        `nested child task must not declare ${PREDECESSOR_INPUT_KEY}`,
+      );
+    }
+    const ancestorIssue = await github.issue(currentLink.number);
+    linkedIssue(
+      ancestorIssue,
+      currentLink.number,
+      currentLink.node_id,
+      "recursive task ancestor",
+    );
+    if (strict && ancestorIssue.type?.name !== TASK_TYPE_NAME) {
+      throw new WorkGraphReporterError(
+        "recursive task ancestry ended before its compiled step root",
+      );
+    }
+    if (requireOpen && ancestorIssue.state !== "open") {
+      throw new WorkGraphReporterError(
+        "lifecycle reporting requires an open recursive task ancestry",
+      );
+    }
+    const ancestor = taskIssue(
+      ancestorIssue,
+      {
+        issueNumber: ancestorIssue.number,
+        issueNodeId: ancestorIssue.node_id,
+      },
+      config,
+      "Recursive task ancestor",
+    );
+    const ancestorCompiled = validateLifecycleTask(
+      ancestor,
+      "Recursive task ancestor",
+    );
+    if (
+      ancestor.taskDefinitionId !== currentCompiled.parentTaskDefinitionId ||
+      ancestor.rootIssueId !== task.rootIssueId ||
+      ancestor.workflowRunId !== task.workflowRunId ||
+      (strict &&
+        (ancestor.workflowDefinitionId !== task.workflowDefinitionId ||
+          ancestor.workflowDefinitionVersion !==
+            task.workflowDefinitionVersion ||
+          ancestor.workflowDefinitionDigest !== task.workflowDefinitionDigest))
+    ) {
+      throw new WorkGraphReporterError(
+        "recursive task ancestry does not match its compiled parent chain",
+      );
+    }
+    // A nested child inherits its parent's routed scope verbatim, so the three
+    // reserved scope strings must agree before the step root validates them.
+    const ancestorScope = scopeInputs(ancestor, "Recursive task ancestor");
+    if (!sameFlowScope(scope, ancestorScope)) {
+      throw new WorkGraphReporterError(
+        "nested child task does not inherit its parent's routed scope",
+      );
+    }
+    currentTask = ancestor;
+    currentCompiled = ancestorCompiled;
+    currentLink = await github.parent(ancestorIssue.number);
+  }
+  return null;
+}
+
 async function loadTaskContext(locator, taskId, github, config, includeComments) {
   const [identity, repository, issue, parentLink, comments] = await Promise.all([
     github.identity(),
@@ -837,63 +1300,13 @@ async function loadTaskContext(locator, taskId, github, config, includeComments)
   const generated = workflow !== null;
   if (generated) {
     const compiled = validateLifecycleTask(task, "Task", workflow);
-    let rootIssueCandidate;
-    if (compiled.isStepRoot) {
-      rootIssueCandidate = await github.issue(parentLink.number);
-      linkedIssue(
-        rootIssueCandidate,
-        parentLink.number,
-        parentLink.node_id,
-        "top-level task Root Issue parent",
-      );
-    } else {
-      let expectedParentDefinitionId = compiled.parentTaskDefinitionId;
-      let ancestorLink = parentLink;
-      for (let depth = 0; depth <= 5; depth += 1) {
-        const ancestorIssue = await github.issue(ancestorLink.number);
-        linkedIssue(
-          ancestorIssue,
-          ancestorLink.number,
-          ancestorLink.node_id,
-          "recursive task ancestor",
-        );
-        const ancestor = taskIssue(
-          ancestorIssue,
-          {
-            issueNumber: ancestorIssue.number,
-            issueNodeId: ancestorIssue.node_id,
-          },
-          config,
-          "Recursive task ancestor",
-        );
-        const ancestorCompiled = validateLifecycleTask(
-          ancestor,
-          "Recursive task ancestor",
-        );
-        if (
-          ancestor.taskDefinitionId !== expectedParentDefinitionId ||
-          ancestor.rootIssueId !== task.rootIssueId ||
-          ancestor.workflowRunId !== task.workflowRunId
-        ) {
-          throw new WorkGraphReporterError(
-            "recursive task ancestry does not match its compiled parent chain",
-          );
-        }
-        const nextLink = await github.parent(ancestorIssue.number);
-        if (ancestorCompiled.isStepRoot) {
-          rootIssueCandidate = await github.issue(nextLink.number);
-          linkedIssue(
-            rootIssueCandidate,
-            nextLink.number,
-            nextLink.node_id,
-            "top-level task Root Issue parent",
-          );
-          break;
-        }
-        expectedParentDefinitionId = ancestorCompiled.parentTaskDefinitionId;
-        ancestorLink = nextLink;
-      }
-    }
+    const rootIssueCandidate = await resolveAncestryRootIssue(
+      task,
+      compiled,
+      parentLink,
+      github,
+      config,
+    );
     if (!rootIssueCandidate) {
       throw new WorkGraphReporterError(
         "Task ancestry does not reach its ordinary Root Issue",
@@ -952,6 +1365,7 @@ async function loadTaskContext(locator, taskId, github, config, includeComments)
         compiled.taskDefinition,
         comments,
         config,
+        workflow,
       );
     }
     return {
@@ -1086,7 +1500,13 @@ function markedComments(comments, marker, parser) {
     });
 }
 
-function validateTaskActionPrefix(task, taskDefinition, comments, config) {
+function validateTaskActionPrefix(
+  task,
+  taskDefinition,
+  comments,
+  config,
+  workflow = null,
+) {
   const assignments = markedComments(
     comments,
     TASK_ASSIGNMENT_MARKER,
@@ -1155,7 +1575,16 @@ function validateTaskActionPrefix(task, taskDefinition, comments, config) {
     );
   }
 
-  if (taskDefinition.children.length === 0) {
+  // A container forks its fixed children plus one entry task per declared
+  // flow entry; both kinds are named by the same Fork and joined by the same
+  // Join before the container's own lifecycle continues.
+  const declaredEntryDefinitionIds = workflow
+    ? flowEntryDefinitionIds(workflow, taskDefinition)
+    : [];
+  if (
+    taskDefinition.children.length === 0 &&
+    declaredEntryDefinitionIds.length === 0
+  ) {
     if (
       forks.length !== 0 ||
       joins.length !== 0 ||
@@ -1185,9 +1614,10 @@ function validateTaskActionPrefix(task, taskDefinition, comments, config) {
       "parent actions must be ordered Fork, Join, then Assignment",
     );
   }
-  const declared = taskDefinition.children
-    .map((child) => child.taskDefinitionId)
-    .sort();
+  const declared = [
+    ...taskDefinition.children.map((child) => child.taskDefinitionId),
+    ...declaredEntryDefinitionIds,
+  ].sort();
   if (
     !isDeepStrictEqual(
       fork.children.map((child) => child.taskDefinitionId),
@@ -1619,77 +2049,14 @@ async function loadLifecycleAncestry(
     "task native parent",
   );
 
-  let rootIssueCandidate;
-  if (compiled.isStepRoot) {
-    rootIssueCandidate = await github.issue(parentLink.number);
-    linkedIssue(
-      rootIssueCandidate,
-      parentLink.number,
-      parentLink.node_id,
-      "top-level task Root Issue parent",
-    );
-  } else {
-    let expectedParentDefinitionId = compiled.parentTaskDefinitionId;
-    let ancestorLink = parentLink;
-    for (let depth = 0; depth <= 5; depth += 1) {
-      const ancestorIssue = await github.issue(ancestorLink.number);
-      linkedIssue(
-        ancestorIssue,
-        ancestorLink.number,
-        ancestorLink.node_id,
-        "recursive task ancestor",
-      );
-      if (ancestorIssue.type?.name !== TASK_TYPE_NAME) {
-        throw new WorkGraphReporterError(
-          "recursive task ancestry ended before its compiled step root",
-        );
-      }
-      if (requireOpen && ancestorIssue.state !== "open") {
-        throw new WorkGraphReporterError(
-          "lifecycle reporting requires an open recursive task ancestry",
-        );
-      }
-      const ancestor = taskIssue(
-        ancestorIssue,
-        {
-          issueNumber: ancestorIssue.number,
-          issueNodeId: ancestorIssue.node_id,
-        },
-        config,
-        "Recursive task ancestor",
-      );
-      const ancestorCompiled = validateLifecycleTask(
-        ancestor,
-        "Recursive task ancestor",
-      );
-      if (
-        ancestor.taskDefinitionId !== expectedParentDefinitionId ||
-        ancestor.rootIssueId !== task.rootIssueId ||
-        ancestor.workflowRunId !== task.workflowRunId ||
-        ancestor.workflowDefinitionId !== task.workflowDefinitionId ||
-        ancestor.workflowDefinitionVersion !==
-          task.workflowDefinitionVersion ||
-        ancestor.workflowDefinitionDigest !== task.workflowDefinitionDigest
-      ) {
-        throw new WorkGraphReporterError(
-          "recursive task ancestry does not match its compiled parent chain",
-        );
-      }
-      const nextLink = await github.parent(ancestorIssue.number);
-      if (ancestorCompiled.isStepRoot) {
-        rootIssueCandidate = await github.issue(nextLink.number);
-        linkedIssue(
-          rootIssueCandidate,
-          nextLink.number,
-          nextLink.node_id,
-          "top-level task Root Issue parent",
-        );
-        break;
-      }
-      expectedParentDefinitionId = ancestorCompiled.parentTaskDefinitionId;
-      ancestorLink = nextLink;
-    }
-  }
+  let rootIssueCandidate = await resolveAncestryRootIssue(
+    task,
+    compiled,
+    parentLink,
+    github,
+    config,
+    { requireOpen, strict: true },
+  );
   if (!rootIssueCandidate) {
     throw new WorkGraphReporterError(
       "Task ancestry does not reach its ordinary Root Issue",
@@ -1766,7 +2133,13 @@ async function loadLifecycleAncestry(
       "configured orchestrator does not match the effective compiled policy",
     );
   }
-  validateTaskActionPrefix(task, compiled.taskDefinition, comments, config);
+  validateTaskActionPrefix(
+    task,
+    compiled.taskDefinition,
+    comments,
+    config,
+    compiled.workflow,
+  );
   return {
     issue,
     task,

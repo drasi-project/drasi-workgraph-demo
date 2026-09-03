@@ -18,6 +18,18 @@ export const MAX_TASK_DEFINITION_CHILDREN = 16;
 export const MAX_TASK_DEFINITION_DEPTH = 4;
 export const MAX_WORKGRAPH_BODY_BYTES = 64 * 1024;
 export const MAX_TASK_DEFINITION_EXECUTORS = 8;
+// Runtime writes these into `resolvedInputs` for generated entry, routed
+// scope, and routed successor tasks, so a definition may not author them.
+export const RESERVED_SUCCESSOR_INPUT_KEY = "workgraphPredecessorTaskId";
+export const RESERVED_SCOPE_INPUT_KEYS = [
+  "workgraphScopeEntryStepId",
+  "workgraphScopeEntryTaskId",
+  "workgraphScopeParentTaskId",
+];
+export const RESERVED_RUNTIME_INPUT_KEYS = [
+  RESERVED_SUCCESSOR_INPUT_KEY,
+  ...RESERVED_SCOPE_INPUT_KEYS,
+];
 export const WORKGRAPH_ID_NAMESPACE = "urn:drasi:workgraph:id:v1";
 
 const MAX_DATA_DEPTH = 32;
@@ -47,6 +59,9 @@ const TASK_DEFINITION_KEYS = [
   "staticInputs",
   "children",
 ];
+// `flowEntries` is additive: a definition that owns no routed scope omits it
+// entirely, so every pre-flow canonical body and digest stays byte-identical.
+const TASK_DEFINITION_OPTIONAL_KEYS = ["flowEntries"];
 const ROUTING_KEYS = ["permittedExecutors"];
 const RUNTIME_TASK_KEYS = [
   "taskId",
@@ -101,6 +116,50 @@ function exactKeys(value, keys, context) {
       `${context} properties must be exactly ${[...keys].sort().join(", ")}`,
     );
   }
+}
+
+function taskDefinitionKeys(value, context) {
+  if (!object(value)) {
+    throw new WorkGraphDefinitionError(`${context} must be an object`);
+  }
+  const keys = Object.keys(value);
+  const known = new Set([
+    ...TASK_DEFINITION_KEYS,
+    ...TASK_DEFINITION_OPTIONAL_KEYS,
+  ]);
+  if (
+    TASK_DEFINITION_KEYS.some((key) => !keys.includes(key)) ||
+    keys.some((key) => !known.has(key))
+  ) {
+    throw new WorkGraphDefinitionError(
+      `${context} properties must be exactly ${[...TASK_DEFINITION_KEYS]
+        .sort()
+        .join(", ")} with optional ${TASK_DEFINITION_OPTIONAL_KEYS.join(", ")}`,
+    );
+  }
+}
+
+// Declaration-local `flowEntries` invariants: ordered unique step IDs sharing
+// one direct-child bound with the fixed children of the same definition.
+function normalizeFlowEntries(value, childCount, taskDefinitionId, context) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new WorkGraphDefinitionError(`${context}.flowEntries must be an array`);
+  }
+  if (childCount + value.length > MAX_TASK_DEFINITION_CHILDREN) {
+    throw new WorkGraphDefinitionError(
+      `task definition '${taskDefinitionId}' exceeds ${MAX_TASK_DEFINITION_CHILDREN} direct children`,
+    );
+  }
+  for (const [index, entry] of value.entries()) {
+    identifier(entry, `${context}.flowEntries entry`);
+    if (index > 0 && value[index - 1] >= entry) {
+      throw new WorkGraphDefinitionError(
+        `task definition '${taskDefinitionId}' flowEntries must be ordered by unique step ID`,
+      );
+    }
+  }
+  return [...value];
 }
 
 function identifier(value, context) {
@@ -305,7 +364,7 @@ function prettyJson(value, depth = 0, dataMode = false) {
 }
 
 function normalizeTaskDefinition(task, context, depth, identities) {
-  exactKeys(task, TASK_DEFINITION_KEYS, context);
+  taskDefinitionKeys(task, context);
   if (depth > MAX_TASK_DEFINITION_DEPTH) {
     throw new WorkGraphDefinitionError(
       `task definition nesting exceeds maximum depth ${MAX_TASK_DEFINITION_DEPTH}`,
@@ -366,6 +425,12 @@ function normalizeTaskDefinition(task, context, depth, identities) {
       );
     }
   }
+  const flowEntries = normalizeFlowEntries(
+    task.flowEntries,
+    task.children.length,
+    task.taskDefinitionId,
+    context,
+  );
 
   return {
     taskDefinitionId: task.taskDefinitionId,
@@ -383,6 +448,7 @@ function normalizeTaskDefinition(task, context, depth, identities) {
         identities,
       ),
     ),
+    ...(flowEntries.length > 0 ? { flowEntries } : {}),
   };
 }
 
@@ -728,6 +794,7 @@ const TASK_STEP_KEYS = [
   "maxReworkAttempts",
   "outcomes",
   "children",
+  "flowEntries",
 ];
 const CHILD_TASK_KEYS = [
   "operation",
@@ -737,6 +804,7 @@ const CHILD_TASK_KEYS = [
   "orchestrator",
   "maxReworkAttempts",
   "children",
+  "flowEntries",
 ];
 const CHILDREN_KEYS = ["join", "tasks"];
 const WAIT_STEP_KEYS = ["type", "event", "next"];
@@ -954,7 +1022,28 @@ function formatArtifact(marker, value) {
   return body;
 }
 
-function normalizeChildren(value, workflowDefaults, context, depth) {
+function normalizeAuthoredFlowEntries(value, childCount, label, context) {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new WorkGraphDefinitionError(`${context}.flowEntries must be an array`);
+  }
+  if (childCount + value.length > MAX_TASK_DEFINITION_CHILDREN) {
+    throw new WorkGraphDefinitionError(
+      `${label} children and flowEntries must total at most ${MAX_TASK_DEFINITION_CHILDREN} tasks`,
+    );
+  }
+  for (const [index, entry] of value.entries()) {
+    identifier(entry, `${label} flowEntries entry`);
+    if (index > 0 && value[index - 1] >= entry) {
+      throw new WorkGraphDefinitionError(
+        `${label} flowEntries must be ordered by unique step id`,
+      );
+    }
+  }
+  return [...value];
+}
+
+function normalizeChildren(value, workflowDefaults, context, depth, label) {
   if (depth > MAX_TASK_DEFINITION_DEPTH) {
     throw new WorkGraphDefinitionError(
       `recursive children exceed maximum depth ${MAX_TASK_DEFINITION_DEPTH}`,
@@ -980,12 +1069,13 @@ function normalizeChildren(value, workflowDefaults, context, depth) {
       workflowDefaults,
       `${context}.tasks.${id}`,
       depth,
+      `${label} child task '${id}'`,
     );
   }
   return { join: value.join, tasks };
 }
 
-function normalizeChildTask(value, workflowDefaults, context, depth) {
+function normalizeChildTask(value, workflowDefaults, context, depth, label) {
   exactAllowedKeys(
     value,
     ["operation", "worker"],
@@ -994,6 +1084,22 @@ function normalizeChildTask(value, workflowDefaults, context, depth) {
   );
   identifier(value.operation, `${context}.operation`);
   identifier(value.worker, `${context}.worker`);
+  const children =
+    "children" in value
+      ? normalizeChildren(
+          value.children,
+          workflowDefaults,
+          `${context}.children`,
+          depth + 1,
+          label,
+        )
+      : null;
+  const flowEntries = normalizeAuthoredFlowEntries(
+    value.flowEntries,
+    children ? Object.keys(children.tasks).length : 0,
+    label,
+    context,
+  );
   const normalized = {
     operation: value.operation,
     worker: value.worker,
@@ -1001,7 +1107,8 @@ function normalizeChildTask(value, workflowDefaults, context, depth) {
     evaluator: null,
     orchestrator: null,
     maxReworkAttempts: null,
-    children: null,
+    children,
+    ...(flowEntries.length > 0 ? { flowEntries } : {}),
   };
   for (const role of ["evaluator", "orchestrator"]) {
     if (role in value) {
@@ -1012,14 +1119,6 @@ function normalizeChildTask(value, workflowDefaults, context, depth) {
   if ("maxReworkAttempts" in value) {
     boundedCount(value.maxReworkAttempts, `${context}.maxReworkAttempts`);
     normalized.maxReworkAttempts = value.maxReworkAttempts;
-  }
-  if ("children" in value) {
-    normalized.children = normalizeChildren(
-      value.children,
-      workflowDefaults,
-      `${context}.children`,
-      depth + 1,
-    );
   }
   return normalized;
 }
@@ -1063,6 +1162,23 @@ function normalizeWorkflowStep(id, value, stepIds) {
   );
   identifier(value.operation, `${context}.operation`);
   identifier(value.worker, `${context}.worker`);
+  const label = `step '${id}'`;
+  const children =
+    "children" in value
+      ? normalizeChildren(
+          value.children,
+          stepIds.defaults,
+          `${context}.children`,
+          1,
+          label,
+        )
+      : null;
+  const flowEntries = normalizeAuthoredFlowEntries(
+    value.flowEntries,
+    children ? Object.keys(children.tasks).length : 0,
+    label,
+    context,
+  );
   const normalized = {
     type: value.type,
     operation: value.operation,
@@ -1071,7 +1187,8 @@ function normalizeWorkflowStep(id, value, stepIds) {
     evaluator: null,
     orchestrator: null,
     maxReworkAttempts: null,
-    children: null,
+    children,
+    ...(flowEntries.length > 0 ? { flowEntries } : {}),
     next: null,
     outcomes: {},
   };
@@ -1117,15 +1234,36 @@ function normalizeWorkflowStep(id, value, stepIds) {
     }
   }
 
-  if ("children" in value) {
-    normalized.children = normalizeChildren(
-      value.children,
-      stepIds.defaults,
-      `${context}.children`,
-      1,
-    );
-  }
   return normalized;
+}
+
+// Nesting levels an authored task tree adds beneath its own step: 0 for a task
+// that declares no children.
+function authoredTreeDepth(task) {
+  const children = Object.values(task.children?.tasks ?? {});
+  return children.length === 0
+    ? 0
+    : 1 + Math.max(...children.map(authoredTreeDepth));
+}
+
+// Every authored task that declares `flowEntries`: the step task itself plus
+// each nested child, keyed by the step whose fork realizes them.
+function authoredFlowOwners(steps) {  const owners = new Map();
+  for (const [id, step] of Object.entries(steps)) {
+    if (step.type !== "task") continue;
+    const declarations = [];
+    const visit = (task, label, depth) => {
+      if (task.flowEntries?.length) {
+        declarations.push({ label, depth, entries: task.flowEntries });
+      }
+      for (const [key, child] of Object.entries(task.children?.tasks ?? {})) {
+        visit(child, `${label} child task '${key}'`, depth + 1);
+      }
+    };
+    visit(step, `step '${id}'`, 0);
+    if (declarations.length > 0) owners.set(id, declarations);
+  }
+  return owners;
 }
 
 function workflowTargets(step) {
@@ -1134,18 +1272,156 @@ function workflowTargets(step) {
   return [];
 }
 
-function validateWorkflowGraph(initial, steps) {
+function reachableFrom(edges, start) {
   const reachable = new Set();
-  const visit = (id) => {
-    if (reachable.has(id)) return;
+  const pending = [start];
+  while (pending.length > 0) {
+    const id = pending.pop();
+    if (reachable.has(id)) continue;
     reachable.add(id);
-    for (const target of workflowTargets(steps[id])) visit(target);
-  };
-  visit(initial);
+    for (const target of edges.get(id) ?? []) pending.push(target);
+  }
+  return reachable;
+}
 
-  if (
-    ![...reachable].some((id) => steps[id].type === "terminal")
-  ) {
+// Validates every declared flow entry against the step graph it launches
+// into. Mirrors the canonical Rust `collect_owners` checks.
+function validateFlowOwners(steps, owners) {
+  for (const [stepId, declarations] of owners) {
+    for (const { label, entries } of declarations) {
+      for (const entry of entries) {
+        if (entry === stepId) {
+          throw new WorkGraphDefinitionError(
+            `${label} flow entry '${entry}' must not reference its own step`,
+          );
+        }
+        if (!(entry in steps)) {
+          throw new WorkGraphDefinitionError(
+            `${label} flow entry '${entry}' is not a declared step`,
+          );
+        }
+        if (steps[entry].type !== "task") {
+          throw new WorkGraphDefinitionError(
+            `${label} flow entry '${entry}' must reference a task step`,
+          );
+        }
+      }
+    }
+  }
+}
+
+// Resolves the disjoint routed scopes a workflow declares. The trunk is the
+// transition closure of `initial`; every entry contributes the transition
+// closure of its own step, which may not overlap the trunk or another scope.
+function resolveFlowTopology(initial, steps, owners) {
+  validateFlowOwners(steps, owners);
+  const transitionEdges = new Map(
+    Object.entries(steps).map(([id, step]) => [id, workflowTargets(step)]),
+  );
+  const controlEdges = new Map(
+    [...transitionEdges].map(([id, targets]) => [id, [...targets]]),
+  );
+  for (const [stepId, declarations] of owners) {
+    const targets = controlEdges.get(stepId);
+    for (const { entries } of declarations) {
+      for (const entry of entries) {
+        if (!targets.includes(entry)) targets.push(entry);
+      }
+    }
+  }
+
+  const trunk = reachableFrom(transitionEdges, initial);
+  const forkDepths = new Map([...trunk].map((id) => [id, 0]));
+  const scopes = new Map();
+  const scopeByStep = new Map();
+  const pending = [...trunk].sort();
+  while (pending.length > 0) {
+    const stepId = pending.shift();
+    const declarations = owners.get(stepId);
+    if (!declarations) continue;
+    const ownerForkDepth = forkDepths.get(stepId) ?? 0;
+    for (const { label, depth, entries, taskDefinitionId } of declarations) {
+      for (const entry of entries) {
+        const members = [...reachableFrom(transitionEdges, entry)].sort();
+        for (const member of members) {
+          if (trunk.has(member)) {
+            throw new WorkGraphDefinitionError(
+              `flow entry '${entry}' claims step '${member}', which is already reachable from the workflow trunk`,
+            );
+          }
+          const owningEntry = scopeByStep.get(member);
+          if (owningEntry !== undefined) {
+            throw new WorkGraphDefinitionError(
+              `flow entry '${entry}' claims step '${member}', which is already owned by flow entry '${owningEntry}'`,
+            );
+          }
+        }
+        if (!members.some((member) => steps[member].type === "terminal")) {
+          throw new WorkGraphDefinitionError(
+            `flow entry '${entry}' must reach at least one terminal step`,
+          );
+        }
+        const forkDepth = ownerForkDepth + depth + 1;
+        for (const member of members) {
+          scopeByStep.set(member, entry);
+          forkDepths.set(member, forkDepth);
+          pending.push(member);
+        }
+        scopes.set(entry, {
+          ownerStepId: stepId,
+          ownerLabel: label,
+          ownerTaskDefinitionId: taskDefinitionId ?? null,
+          entryStepId: entry,
+          stepIds: new Set(members),
+          forkDepth,
+        });
+      }
+    }
+  }
+  return { controlEdges, trunk, scopes, scopeByStep, forkDepths };
+}
+
+// Rejects a definition that authors any input the runtime reserves for the
+// tasks it generates. A step that some transition targets is realized as a
+// routed successor and receives `workgraphPredecessorTaskId`; every task of a
+// routed scope, including the nested children that inherit the scope, receives
+// the three reserved scope strings.
+function validateReservedRuntimeInputs(graphSteps, topology, view) {
+  const successors = new Set();
+  for (const step of Object.values(graphSteps)) {
+    for (const target of workflowTargets(step)) successors.add(target);
+  }
+  const reject = (task, keys) => {
+    const inputs = view.inputs(task);
+    for (const key of keys) {
+      if (object(inputs) && key in inputs) {
+        const kind =
+          key === RESERVED_SUCCESSOR_INPUT_KEY ? "successor" : "scope";
+        throw new WorkGraphDefinitionError(
+          `${view.label(task)} uses reserved routed ${kind} input '${key}'`,
+        );
+      }
+    }
+  };
+  for (const [stepId, step] of Object.entries(graphSteps)) {
+    if (step.type !== "task") continue;
+    if (successors.has(stepId)) {
+      reject(view.root(stepId), [RESERVED_SUCCESSOR_INPUT_KEY]);
+    }
+    if (!topology.scopeByStep.has(stepId)) continue;
+    // Every task of a routed scope carries runtime scope metadata, and the
+    // entry root must stay free of a routed predecessor, so a scoped task may
+    // not author any reserved key.
+    for (const task of view.tree(stepId)) {
+      reject(task, RESERVED_RUNTIME_INPUT_KEYS);
+    }
+  }
+}
+
+function validateWorkflowGraph(initial, steps, owners = new Map()) {
+  const topology = resolveFlowTopology(initial, steps, owners);
+
+  if (![...topology.trunk].some((id) => steps[id].type === "terminal")) {
     throw new WorkGraphDefinitionError(
       "issue workflow must reach at least one terminal",
     );
@@ -1166,20 +1442,22 @@ function validateWorkflowGraph(initial, steps) {
     }
     active.set(id, stack.length);
     stack.push(id);
-    for (const target of workflowTargets(steps[id])) detectCycle(target);
+    for (const target of topology.controlEdges.get(id) ?? []) detectCycle(target);
     stack.pop();
     active.delete(id);
     complete.add(id);
   };
   detectCycle(initial);
+  for (const entry of topology.scopes.keys()) detectCycle(entry);
   const unreachable = Object.keys(steps).filter(
-    (id) => !reachable.has(id),
+    (id) => !topology.forkDepths.has(id),
   );
   if (unreachable.length > 0) {
     throw new WorkGraphDefinitionError(
       `issue workflow has unreachable steps: ${unreachable.join(", ")}`,
     );
   }
+  return topology;
 }
 
 export function normalizeIssueWorkflow(workflow) {
@@ -1244,7 +1522,39 @@ export function normalizeIssueWorkflow(workflow) {
       );
     }
   }
-  validateWorkflowGraph(workflow.spec.initial, normalizedSteps);
+  const topology = validateWorkflowGraph(
+    workflow.spec.initial,
+    normalizedSteps,
+    authoredFlowOwners(normalizedSteps),
+  );
+  // A routed scope forks its tasks beneath the container that launched it, so
+  // an authored child tree is bounded by the scope's physical fork depth
+  // exactly as the compiled definition is.
+  for (const [id, step] of Object.entries(normalizedSteps)) {
+    if (step.type !== "task") continue;
+    const forkDepth = topology.forkDepths.get(id) ?? 0;
+    if (forkDepth + authoredTreeDepth(step) > MAX_TASK_DEFINITION_DEPTH) {
+      throw new WorkGraphDefinitionError(
+        `step '${id}' recursive children exceed maximum depth ${MAX_TASK_DEFINITION_DEPTH}`,
+      );
+    }
+  }
+  validateReservedRuntimeInputs(normalizedSteps, topology, {
+    root: (stepId) => ({ stepId, task: normalizedSteps[stepId] }),
+    inputs: ({ task }) => task.inputs,
+    label: ({ label, stepId }) => label ?? `step '${stepId}'`,
+    tree: (stepId) => {
+      const tasks = [];
+      const descend = (task, label) => {
+        tasks.push({ task, label });
+        for (const [key, child] of Object.entries(task.children?.tasks ?? {})) {
+          descend(child, `${label} child task '${key}'`);
+        }
+      };
+      descend(normalizedSteps[stepId], `step '${stepId}'`);
+      return tasks;
+    },
+  });
   return {
     apiVersion: workflow.apiVersion,
     kind: workflow.kind,
@@ -1263,7 +1573,7 @@ export function normalizeIssueWorkflow(workflow) {
 }
 
 function normalizeCompiledTaskDefinition(value, context, depth = 0) {
-  exactKeys(value, TASK_DEFINITION_KEYS, context);
+  taskDefinitionKeys(value, context);
   if (depth > MAX_TASK_DEFINITION_DEPTH) {
     throw new WorkGraphDefinitionError(
       `compiled task nesting exceeds maximum depth ${MAX_TASK_DEFINITION_DEPTH}`,
@@ -1297,6 +1607,12 @@ function normalizeCompiledTaskDefinition(value, context, depth = 0) {
       `${context}.children must contain 0-${MAX_TASK_DEFINITION_CHILDREN} entries`,
     );
   }
+  const flowEntries = normalizeFlowEntries(
+    value.flowEntries,
+    value.children.length,
+    value.taskDefinitionId,
+    context,
+  );
   return {
     taskDefinitionId: value.taskDefinitionId,
     taskKey: value.taskKey,
@@ -1310,6 +1626,7 @@ function normalizeCompiledTaskDefinition(value, context, depth = 0) {
         depth + 1,
       ),
     ),
+    ...(flowEntries.length > 0 ? { flowEntries } : {}),
   };
 }
 
@@ -1358,6 +1675,37 @@ function collectCompiledTasks(task, tasks = new Map()) {
   tasks.set(task.taskDefinitionId, task);
   for (const child of task.children) collectCompiledTasks(child, tasks);
   return tasks;
+}
+
+function taskTreeDepth(task) {
+  return task.children.length === 0
+    ? 0
+    : 1 + Math.max(...task.children.map(taskTreeDepth));
+}
+
+// Every compiled task definition that declares `flowEntries`, keyed by the
+// step whose fork realizes it. Nested children own scopes at their own tree
+// depth, so a scope's physical fork depth counts its owner's nesting too.
+function compiledFlowOwners(steps) {
+  const owners = new Map();
+  for (const [id, step] of Object.entries(steps)) {
+    if (step.type !== "task") continue;
+    const declarations = [];
+    const visit = (task, depth) => {
+      if (task.flowEntries?.length) {
+        declarations.push({
+          label: `compiled task definition '${task.taskDefinitionId}'`,
+          taskDefinitionId: task.taskDefinitionId,
+          depth,
+          entries: task.flowEntries,
+        });
+      }
+      for (const child of task.children) visit(child, depth + 1);
+    };
+    visit(step.taskDefinition, 0);
+    if (declarations.length > 0) owners.set(id, declarations);
+  }
+  return owners;
 }
 
 function validateCompiledPolicies(taskDefinition, policies, context) {
@@ -1416,6 +1764,44 @@ function normalizeCompiledTransition(value, context, steps) {
   throw new WorkGraphDefinitionError(
     `${context}.type must be next or outcomes`,
   );
+}
+
+// The routed scopes a compiled definition declares, resolved once so callers
+// can ask which scope owns a step and which entries an owner launches.
+export function resolveCompiledFlowScopes(definition) {
+  const graphSteps = Object.fromEntries(
+    Object.entries(definition.steps).map(([id, step]) => {
+      if (step.type === "terminal") return [id, { type: "terminal" }];
+      if (step.type === "wait") {
+        return [id, { type: "wait", next: step.nextStepId }];
+      }
+      return [
+        id,
+        step.transition.type === "next"
+          ? { type: "task", next: step.transition.targetStepId }
+          : { type: "task", outcomes: step.transition.targets },
+      ];
+    }),
+  );
+  const topology = resolveFlowTopology(
+    definition.initialStepId,
+    graphSteps,
+    compiledFlowOwners(definition.steps),
+  );
+  const entriesByOwner = new Map();
+  for (const scope of topology.scopes.values()) {
+    const list = entriesByOwner.get(scope.ownerTaskDefinitionId) ?? [];
+    list.push(scope.entryStepId);
+    entriesByOwner.set(scope.ownerTaskDefinitionId, list);
+  }
+  return {
+    scopes: topology.scopes,
+    scopeByStep: topology.scopeByStep,
+    trunk: topology.trunk,
+    entriesByOwner,
+    scopeForStep: (stepId) =>
+      topology.scopes.get(topology.scopeByStep.get(stepId)) ?? null,
+  };
 }
 
 export function normalizeCompiledWorkflowDefinition(definition) {
@@ -1542,7 +1928,37 @@ export function normalizeCompiledWorkflowDefinition(definition) {
       ];
     }),
   );
-  validateWorkflowGraph(definition.initialStepId, graphSteps);
+  const topology = validateWorkflowGraph(
+    definition.initialStepId,
+    graphSteps,
+    compiledFlowOwners(steps),
+  );
+  for (const [id, step] of Object.entries(steps)) {
+    if (step.type !== "task") continue;
+    const forkDepth = topology.forkDepths.get(id) ?? 0;
+    if (
+      forkDepth + taskTreeDepth(step.taskDefinition) >
+      MAX_TASK_DEFINITION_DEPTH
+    ) {
+      throw new WorkGraphDefinitionError(
+        `compiled task nesting exceeds maximum depth ${MAX_TASK_DEFINITION_DEPTH}`,
+      );
+    }
+  }
+  validateReservedRuntimeInputs(graphSteps, topology, {
+    root: (stepId) => steps[stepId].taskDefinition,
+    inputs: (task) => task.staticInputs,
+    label: (task) => `task definition '${task.taskDefinitionId}'`,
+    tree: (stepId) => {
+      const tasks = [];
+      const descend = (task) => {
+        tasks.push(task);
+        for (const child of task.children) descend(child);
+      };
+      descend(steps[stepId].taskDefinition);
+      return tasks;
+    },
+  });
   return {
     workflowDefinitionId: definition.workflowDefinitionId,
     version: definition.version,

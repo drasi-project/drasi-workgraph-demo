@@ -17,8 +17,9 @@ bodies, duplicate protocol comments, a missing exact `workgraph` admission label
 closed task ancestry for new work, changed Root Issue content, stale Leases, and
 conflicting retries.
 
-Lifecycle tools pin
-`.github/workgraph/fixtures/v1/issue-lifecycle.expected.json`. They resolve the
+Lifecycle tools pin the committed compiled fixtures in
+`.github/workgraph/fixtures/v1/` (`issue-lifecycle`, `fork-join-lifecycle`,
+`mixed-control-flow`, and `scoped-control-flow`). They resolve the
 task's source step and effective evaluator, orchestrator, and rework maximum
 from that compiled definition. They require the latest immutable Dispatch and
 its exact canonical Result, derive the canonical TaskResult envelope digest,
@@ -65,7 +66,9 @@ All tools receive an opaque `taskLocator` from the Reaction execution context:
 
 Every top-level compiled task is a direct child of the ordinary Root Issue.
 Recursive tasks follow their declared task-definition parent chain to that
-top-level task. The reporter separately finds the unique initial task among
+top-level task. A scoped task instead follows its owning container (see
+[scoped flow entries](#scoped-flow-entries)) and continues upward from there.
+The reporter separately finds the unique initial task among
 the Root Issue's direct children to verify run and admission integrity. It
 re-reads every referenced object from GitHub; caller-supplied locator values
 are never sufficient proof.
@@ -75,6 +78,49 @@ are never sufficient proof.
 descriptions and titles human-readable; they are validated metadata, not
 substitutes for `taskDefinitionId`, definition version, or digest. Flat legacy
 task bodies are rejected.
+
+## Scoped flow entries
+
+A task definition that declares `flowEntries` is a container: its Fork names one
+entry task per declared entry alongside its fixed children, and its Join waits
+for every scope to reach a terminal before the container's own lifecycle
+continues. Every task realized by a scope's *steps* is a native direct sub-issue
+of that container, so a scope is a flat sibling set rather than a parent chain;
+the fixed children those tasks declare nest beneath their own task as usual.
+
+Scoped tasks carry three reserved runtime inputs, all present or all absent:
+
+| Input | Meaning |
+|---|---|
+| `workgraphScopeParentTaskId` | The owning container task ID |
+| `workgraphScopeEntryTaskId` | The direct entry task ID of the scope |
+| `workgraphScopeEntryStepId` | The compiled entry step ID of the scope |
+
+A routed successor inside a scope additionally carries the existing
+`workgraphPredecessorTaskId`. The reporter validates that:
+
+- the task's compiled source step belongs to `workgraphScopeEntryStepId`'s
+  compiled scope, and none of its transitions leave that scope;
+- the native parent is a task whose ID is `workgraphScopeParentTaskId` and whose
+  task definition owns the entry, sharing the same Root Issue, run, and pinned
+  definition;
+- the entry task carries no predecessor, realizes the entry step, and is named
+  by the owning container's Fork;
+- every other member declares a predecessor that is a sibling of the same
+  container, sits in the same scope, is not itself a forked child, derives the
+  member's task ID, and carries exactly one Route advancing to that member's
+  step and task definition;
+- the predecessor chain reaches the entry without repeating a task.
+
+Scopes nest: an entry task may own its own `flowEntries`, and ancestry climbs
+one container at a time until it reaches an ordinary top-level task. A nested
+fixed child inherits its parent's three scope strings but has no step of its
+own, so it is validated against its compiled parent chain — its scope strings
+must equal its parent's and share the same run — and scope validation happens at
+the scoped step root it climbs to. The initial run task stays the unique initial
+task directly under the ordinary Root Issue.
+Legacy trunk and fixed-child ancestry is unchanged, and Result, Evaluation, and
+Route submission are unchanged; only context validation is scope-aware.
 
 ## Root Issue reader
 

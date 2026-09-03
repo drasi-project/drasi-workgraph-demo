@@ -1,0 +1,130 @@
+{
+  "apiVersion": "drasi.io/v1",
+  "kind": "WorkGraphTestCase",
+  "metadata": {
+    "id": "scoped-control-flow"
+  },
+  "spec": {
+    "workflowDefinitionId": "scoped-control-flow",
+    "rootIssue": {
+      "title": "Scoped WorkGraph control flow proof",
+      "body": "Exercise a run container that forks two parallel flow entries, joins them, and finalizes the run itself.",
+      "labels": [
+        "workgraph"
+      ]
+    },
+    "steps": {
+      "run": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "childCount": 2,
+            "step": "run"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "fix": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "childCount": 2,
+            "step": "fix"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "fix-evidence": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "step": "fix-evidence"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "audit": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "step": "audit"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "audit-verify": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "step": "audit-verify"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "fix-cleanup": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "step": "fix-cleanup"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "notify": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "step": "notify"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      }
+    },
+    "expected": {
+      "topLevelTaskKeys": [
+        "run"
+      ],
+      "taskParents": {
+        "run": null,
+        "fix": "run",
+        "fix-evidence": "fix",
+        "fix-cleanup": "run",
+        "notify": "run",
+        "audit": "fix",
+        "audit-verify": "fix"
+      },
+      "terminalOutcome": "completed",
+      "flowEntries": [
+        {
+          "ownerTaskKey": "fix",
+          "entryStepId": "audit",
+          "taskKeys": [
+            "audit",
+            "audit-verify"
+          ],
+          "terminalStepId": "audit-complete",
+          "terminalOutcome": "completed"
+        },
+        {
+          "ownerTaskKey": "run",
+          "entryStepId": "fix",
+          "taskKeys": [
+            "fix",
+            "fix-cleanup"
+          ],
+          "terminalStepId": "fix-complete",
+          "terminalOutcome": "completed"
+        },
+        {
+          "ownerTaskKey": "run",
+          "entryStepId": "notify",
+          "taskKeys": [
+            "notify"
+          ],
+          "terminalStepId": "notify-complete",
+          "terminalOutcome": "completed"
+        }
+      ]
+    }
+  }
+}

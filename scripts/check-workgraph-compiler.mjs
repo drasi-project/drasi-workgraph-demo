@@ -10,6 +10,7 @@ const targets = [
   "issue-lifecycle",
   "fork-join-lifecycle",
   "mixed-control-flow",
+  "scoped-control-flow",
 ].map((name) => ({
   name,
   workflow: resolve(root, `.github/workgraph/workflows/${name}.yaml`),

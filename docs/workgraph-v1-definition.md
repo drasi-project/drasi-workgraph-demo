@@ -28,6 +28,84 @@ deterministic Result for each of `a`, `b`, `c`, and `d`. The Node definition
 test binds its exact task-key set and expected terminal outcome to the compiled
 definition and rejects children, outcome transitions, or waits.
 
+## Scoped flow entries
+
+A task definition may declare `flowEntries`: an ordered, unique list of task
+step IDs it owns as routed child subgraphs. The field is additive and is omitted
+whenever it is empty, so every pre-flow canonical body and digest stays
+byte-identical. `flowEntries` and `children` share one direct-child bound of
+16 tasks, because both become children of the same Fork. A scope's fork depth
+also bounds the child trees beneath it: a task authored at fork depth *d* may
+nest at most `MAX_TASK_DEFINITION_DEPTH - d` further child levels, and the
+authoring validator rejects an over-nested tree exactly where the compiled
+definition and the Rust compiler do.
+
+An entry names a task step. That step plus every step reachable from it through
+ordinary transitions forms one *scope*. Scopes are disjoint from the trunk (the
+steps reachable from `initialStepId`) and from each other, so every step belongs
+to exactly one routed region. Each scope must reach a terminal step, must not
+contain an unconditional cycle, and counts against the maximum task-definition
+depth at its physical fork depth, so nested scopes stay bounded. A step is
+reachable only through its transitions or the owner that launches it;
+otherwise the definition is rejected as unreachable.
+
+`.github/workgraph/workflows/scoped-control-flow.yaml` demonstrates both uses in
+one definition:
+
+```text
+run (container: flowEntries fix, notify) → completed
+  ├── fix (container: children fix-evidence, flowEntries audit) → fix-cleanup → fix-complete
+  │     └── audit → audit-verify → audit-complete
+  └── notify → notify-complete
+```
+
+The initial `run` task is a workflow container and the run's own finalizer: it
+declares no fixed children, forks the `fix` and `notify` entries in parallel,
+waits for both scopes to reach their terminals, and then routes directly to
+`completed`. It is the only trunk task, so the run has exactly one direct Root
+Issue child and no predecessor-bearing top-level task. The `fix` entry forks a
+fixed child `fix-evidence` and the nested `audit` scope from the same task
+definition, then runs its own `fix-cleanup` and routes to its own `fix-complete`
+terminal. `notify` is a plain routed task that reaches its terminal directly.
+
+A fixed child inherits its parent's routed scope but has no step of its own, so
+`fix-evidence` carries `fix`'s three reserved scope strings while remaining a
+native sub-issue of `fix` rather than of `run`.
+`.github/workgraph/tests/scoped-control-flow-v1.json` pins the task parents each
+scope produces: `run` is the sole top-level task and scope members are direct
+sub-issues of their owning container. Its `expected.flowEntries` is the additive
+`WorkGraphTestCase` shape the standalone mock derives, in canonical
+`(ownerTaskKey, entryStepId)` order:
+
+| ownerTaskKey | entryStepId | taskKeys | terminalStepId |
+|---|---|---|---|
+| `fix` | `audit` | `audit`, `audit-verify` | `audit-complete` |
+| `run` | `fix` | `fix`, `fix-cleanup` | `fix-complete` |
+| `run` | `notify` | `notify` | `notify-complete` |
+
+`taskKeys` is the selected chain from the entry step to that scope's own
+terminal; only its first task is named by the owner's Fork, and the rest are
+authorized by their predecessor's Route. The field is omitted when a definition
+declares no `flowEntries`, so every existing test case stays exactly as valid as
+it was.
+
+The runtime writes four reserved strings into the tasks it generates:
+`workgraphPredecessorTaskId` for a routed successor, and
+`workgraphScopeParentTaskId`, `workgraphScopeEntryTaskId`, and
+`workgraphScopeEntryStepId` for every task of a routed scope. A definition may
+not author them where they would be generated, so a step that some transition
+targets may not declare `workgraphPredecessorTaskId`, and no task of a routed
+scope — including the nested children that inherit the scope — may declare any
+of the four. A trunk step that no transition targets is unaffected, which keeps
+every existing definition byte-identical.
+
+The Rust compiler stays authoritative;
+`.github/workgraph/fixtures/v1/scoped-control-flow.expected.json` is the exact
+compiler output and
+`.github/workgraph/workflows/scoped-control-flow-v1.body` is its
+`canonicalDefinitionBody`. `node scripts/check-workgraph-compiler.mjs` compares
+all four Demo workflows against the sibling compiler byte-for-byte.
+
 ## Runtime message envelope
 
 Every task and lifecycle body contains exactly `apiVersion`, `kind`, `id`,

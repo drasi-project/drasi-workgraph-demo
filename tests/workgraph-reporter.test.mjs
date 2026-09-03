@@ -9,12 +9,16 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 import {
+  RESERVED_RUNTIME_INPUT_KEYS,
+  TASK_FORK_MARKER,
+  TASK_ROUTE_MARKER,
   formatRuntimeTask,
   formatTaskAssignment,
   formatTaskEvaluation,
   formatTaskFork,
   formatTaskJoin,
   formatTaskRoute,
+  normalizeCompiledWorkflowDefinition,
   parseTaskEvaluation,
   parseTaskRoute,
   deriveWorkGraphProtocolId,
@@ -2613,4 +2617,912 @@ test("lifecycle reads reject a caller attempt that does not match Result", async
       assert.equal(writes.length, 0);
     },
   );
+});
+
+const SCOPED = JSON.parse(
+  readFileSync(
+    new URL(
+      "../.github/workgraph/fixtures/v1/scoped-control-flow.expected.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+).workgraphDefinition;
+
+const SCOPED_ISSUES = {
+  run: { number: 200, nodeId: "I_scoped_run", parent: ROOT_ISSUE_NUMBER },
+  fix: { number: 201, nodeId: "I_scoped_fix", parent: 200 },
+  "fix-cleanup": {
+    number: 202,
+    nodeId: "I_scoped_fix_cleanup",
+    parent: 200,
+  },
+  notify: { number: 203, nodeId: "I_scoped_notify", parent: 200 },
+  audit: { number: 204, nodeId: "I_scoped_audit", parent: 201 },
+  "audit-verify": {
+    number: 205,
+    nodeId: "I_scoped_audit_verify",
+    parent: 201,
+  },
+  // A fixed child of the scoped `fix` entry: it inherits `fix`'s routed scope
+  // but is a native sub-issue of `fix`, not of the owner that launched it.
+  "fix-evidence": {
+    number: 206,
+    nodeId: "I_scoped_fix_evidence",
+    parent: 201,
+    nested: true,
+  },
+};
+
+// Builds the complete scoped-control-flow runtime: a `run` container that
+// forks the `fix` and `notify` entries, a nested `audit` scope beneath `fix`,
+// and the routed successors each scope reaches through its predecessor Route.
+function scopedFlowFixture(mutate = () => {}) {
+  const contentDigest = deriveWorkGraphRootIssueContentDigest(
+    ROOT_TITLE,
+    ROOT_BODY,
+  );
+  const workflowRunId = deriveWorkGraphWorkflowRunId(
+    REPOSITORY_NODE_ID,
+    ROOT_ISSUE_ID,
+    ADMISSION_ID,
+    SCOPED.workflowDefinitionId,
+    SCOPED.version,
+    SCOPED.digest,
+  );
+  const definitionOf = (stepId) =>
+    SCOPED_ISSUES[stepId].nested
+      ? SCOPED.steps.fix.taskDefinition.children.find(
+          ({ taskKey }) => taskKey === stepId,
+        )
+      : SCOPED.steps[stepId].taskDefinition;
+  const policyStepOf = (stepId) =>
+    SCOPED_ISSUES[stepId].nested ? "fix" : stepId;
+  const runTaskId = deriveWorkGraphRootTaskId(
+    workflowRunId,
+    SCOPED.root.taskDefinitionId,
+  );
+  const childOf = (parentTaskId, stepId) =>
+    fixtureTaskId(workflowRunId, parentTaskId, definitionOf(stepId)
+      .taskDefinitionId);
+  const taskIds = { run: runTaskId };
+  taskIds.fix = childOf(runTaskId, "fix");
+  taskIds.notify = childOf(runTaskId, "notify");
+  taskIds["fix-cleanup"] = childOf(taskIds.fix, "fix-cleanup");
+  taskIds.audit = childOf(taskIds.fix, "audit");
+  taskIds["audit-verify"] = childOf(taskIds.audit, "audit-verify");
+  taskIds["fix-evidence"] = childOf(taskIds.fix, "fix-evidence");
+
+  const scopeInputs = {
+    fix: {
+      workgraphScopeEntryStepId: "fix",
+      workgraphScopeEntryTaskId: taskIds.fix,
+      workgraphScopeParentTaskId: taskIds.run,
+    },
+    "fix-cleanup": {
+      workgraphScopeEntryStepId: "fix",
+      workgraphScopeEntryTaskId: taskIds.fix,
+      workgraphScopeParentTaskId: taskIds.run,
+      workgraphPredecessorTaskId: taskIds.fix,
+    },
+    notify: {
+      workgraphScopeEntryStepId: "notify",
+      workgraphScopeEntryTaskId: taskIds.notify,
+      workgraphScopeParentTaskId: taskIds.run,
+    },
+    audit: {
+      workgraphScopeEntryStepId: "audit",
+      workgraphScopeEntryTaskId: taskIds.audit,
+      workgraphScopeParentTaskId: taskIds.fix,
+    },
+    // A fixed child inherits its parent's scope verbatim, so it names `run`
+    // as the owning container even though its native parent is `fix`.
+    "fix-evidence": {
+      workgraphScopeEntryStepId: "fix",
+      workgraphScopeEntryTaskId: taskIds.fix,
+      workgraphScopeParentTaskId: taskIds.run,
+    },
+    "audit-verify": {
+      workgraphScopeEntryStepId: "audit",
+      workgraphScopeEntryTaskId: taskIds.audit,
+      workgraphScopeParentTaskId: taskIds.fix,
+      workgraphPredecessorTaskId: taskIds.audit,
+    },
+  };
+
+  const tasks = {};
+  for (const stepId of Object.keys(SCOPED_ISSUES)) {
+    const definition = definitionOf(stepId);
+    tasks[stepId] = {
+      taskId: taskIds[stepId],
+      rootIssueId: ROOT_ISSUE_ID,
+      workflowRunId,
+      workflowDefinitionId: SCOPED.workflowDefinitionId,
+      workflowDefinitionVersion: SCOPED.version,
+      workflowDefinitionDigest: SCOPED.digest,
+      taskDefinitionId: definition.taskDefinitionId,
+      taskKey: definition.taskKey,
+      operation: definition.operation,
+      resolvedInputs:
+        stepId === "run"
+          ? {
+              rootIssue: {
+                repositoryOwner: OWNER,
+                repositoryName: REPO,
+                repositoryNodeId: REPOSITORY_NODE_ID,
+                issueNumber: ROOT_ISSUE_NUMBER,
+                issueNodeId: ROOT_ISSUE_ID,
+                admissionId: ADMISSION_ID,
+                contentDigest,
+              },
+            }
+          : { ...structuredClone(definition.staticInputs), ...scopeInputs[stepId] },
+    };
+  }
+
+  const identity = (stepId) => ({
+    taskId: tasks[stepId].taskId,
+    workflowRunId,
+    workflowDefinitionId: SCOPED.workflowDefinitionId,
+    workflowDefinitionVersion: SCOPED.version,
+    workflowDefinitionDigest: SCOPED.digest,
+    taskDefinitionId: tasks[stepId].taskDefinitionId,
+    taskKey: tasks[stepId].taskKey,
+    operation: tasks[stepId].operation,
+  });
+  const policyOf = (stepId) =>
+    SCOPED.steps[policyStepOf(stepId)].executionPolicies[
+      tasks[stepId].taskDefinitionId
+    ];
+
+  const artifacts = {};
+  for (const stepId of Object.keys(SCOPED_ISSUES)) {
+    const dispatch = {
+      dispatchId: protocolId("dispatch", `scoped-${stepId}`),
+      launchId: protocolId("dispatch-launch", `scoped-${stepId}`),
+      rootIssueId: ROOT_ISSUE_ID,
+      workflowRunId,
+      taskId: tasks[stepId].taskId,
+      task: identity(stepId),
+      lease: {
+        leaseId: protocolId("lease", `scoped-${stepId}`),
+        assignmentId: protocolId("assignment", `scoped-${stepId}`),
+        executorId: policyOf(stepId).workerId,
+        slotId: `${policyOf(stepId).workerId}-slot-1`,
+      },
+    };
+    const result = {
+      resultId: deriveWorkGraphTaskResultId(
+        tasks[stepId].taskId,
+        dispatch.dispatchId,
+        dispatch.lease.leaseId,
+      ),
+      rootIssueId: ROOT_ISSUE_ID,
+      workflowRunId,
+      taskId: tasks[stepId].taskId,
+      task: identity(stepId),
+      dispatchId: dispatch.dispatchId,
+      leaseId: dispatch.lease.leaseId,
+      attempt: 1,
+      outcome: "succeeded",
+      output: { step: stepId },
+    };
+    artifacts[stepId] = { dispatch, result };
+  }
+
+  const forkChildren = (parentStepId, childStepIds) =>
+    childStepIds
+      .map((stepId) => ({
+        taskDefinitionId: tasks[stepId].taskDefinitionId,
+        taskId: tasks[stepId].taskId,
+      }))
+      .sort((left, right) =>
+        left.taskDefinitionId < right.taskDefinitionId ? -1 : 1,
+      );
+
+  const containers = { run: ["fix", "notify"], fix: ["audit", "fix-evidence"] };
+  for (const [stepId, childStepIds] of Object.entries(containers)) {
+    const children = forkChildren(stepId, childStepIds);
+    const forkId = deriveWorkGraphTaskForkId(tasks[stepId].taskId, children);
+    const joinChildren = children.map((child) => {
+      const childStep = childStepIds.find(
+        (candidate) => tasks[candidate].taskId === child.taskId,
+      );
+      return {
+        ...child,
+        resultId: artifacts[childStep].result.resultId,
+        evaluationId: protocolId("evaluation", `scoped-${childStep}`),
+      };
+    });
+    const joinId = deriveWorkGraphTaskJoinId(
+      tasks[stepId].taskId,
+      forkId,
+      joinChildren,
+    );
+    artifacts[stepId].fork = {
+      forkId,
+      rootIssueId: ROOT_ISSUE_ID,
+      workflowRunId,
+      taskId: tasks[stepId].taskId,
+      task: identity(stepId),
+      children,
+    };
+    artifacts[stepId].join = {
+      joinId,
+      rootIssueId: ROOT_ISSUE_ID,
+      workflowRunId,
+      taskId: tasks[stepId].taskId,
+      task: identity(stepId),
+      forkId,
+      strategy: "all",
+      children: joinChildren,
+    };
+  }
+
+  for (const stepId of Object.keys(SCOPED_ISSUES)) {
+    artifacts[stepId].assignment = {
+      assignmentId: artifacts[stepId].dispatch.lease.assignmentId,
+      rootIssueId: ROOT_ISSUE_ID,
+      workflowRunId,
+      taskId: tasks[stepId].taskId,
+      task: identity(stepId),
+      joinId: artifacts[stepId].join?.joinId ?? null,
+      permittedExecutors: [policyOf(stepId).workerId],
+    };
+  }
+
+  // Accepted Evaluations plus the Routes that gate each scope's routed member.
+  const evaluations = {};
+  const routes = {};
+  for (const [sourceStepId, targetStepId] of [
+    ["fix", "fix-cleanup"],
+    ["audit", "audit-verify"],
+  ]) {
+    const result = artifacts[sourceStepId].result;
+    const resultDigest = taskResultDigest(result);
+    const evaluationId = deriveWorkGraphTaskEvaluationId(
+      tasks[sourceStepId].taskId,
+      result.resultId,
+      resultDigest,
+    );
+    evaluations[sourceStepId] = {
+      evaluationId,
+      rootIssueId: ROOT_ISSUE_ID,
+      workflowRunId,
+      taskId: tasks[sourceStepId].taskId,
+      task: identity(sourceStepId),
+      resultId: result.resultId,
+      resultDigest,
+      evaluatorId: policyOf(sourceStepId).evaluatorId,
+      attempt: 1,
+      verdict: "accepted",
+      summary: "Accepted.",
+      feedback: "",
+    };
+    routes[sourceStepId] = {
+      routeId: deriveWorkGraphTaskRouteId(
+        tasks[sourceStepId].taskId,
+        evaluationId,
+      ),
+      rootIssueId: ROOT_ISSUE_ID,
+      workflowRunId,
+      taskId: tasks[sourceStepId].taskId,
+      task: identity(sourceStepId),
+      resultId: result.resultId,
+      evaluationId,
+      evaluationVerdict: "accepted",
+      orchestratorId: policyOf(sourceStepId).orchestratorId,
+      action: "advance",
+      attempt: 1,
+      transitionKind: "next",
+      targetStepId,
+      targetStepKind: "task",
+      targetTaskDefinitionId: tasks[targetStepId].taskDefinitionId,
+    };
+  }
+
+  const fixture = {
+    workflowRunId,
+    tasks,
+    artifacts,
+    evaluations,
+    routes,
+    taskIds,
+  };
+  mutate(fixture);
+  return fixture;
+}
+
+function scopedTaskInput(fixture, stepId) {
+  const issue = SCOPED_ISSUES[stepId];
+  return {
+    taskLocator: {
+      repositoryOwner: OWNER,
+      repositoryName: REPO,
+      repositoryNodeId: REPOSITORY_NODE_ID,
+      issueNumber: issue.number,
+      issueNodeId: issue.nodeId,
+      parentIssueNumber:
+        issue.parent === ROOT_ISSUE_NUMBER
+          ? ROOT_ISSUE_NUMBER
+          : issue.parent,
+      parentIssueNodeId:
+        issue.parent === ROOT_ISSUE_NUMBER
+          ? ROOT_ISSUE_ID
+          : Object.values(SCOPED_ISSUES).find(
+              ({ number }) => number === issue.parent,
+            ).nodeId,
+    },
+    rootIssueId: ROOT_ISSUE_ID,
+    workflowRunId: fixture.workflowRunId,
+    taskId: fixture.tasks[stepId].taskId,
+    dispatchId: fixture.artifacts[stepId].dispatch.dispatchId,
+    leaseId: fixture.artifacts[stepId].dispatch.lease.leaseId,
+    resultId: fixture.artifacts[stepId].result.resultId,
+    attempt: 1,
+  };
+}
+
+async function withScopedFlow(options, callback) {
+  const fixture = scopedFlowFixture(options.mutate ?? (() => {}));
+  const root = rootIssue();
+  const issues = new Map([[ROOT_ISSUE_NUMBER, root]]);
+  const comments = new Map();
+  const subIssues = new Map([
+    [ROOT_ISSUE_NUMBER, [SCOPED_ISSUES.run.number]],
+    [
+      SCOPED_ISSUES.run.number,
+      [
+        SCOPED_ISSUES.fix.number,
+        SCOPED_ISSUES["fix-cleanup"].number,
+        SCOPED_ISSUES.notify.number,
+      ],
+    ],
+    [
+      SCOPED_ISSUES.fix.number,
+      [
+        SCOPED_ISSUES.audit.number,
+        SCOPED_ISSUES["audit-verify"].number,
+        SCOPED_ISSUES["fix-evidence"].number,
+      ],
+    ],
+  ]);
+  let commentId = 500;
+  const at = (minutes) =>
+    `2026-08-29T20:${String(minutes).padStart(2, "0")}:00Z`;
+  for (const [stepId, issue] of Object.entries(SCOPED_ISSUES)) {
+    issues.set(issue.number, taskIssue(issue.number, issue.nodeId,
+      fixture.tasks[stepId]));
+    const artifact = fixture.artifacts[stepId];
+    const bodies = [
+      ...(artifact.fork ? [[formatTaskFork(artifact.fork), ASSIGNMENT_ID]] : []),
+      ...(artifact.join ? [[formatTaskJoin(artifact.join), ASSIGNMENT_ID]] : []),
+      [formatTaskAssignment(artifact.assignment), ASSIGNMENT_ID],
+      [formatTaskDispatch(artifact.dispatch), ASSIGNMENT_ID],
+      [formatTaskResult(artifact.result), RESULT_ID],
+      ...(fixture.evaluations[stepId]
+        ? [[formatTaskEvaluation(fixture.evaluations[stepId]), EVALUATION_ID]]
+        : []),
+      ...(fixture.routes[stepId]
+        ? [[formatTaskRoute(fixture.routes[stepId]), ROUTE_ID]]
+        : []),
+    ];
+    comments.set(
+      issue.number,
+      bodies.map(([body, user], index) => ({
+        id: (commentId += 1),
+        node_id: `IC_scoped_${stepId}_${index}`,
+        body,
+        user: { id: user, login: "reporter" },
+        created_at: at(index * 5),
+        updated_at: at(index * 5),
+      })),
+    );
+  }
+  if (options.dropOwnerFork === true) {
+    comments.set(
+      SCOPED_ISSUES.run.number,
+      comments
+        .get(SCOPED_ISSUES.run.number)
+        .filter(({ body }) => !body.startsWith(`${TASK_FORK_MARKER}\n`)),
+    );
+  }
+  if (options.dropPredecessorRoute === true) {
+    comments.set(
+      SCOPED_ISSUES.fix.number,
+      comments
+        .get(SCOPED_ISSUES.fix.number)
+        .filter(({ body }) => !body.startsWith(`${TASK_ROUTE_MARKER}\n`)),
+    );
+  }
+
+  const writes = [];
+  const server = createServer(async (request, response) => {
+    const url = new URL(request.url, "http://127.0.0.1");
+    const send = (status, value) => {
+      response.writeHead(status, { "Content-Type": "application/json" });
+      response.end(JSON.stringify(value));
+    };
+    if (request.method === "GET" && url.pathname === "/user") {
+      return options.role === "worker"
+        ? send(200, { id: RESULT_ID, login: "result-reporter" })
+        : send(200, { id: EVALUATION_ID, login: "evaluation-reporter" });
+    }
+    if (request.method === "GET" && url.pathname === `/repos/${OWNER}/${REPO}`) {
+      return send(200, {
+        name: REPO,
+        owner: { login: OWNER },
+        node_id: REPOSITORY_NODE_ID,
+      });
+    }
+    const issueMatch = url.pathname.match(
+      new RegExp(`^/repos/${OWNER}/${REPO}/issues/(\\d+)$`),
+    );
+    if (request.method === "GET" && issueMatch) {
+      const issue = issues.get(Number(issueMatch[1]));
+      return issue ? send(200, issue) : send(404, { message: "Not Found" });
+    }
+    const parentMatch = url.pathname.match(
+      new RegExp(`^/repos/${OWNER}/${REPO}/issues/(\\d+)/parent$`),
+    );
+    if (request.method === "GET" && parentMatch) {
+      const number = Number(parentMatch[1]);
+      const entry = Object.values(SCOPED_ISSUES).find(
+        (candidate) => candidate.number === number,
+      );
+      const parent = entry ? issues.get(entry.parent) : null;
+      return parent ? send(200, parent) : send(404, { message: "Not Found" });
+    }
+    const subIssuesMatch = url.pathname.match(
+      new RegExp(`^/repos/${OWNER}/${REPO}/issues/(\\d+)/sub_issues$`),
+    );
+    if (request.method === "GET" && subIssuesMatch) {
+      return send(
+        200,
+        (subIssues.get(Number(subIssuesMatch[1])) ?? []).map((number) =>
+          issues.get(number),
+        ),
+      );
+    }
+    const commentsMatch = url.pathname.match(
+      new RegExp(`^/repos/${OWNER}/${REPO}/issues/(\\d+)/comments$`),
+    );
+    if (request.method === "GET" && commentsMatch) {
+      return send(200, comments.get(Number(commentsMatch[1])) ?? []);
+    }
+    if (request.method === "POST" && commentsMatch) {
+      const number = Number(commentsMatch[1]);
+      const { body } = await requestBody(request);
+      const comment = {
+        id: (commentId += 1),
+        node_id: `IC_scoped_write_${writes.length}`,
+        body,
+        user: { id: EVALUATION_ID, login: "evaluation-reporter" },
+        created_at: "2026-08-29T21:00:00Z",
+        updated_at: "2026-08-29T21:00:00Z",
+      };
+      comments.get(number).push(comment);
+      writes.push({ number, body });
+      return send(201, comment);
+    }
+    return send(404, { message: `Unhandled ${request.method} ${url.pathname}` });
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const previous = { ...process.env };
+  Object.assign(process.env, {
+    NODE_ENV: "test",
+    WORKGRAPH_TEST_NOW: "2026-08-29T21:00:00Z",
+    WORKGRAPH_TEST_GITHUB_API_URL: origin,
+    COPILOT_MCP_WORKGRAPH_TOKEN: "github-token",
+    COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID: TYPE_ID,
+    COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID: String(LAUNCHER_ID),
+    COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID: String(ASSIGNMENT_ID),
+    COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID: String(RESULT_ID),
+    COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID: String(EVALUATION_ID),
+    COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID: String(ROUTE_ID),
+    COPILOT_MCP_WORKGRAPH_EVALUATOR_ID: "result-evaluator",
+  });
+  delete process.env.COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_ID;
+  try {
+    await callback({ fixture, writes, comments, issues });
+  } finally {
+    process.env = previous;
+    server.close();
+    await once(server, "close");
+  }
+}
+
+test("scoped tasks resolve entry, routed, and nested flow ancestry", async () => {
+  await withScopedFlow({}, async ({ fixture }) => {
+    // The whole run has exactly one direct Root Issue child, and every other
+    // task is a native sub-issue of `run` or of the nested `fix` container.
+    assert.deepEqual(
+      Object.entries(SCOPED_ISSUES)
+        .filter(([, issue]) => issue.parent === ROOT_ISSUE_NUMBER)
+        .map(([stepId]) => stepId),
+      ["run"],
+    );
+    assert.deepEqual(
+      [
+        ...new Set(
+          Object.entries(SCOPED_ISSUES)
+            .filter(([, issue]) => issue.parent !== ROOT_ISSUE_NUMBER)
+            .map(([, issue]) => issue.parent),
+        ),
+      ].sort(),
+      [SCOPED_ISSUES.fix.number, SCOPED_ISSUES.run.number].sort(),
+    );
+    assert.equal(SCOPED.steps.run.transition.targetStepId, "completed");
+    assert.equal(SCOPED.steps.completed.type, "terminal");
+
+    for (const stepId of [
+      "run",
+      "fix",
+      "fix-cleanup",
+      "notify",
+      "audit",
+      "audit-verify",
+    ]) {
+      const snapshot = await callTool(
+        "get_task_snapshot",
+        scopedTaskInput(fixture, stepId),
+      );
+      assert.equal(snapshot.taskId, fixture.tasks[stepId].taskId);
+      assert.equal(snapshot.sourceStepId, stepId);
+      assert.equal(
+        snapshot.taskDefinitionId,
+        fixture.tasks[stepId].taskDefinitionId,
+      );
+      assert.equal(snapshot.evaluatorId, "result-evaluator");
+      assert.equal(snapshot.result.resultId,
+        fixture.artifacts[stepId].result.resultId);
+    }
+  });
+});
+
+test("scoped ancestry rejects missing, foreign, cyclic, and cross-scope metadata", async () => {
+  const cases = [
+    [
+      "fix-cleanup",
+      (fixture) => {
+        delete fixture.tasks["fix-cleanup"].resolvedInputs
+          .workgraphScopeEntryTaskId;
+      },
+      /reserved scope inputs must all be present or all absent/,
+    ],
+    [
+      "fix-cleanup",
+      (fixture) => {
+        fixture.tasks["fix-cleanup"].resolvedInputs
+          .workgraphScopeParentTaskId = fixture.taskIds.notify;
+      },
+      /native parent is not its declared scope owning container/,
+    ],
+    [
+      "fix-cleanup",
+      (fixture) => {
+        fixture.tasks["fix-cleanup"].resolvedInputs
+          .workgraphScopeEntryStepId = "notify";
+      },
+      /step does not belong to its declared flow scope/,
+    ],
+    [
+      "fix-cleanup",
+      (fixture) => {
+        fixture.tasks["fix-cleanup"].resolvedInputs
+          .workgraphScopeEntryStepId = "fix-cleanup";
+      },
+      /scope entry step is not a compiled flow entry/,
+    ],
+    [
+      "fix-cleanup",
+      (fixture) => {
+        fixture.tasks["fix-cleanup"].resolvedInputs
+          .workgraphPredecessorTaskId = fixture.taskIds.notify;
+      },
+      /predecessor belongs to a different flow scope/,
+    ],
+    [
+      "fix-cleanup",
+      (fixture) => {
+        fixture.tasks["fix-cleanup"].resolvedInputs
+          .workgraphPredecessorTaskId = fixture.taskIds["fix-cleanup"];
+      },
+      /predecessor chain is cyclic/,
+    ],
+    [
+      "fix-cleanup",
+      (fixture) => {
+        fixture.tasks["fix-cleanup"].resolvedInputs
+          .workgraphPredecessorTaskId = fixture.taskIds.audit;
+      },
+      /predecessor is not a task of the same owning container/,
+    ],
+    [
+      "fix-cleanup",
+      (fixture) => {
+        delete fixture.tasks["fix-cleanup"].resolvedInputs
+          .workgraphPredecessorTaskId;
+      },
+      /routed scope member requires workgraphPredecessorTaskId/,
+    ],
+    [
+      "fix",
+      (fixture) => {
+        fixture.tasks.fix.resolvedInputs.workgraphPredecessorTaskId =
+          fixture.taskIds.notify;
+      },
+      /flow entry task must not declare a routed predecessor/,
+    ],
+    [
+      "audit-verify",
+      (fixture) => {
+        fixture.tasks["audit-verify"].resolvedInputs
+          .workgraphScopeParentTaskId = fixture.taskIds.run;
+      },
+      /native parent is not its declared scope owning container/,
+    ],
+    [
+      "audit",
+      (fixture) => {
+        fixture.tasks.audit.resolvedInputs.workgraphScopeEntryTaskId =
+          fixture.taskIds["audit-verify"];
+      },
+      /Fork does not name the declared flow entry task/,
+    ],
+    [
+      "fix-cleanup",
+      (fixture) => {
+        fixture.routes.fix.targetStepId = "fix-complete";
+        fixture.routes.fix.targetStepKind = "terminal";
+        delete fixture.routes.fix.targetTaskDefinitionId;
+      },
+      /predecessor has no single Route advancing to it/,
+    ],
+  ];
+  for (const [stepId, mutate, pattern] of cases) {
+    await withScopedFlow({ mutate }, async ({ fixture, writes }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", scopedTaskInput(fixture, stepId)),
+        pattern,
+      );
+      assert.equal(writes.length, 0);
+    });
+  }
+});
+
+test("scoped entries require a container Fork and routed members require a predecessor Route", async () => {
+  await withScopedFlow({ dropOwnerFork: true }, async ({ fixture, writes }) => {
+    await assert.rejects(
+      callTool("get_task_snapshot", scopedTaskInput(fixture, "fix")),
+      /scope owning container requires exactly one matching Fork/,
+    );
+    assert.equal(writes.length, 0);
+  });
+  await withScopedFlow(
+    { dropPredecessorRoute: true },
+    async ({ fixture, writes }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", scopedTaskInput(fixture, "fix-cleanup")),
+        /predecessor has no single Route advancing to it/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
+});
+
+test("flow entry containers fork one child per declared entry", async () => {
+  await withScopedFlow(
+    {
+      mutate: (fixture) => {
+        fixture.artifacts.run.fork.children =
+          fixture.artifacts.run.fork.children.slice(0, 1);
+        fixture.artifacts.run.fork.forkId = deriveWorkGraphTaskForkId(
+          fixture.tasks.run.taskId,
+          fixture.artifacts.run.fork.children,
+        );
+      },
+    },
+    async ({ fixture, writes }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", scopedTaskInput(fixture, "run")),
+        /do not form one action chain/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
+});
+
+test("the reporter can never pin a definition that authors reserved runtime inputs", async () => {
+  // The reporter trusts that reserved scope and successor strings come only
+  // from the runtime, so its pinned catalog must not be able to author them.
+  for (const name of [
+    "issue-lifecycle",
+    "fork-join-lifecycle",
+    "mixed-control-flow",
+    "scoped-control-flow",
+  ]) {
+    const fixture = JSON.parse(
+      readFileSync(
+        new URL(
+          `../.github/workgraph/fixtures/v1/${name}.expected.json`,
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    );
+    const staticInputs = JSON.stringify(
+      Object.values(fixture.workgraphDefinition.steps)
+        .filter(({ type }) => type === "task")
+        .map(({ taskDefinition }) => taskDefinition),
+    );
+    for (const key of RESERVED_RUNTIME_INPUT_KEYS) {
+      assert.equal(staticInputs.includes(key), false);
+    }
+    assert.deepEqual(
+      normalizeCompiledWorkflowDefinition(fixture.workgraphDefinition),
+      fixture.workgraphDefinition,
+    );
+  }
+
+  const scoped = structuredClone(SCOPED);
+  scoped.steps["fix-cleanup"].taskDefinition.staticInputs
+    .workgraphScopeParentTaskId = "x";
+  assert.throws(
+    () => normalizeCompiledWorkflowDefinition(scoped),
+    /uses reserved routed scope input 'workgraphScopeParentTaskId'/,
+  );
+
+  const successor = structuredClone(SCOPED);
+  successor.steps["fix-cleanup"].taskDefinition.staticInputs
+    .workgraphPredecessorTaskId = "x";
+  assert.throws(
+    () => normalizeCompiledWorkflowDefinition(successor),
+    /uses reserved routed successor input 'workgraphPredecessorTaskId'/,
+  );
+});
+
+test("scoped ancestry rejects reserved runtime inputs that are not canonical runtime metadata", async () => {
+  await withScopedFlow(
+    {
+      mutate: (fixture) => {
+        fixture.tasks["fix-cleanup"].resolvedInputs
+          .workgraphScopeParentTaskId = "not-a-canonical-task-id";
+      },
+    },
+    async ({ fixture, writes }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", scopedTaskInput(fixture, "fix-cleanup")),
+        /workgraphScopeParentTaskId must be/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
+  await withScopedFlow(
+    {
+      mutate: (fixture) => {
+        fixture.tasks.audit.resolvedInputs.workgraphScopeEntryStepId =
+          "Not A Step";
+      },
+    },
+    async ({ fixture, writes }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", scopedTaskInput(fixture, "audit")),
+        /workgraphScopeEntryStepId must be a lowercase step ID/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
+});
+
+test("a fixed child of a scoped task follows its compiled parent chain", async () => {
+  await withScopedFlow({}, async ({ fixture }) => {
+    const child = fixture.tasks["fix-evidence"];
+    // It inherits `fix`'s routed scope verbatim, so it names `run` as the
+    // owning container while its native parent is `fix`.
+    assert.deepEqual(
+      {
+        entryStepId: child.resolvedInputs.workgraphScopeEntryStepId,
+        entryTaskId: child.resolvedInputs.workgraphScopeEntryTaskId,
+        parentTaskId: child.resolvedInputs.workgraphScopeParentTaskId,
+      },
+      {
+        entryStepId: "fix",
+        entryTaskId: fixture.taskIds.fix,
+        parentTaskId: fixture.taskIds.run,
+      },
+    );
+    assert.equal(SCOPED_ISSUES["fix-evidence"].parent, SCOPED_ISSUES.fix.number);
+    assert.equal(
+      child.resolvedInputs.workgraphScopeParentTaskId !== fixture.taskIds.fix,
+      true,
+    );
+    assert.equal(
+      "workgraphPredecessorTaskId" in child.resolvedInputs,
+      false,
+    );
+
+    const snapshot = await callTool(
+      "get_task_snapshot",
+      scopedTaskInput(fixture, "fix-evidence"),
+    );
+    assert.equal(snapshot.taskId, child.taskId);
+    assert.equal(snapshot.sourceStepId, "fix");
+    assert.equal(snapshot.taskDefinitionId, child.taskDefinitionId);
+    assert.equal(snapshot.evaluatorId, "result-evaluator");
+  });
+
+  await withScopedFlow({ role: "worker" }, async ({ fixture }) => {
+    const root = await callTool("get_root_issue", {
+      taskLocator: scopedTaskInput(fixture, "fix-evidence").taskLocator,
+      taskId: fixture.tasks["fix-evidence"].taskId,
+    });
+    assert.equal(root.taskId, fixture.tasks["fix-evidence"].taskId);
+    assert.equal(root.rootIssue.issueNumber, ROOT_ISSUE_NUMBER);
+  });
+});
+
+test("a fixed child with a malformed inherited scope is rejected", async () => {
+  const cases = [
+    [
+      (fixture) => {
+        fixture.tasks["fix-evidence"].resolvedInputs
+          .workgraphScopeEntryTaskId = fixture.taskIds.notify;
+      },
+      /does not inherit its parent's routed scope/,
+    ],
+    [
+      (fixture) => {
+        fixture.tasks["fix-evidence"].resolvedInputs
+          .workgraphScopeParentTaskId = fixture.taskIds.audit;
+      },
+      /does not inherit its parent's routed scope/,
+    ],
+    [
+      (fixture) => {
+        fixture.tasks["fix-evidence"].resolvedInputs
+          .workgraphScopeEntryStepId = "audit";
+      },
+      /does not inherit its parent's routed scope/,
+    ],
+    [
+      (fixture) => {
+        delete fixture.tasks["fix-evidence"].resolvedInputs
+          .workgraphScopeEntryStepId;
+      },
+      /reserved scope inputs must all be present or all absent/,
+    ],
+    [
+      // A nested child is forked, never routed, so it may not claim one.
+      (fixture) => {
+        fixture.tasks["fix-evidence"].resolvedInputs
+          .workgraphPredecessorTaskId = fixture.taskIds.audit;
+      },
+      /nested child task must not declare workgraphPredecessorTaskId/,
+    ],
+    [
+      // Dropping the inherited scope entirely also breaks the chain.
+      (fixture) => {
+        for (const key of [
+          "workgraphScopeEntryStepId",
+          "workgraphScopeEntryTaskId",
+          "workgraphScopeParentTaskId",
+        ]) {
+          delete fixture.tasks["fix-evidence"].resolvedInputs[key];
+        }
+      },
+      /does not inherit its parent's routed scope/,
+    ],
+  ];
+  for (const [mutate, pattern] of cases) {
+    await withScopedFlow({ mutate }, async ({ fixture, writes }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", scopedTaskInput(fixture, "fix-evidence")),
+        pattern,
+      );
+      assert.equal(writes.length, 0);
+    });
+  }
 });

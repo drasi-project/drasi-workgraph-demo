@@ -48,6 +48,25 @@ coverage:
   branches, an optional D/E/F fork beneath G, branch convergence at H, and
   completed/ignored terminals.
 
+A fourth definition, `scoped-control-flow.yaml`, exercises `flowEntries`. Its
+initial `run` task is a workflow container that launches the `fix` and `notify`
+scopes in parallel, joins them, and is itself the run's finalizer, routing
+directly to the `completed` terminal. `fix` is itself a container that owns the
+nested `audit` scope before running its own cleanup, and `notify` is a plain
+routed task. `run` is the only direct Root Issue child; every task of a scope is
+a native direct sub-issue of the container that launched it:
+
+```text
+Root Issue
+└── initial run Task (container and finalizer)
+    ├── fix (flow entry, container)
+    │   ├── fix-evidence (fixed child, inherits fix's scope)
+    │   ├── audit (nested flow entry)
+    │   └── audit-verify (routed)
+    ├── fix-cleanup (routed)
+    └── notify (flow entry)
+```
+
 Dogfooding's Rust `workgraph-compile` turns that YAML into the canonical
 `WorkGraphWorkflowDefinition/v1` body. The committed
 [`issue-lifecycle-v1.body`](.github/workgraph/workflows/issue-lifecycle-v1.body)

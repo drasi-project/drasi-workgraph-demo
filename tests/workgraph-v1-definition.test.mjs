@@ -6,6 +6,8 @@ import test from "node:test";
 import {
   DEFAULT_MAX_REWORK_ATTEMPTS,
   MAX_TASK_DEFINITION_CHILDREN,
+  MAX_TASK_DEFINITION_DEPTH,
+  RESERVED_RUNTIME_INPUT_KEYS,
   RUNTIME_TASK_MARKER,
   TASK_ERROR_MARKER,
   TASK_FORK_MARKER,
@@ -43,6 +45,7 @@ import {
   parseCompiledWorkflowDefinition,
   parseRuntimeTask,
   parseWorkflowDefinition,
+  resolveCompiledFlowScopes,
   validateRootRuntimeTask,
   validateTaskRouteAgainstDefinition,
 } from "../.github/mcp/workgraph-v1-definition.mjs";
@@ -57,6 +60,14 @@ const AUTHORING_PATH = ".github/workgraph/workflows/issue-lifecycle.yaml";
 const TEST_CASE_PATH = ".github/workgraph/tests/linear-sequence-v1.json";
 const EXPECTED_PATH =
   ".github/workgraph/fixtures/v1/issue-lifecycle.expected.json";
+const SCOPED_DEFINITION_PATH =
+  ".github/workgraph/workflows/scoped-control-flow-v1.body";
+const SCOPED_AUTHORING_PATH =
+  ".github/workgraph/workflows/scoped-control-flow.yaml";
+const SCOPED_TEST_CASE_PATH =
+  ".github/workgraph/tests/scoped-control-flow-v1.json";
+const SCOPED_EXPECTED_PATH =
+  ".github/workgraph/fixtures/v1/scoped-control-flow.expected.json";
 const read = (path) => readFile(new URL(`../${path}`, import.meta.url), "utf8");
 const clone = (value) => structuredClone(value);
 const COMPILED_OUTPUT = JSON.parse(await read(EXPECTED_PATH));
@@ -1727,4 +1738,905 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
     () => nextReworkAttempt({ ...first, attempt: 4 }),
     /maximum of 3/,
   );
+});
+
+function scopedWorkflow() {
+  const task = (operation, worker, next, extra = {}) => ({
+    type: "task",
+    operation,
+    worker,
+    inputs: {},
+    ...extra,
+    next,
+  });
+  return {
+    apiVersion: "workgraph.drasi.io/v1",
+    kind: "IssueWorkflow",
+    metadata: { id: "scoped-control-flow" },
+    spec: {
+      trigger: "workgraph",
+      initial: "run",
+      defaults: {
+        evaluator: "result-evaluator",
+        orchestrator: "workflow-coordinator",
+        maxReworkAttempts: 3,
+      },
+      steps: {
+        run: task("coordinate-issue", "issue-coordinator", "completed", {
+          flowEntries: ["fix", "notify"],
+        }),
+        completed: { type: "terminal", outcome: "completed" },
+        fix: task("coordinate-validation", "issue-worker", "fix-cleanup", {
+          children: {
+            join: "all",
+            tasks: {
+              "fix-evidence": {
+                operation: "validate-reproduction",
+                worker: "issue-validator",
+                inputs: { section: "reproduction" },
+              },
+            },
+          },
+          flowEntries: ["audit"],
+        }),
+        "fix-cleanup": task("normalize-issue", "issue-worker", "fix-complete"),
+        "fix-complete": { type: "terminal", outcome: "completed" },
+        audit: {
+          type: "task",
+          operation: "validate-title",
+          worker: "issue-validator",
+          inputs: { field: "title" },
+          next: "audit-verify",
+        },
+        "audit-verify": {
+          type: "task",
+          operation: "validate-body",
+          worker: "issue-validator",
+          inputs: { field: "body" },
+          next: "audit-complete",
+        },
+        "audit-complete": { type: "terminal", outcome: "completed" },
+        notify: task("intake-issue", "issue-info-requester", "notify-complete"),
+        "notify-complete": { type: "terminal", outcome: "completed" },
+      },
+    },
+  };
+}
+
+test("scoped flow entries compile to disjoint routed scopes with nested owners", async () => {
+  const [yaml, expected, testCase] = await Promise.all([
+    read(SCOPED_AUTHORING_PATH),
+    read(SCOPED_EXPECTED_PATH).then(JSON.parse),
+    read(SCOPED_TEST_CASE_PATH).then(JSON.parse),
+  ]);
+  assert.match(yaml, /^  initial: run$/m);
+  assert.match(yaml, /^      flowEntries:$/m);
+
+  const definition = expected.workgraphDefinition;
+  assert.deepEqual(
+    normalizeCompiledWorkflowDefinition(definition),
+    definition,
+  );
+  assert.equal(expected.definitionDigest, definition.digest);
+  assert.equal(
+    expected.canonicalDefinitionBody,
+    await read(SCOPED_DEFINITION_PATH),
+  );
+  assert.deepEqual(
+    parseCompiledWorkflowDefinition(expected.canonicalDefinitionBody),
+    definition,
+  );
+  assert.deepEqual(expected.queryBundle.queries, []);
+
+  // The initial `run` task is a container: it declares no fixed children and
+  // forks one entry task per declared flow entry.
+  assert.deepEqual(definition.root.children, []);
+  assert.deepEqual(definition.root.flowEntries, ["fix", "notify"]);
+  // `fix` forks a fixed child and a flow entry from the same task definition.
+  assert.deepEqual(definition.steps.fix.taskDefinition.flowEntries, ["audit"]);
+  assert.deepEqual(
+    definition.steps.fix.taskDefinition.children.map(({ taskKey }) => taskKey),
+    ["fix-evidence"],
+  );
+  assert.equal(
+    Object.keys(definition.steps.fix.executionPolicies).length,
+    2,
+  );
+  for (const stepId of ["fix-cleanup", "audit", "audit-verify", "notify"]) {
+    assert.equal("flowEntries" in definition.steps[stepId].taskDefinition, false);
+  }
+
+  const flow = resolveCompiledFlowScopes(definition);
+  assert.deepEqual([...flow.scopes.keys()].sort(), ["audit", "fix", "notify"]);
+  // The whole run has exactly one trunk task: `run` is the initial task, the
+  // container that forks both scopes, and the post-Join finalizer.
+  assert.deepEqual([...flow.trunk].sort(), ["completed", "run"]);
+  assert.deepEqual(
+    [...flow.trunk].filter((stepId) => definition.steps[stepId].type === "task"),
+    ["run"],
+  );
+  const fix = flow.scopes.get("fix");
+  const notify = flow.scopes.get("notify");
+  const audit = flow.scopes.get("audit");
+  assert.deepEqual([...fix.stepIds].sort(), [
+    "fix",
+    "fix-cleanup",
+    "fix-complete",
+  ]);
+  assert.deepEqual([...notify.stepIds].sort(), ["notify", "notify-complete"]);
+  assert.deepEqual([...audit.stepIds].sort(), [
+    "audit",
+    "audit-complete",
+    "audit-verify",
+  ]);
+  assert.equal(fix.forkDepth, 1);
+  assert.equal(notify.forkDepth, 1);
+  assert.equal(audit.forkDepth, 2);
+  assert.equal(fix.ownerStepId, "run");
+  assert.equal(notify.ownerStepId, "run");
+  assert.equal(audit.ownerStepId, "fix");
+  assert.equal(
+    fix.ownerTaskDefinitionId,
+    definition.root.taskDefinitionId,
+  );
+  assert.equal(
+    audit.ownerTaskDefinitionId,
+    definition.steps.fix.taskDefinition.taskDefinitionId,
+  );
+  for (const [left, right] of [
+    [fix, notify],
+    [fix, audit],
+    [notify, audit],
+  ]) {
+    assert.equal(
+      [...left.stepIds].some((stepId) => right.stepIds.has(stepId)),
+      false,
+    );
+  }
+  assert.equal(flow.scopeForStep("audit-verify"), audit);
+  assert.equal(flow.scopeForStep("run"), null);
+  assert.equal(flow.scopeForStep("completed"), null);
+  assert.deepEqual(
+    flow.entriesByOwner.get(definition.root.taskDefinitionId),
+    ["fix", "notify"],
+  );
+
+  // Every scope terminates, and the trunk still reaches `completed`.
+  assert.equal(definition.steps["fix-complete"].outcome, "completed");
+  assert.equal(definition.steps["notify-complete"].outcome, "completed");
+  assert.equal(definition.steps["audit-complete"].outcome, "completed");
+  assert.equal(definition.steps.run.transition.targetStepId, "completed");
+
+  assert.deepEqual(normalizeIssueWorkflow(scopedWorkflow()), expected.definition);
+  assert.deepEqual(testCase.spec.expected.taskParents, {
+    run: null,
+    fix: "run",
+    // A fixed child is a native sub-issue of its own task, not of the owner
+    // that launched the scope.
+    "fix-evidence": "fix",
+    "fix-cleanup": "run",
+    notify: "run",
+    audit: "fix",
+    "audit-verify": "fix",
+  });
+  // Exactly one direct Root child, and every other task parents under `run`
+  // or under the nested `fix` container.
+  assert.deepEqual(testCase.spec.expected.topLevelTaskKeys, ["run"]);
+  assert.deepEqual(
+    Object.entries(testCase.spec.expected.taskParents)
+      .filter(([, parent]) => parent === null)
+      .map(([stepId]) => stepId),
+    ["run"],
+  );
+  assert.deepEqual(
+    [
+      ...new Set(
+        Object.values(testCase.spec.expected.taskParents).filter(Boolean),
+      ),
+    ].sort(),
+    ["fix", "run"],
+  );
+  assert.equal(testCase.spec.expected.terminalOutcome, "completed");
+  assert.equal(testCase.spec.workflowDefinitionId, "scoped-control-flow");
+  assert.deepEqual(
+    Object.keys(testCase.spec.steps).sort(),
+    [
+      ...Object.entries(definition.steps)
+        .filter(([, step]) => step.type === "task")
+        .map(([stepId]) => stepId),
+      "fix-evidence",
+    ].sort(),
+  );
+});
+
+test("existing v1 definitions never mention flowEntries and keep their digests", async () => {
+  for (const [name, digest] of [
+    ["issue-lifecycle", COMPILED_OUTPUT.definitionDigest],
+    ["fork-join-lifecycle", null],
+    ["mixed-control-flow", null],
+  ]) {
+    const [body, expected] = await Promise.all([
+      read(`.github/workgraph/workflows/${name}-v1.body`),
+      read(`.github/workgraph/fixtures/v1/${name}.expected.json`).then(
+        JSON.parse,
+      ),
+    ]);
+    assert.equal(body.includes("flowEntries"), false);
+    assert.equal(
+      JSON.stringify(expected.definition).includes("flowEntries"),
+      false,
+    );
+    assert.equal(expected.canonicalDefinitionBody, body);
+    assert.equal(expected.definitionDigest, expected.workgraphDefinition.digest);
+    if (digest) assert.equal(expected.definitionDigest, digest);
+    assert.equal(
+      formatCompiledWorkflowDefinition(parseCompiledWorkflowDefinition(body)),
+      body,
+    );
+    assert.equal(
+      resolveCompiledFlowScopes(
+        normalizeCompiledWorkflowDefinition(expected.workgraphDefinition),
+      ).scopes.size,
+      0,
+    );
+  }
+});
+
+test("flow entry declarations are strict at authoring and canonical layers", async () => {
+  const rejects = (mutate, pattern) => {
+    const workflow = scopedWorkflow();
+    mutate(workflow);
+    assert.throws(() => normalizeIssueWorkflow(workflow), pattern);
+  };
+
+  rejects((workflow) => {
+    workflow.spec.steps.run.flowEntries = ["absent"];
+  }, /flow entry 'absent' is not a declared step/);
+  rejects((workflow) => {
+    workflow.spec.steps.run.flowEntries = ["completed", "notify"];
+  }, /flow entry 'completed' must reference a task step/);
+  rejects((workflow) => {
+    workflow.spec.steps.run.flowEntries = ["fix", "run"];
+  }, /flow entry 'run' must not reference its own step/);
+  rejects((workflow) => {
+    workflow.spec.steps.run.flowEntries = ["fix", "fix"];
+  }, /step 'run' flowEntries must be ordered by unique step id/);
+  rejects((workflow) => {
+    workflow.spec.steps.run.flowEntries = ["notify", "fix"];
+  }, /step 'run' flowEntries must be ordered by unique step id/);
+  rejects((workflow) => {
+    workflow.spec.steps.run.flowEntries = ["Fix", "notify"];
+  }, /step 'run' flowEntries entry must be 1-64 lowercase letters/);
+  // A scope may not converge on the trunk.
+  rejects((workflow) => {
+    workflow.spec.steps["fix-cleanup"].next = "completed";
+  }, /already reachable from the workflow trunk/);
+  // Two entries may not converge on one another's steps.
+  rejects((workflow) => {
+    workflow.spec.steps.notify.next = "fix-cleanup";
+  }, /already owned by flow entry/);
+  // A scope must terminate.
+  rejects((workflow) => {
+    workflow.spec.steps["notify-complete"] = {
+      type: "task",
+      operation: "finalize-issue",
+      worker: "issue-worker",
+      inputs: {},
+      next: "notify",
+    };
+  }, /flow entry 'notify' must reach at least one terminal step/);
+  // A scope may not contain an unconditional cycle.
+  rejects((workflow) => {
+    delete workflow.spec.steps["audit-verify"].next;
+    workflow.spec.steps["audit-verify"].outcomes = {
+      ok: "audit-complete",
+      retry: "audit",
+    };
+  }, /issue workflow has a cycle without a wait/);
+  // The trunk may not transition into a routed scope.
+  rejects((workflow) => {
+    workflow.spec.steps.run.next = "audit-verify";
+  }, /already reachable from the workflow trunk/);
+  // Entry steps are unreachable without the owner that launches them.
+  rejects((workflow) => {
+    delete workflow.spec.steps.run.flowEntries;
+  }, /issue workflow has unreachable steps/);
+
+  const bounded = scopedWorkflow();
+  bounded.spec.steps.run.children = {
+    join: "all",
+    tasks: Object.fromEntries(
+      Array.from({ length: MAX_TASK_DEFINITION_CHILDREN - 1 }, (_, index) => [
+        `child-${String(index).padStart(2, "0")}`,
+        { operation: "validate-title", worker: "issue-validator" },
+      ]),
+    ),
+  };
+  assert.throws(
+    () => normalizeIssueWorkflow(bounded),
+    new RegExp(
+      `children and flowEntries must total at most ${MAX_TASK_DEFINITION_CHILDREN} tasks`,
+    ),
+  );
+
+  const expected = JSON.parse(await read(SCOPED_EXPECTED_PATH));
+  const compiled = clone(expected.workgraphDefinition);
+  compiled.root.flowEntries = ["notify", "fix"];
+  compiled.steps.run.taskDefinition.flowEntries = ["notify", "fix"];
+  assert.throws(
+    () => normalizeCompiledWorkflowDefinition(compiled),
+    /flowEntries must be ordered by unique step ID/,
+  );
+
+  const strayEntry = clone(expected.workgraphDefinition);
+  strayEntry.root.flowEntries = ["audit", "fix", "notify"];
+  strayEntry.steps.run.taskDefinition.flowEntries = ["audit", "fix", "notify"];
+  assert.throws(
+    () => normalizeCompiledWorkflowDefinition(strayEntry),
+    /already owned by flow entry/,
+  );
+
+  const unknownKey = clone(expected.workgraphDefinition);
+  unknownKey.root.flowEntry = ["fix"];
+  assert.throws(
+    () => normalizeCompiledWorkflowDefinition(unknownKey),
+    /properties must be exactly/,
+  );
+});
+
+test("nested owners and scope fork depth stay recursively bounded", async () => {
+  const expected = JSON.parse(await read(SCOPED_EXPECTED_PATH));
+  const policy = {
+    workerId: "issue-validator",
+    evaluatorId: "result-evaluator",
+    orchestratorId: "workflow-coordinator",
+    maxReworkAttempts: 3,
+  };
+  const leaf = (key, flowEntries = null) => ({
+    taskDefinitionId: protocolId("task-definition", `scoped-${key}`),
+    taskKey: key,
+    operation: "validate-title",
+    routing: { permittedExecutors: ["issue-validator"] },
+    staticInputs: {},
+    children: [],
+    ...(flowEntries ? { flowEntries } : {}),
+  });
+  const register = (definition, task) => {
+    definition.steps.fix.executionPolicies[task.taskDefinitionId] = {
+      ...policy,
+    };
+    for (const child of task.children) register(definition, child);
+  };
+
+  // A nested fixed child may own a routed scope. Its physical fork depth counts
+  // the owner's own nesting: fix (1) -> owner child (1) -> audit (3).
+  const nested = clone(expected.workgraphDefinition);
+  delete nested.steps.fix.taskDefinition.flowEntries;
+  const owner = leaf("audit-owner", ["audit"]);
+  // `fix` keeps its existing fixed child; children stay ordered by taskKey.
+  nested.steps.fix.taskDefinition.children = [
+    owner,
+    ...nested.steps.fix.taskDefinition.children,
+  ];
+  register(nested, owner);
+  const normalized = normalizeCompiledWorkflowDefinition(nested);
+  const flow = resolveCompiledFlowScopes(normalized);
+  assert.equal(flow.scopes.get("audit").forkDepth, 3);
+  assert.equal(
+    flow.scopes.get("audit").ownerTaskDefinitionId,
+    owner.taskDefinitionId,
+  );
+  assert.equal(flow.scopes.get("audit").ownerStepId, "fix");
+  assert.deepEqual(flow.entriesByOwner.get(owner.taskDefinitionId), ["audit"]);
+
+  // The scope's own task tree is validated at that physical depth, so nesting
+  // beneath a deep scope is rejected exactly like ordinary recursive children.
+  const tooDeep = clone(expected.workgraphDefinition);
+  let chain = leaf("audit-c3");
+  for (const key of ["audit-c2", "audit-c1"]) {
+    chain = { ...leaf(key), children: [chain] };
+  }
+  tooDeep.steps.audit.taskDefinition.children = [chain];
+  const registerAudit = (task) => {
+    tooDeep.steps.audit.executionPolicies[task.taskDefinitionId] = {
+      ...policy,
+    };
+    for (const child of task.children) registerAudit(child);
+  };
+  registerAudit(chain);
+  assert.throws(
+    () => normalizeCompiledWorkflowDefinition(tooDeep),
+    new RegExp(
+      `compiled task nesting exceeds maximum depth ${MAX_TASK_DEFINITION_DEPTH}`,
+    ),
+  );
+
+  // The same tree beneath a trunk step stays within the bound.
+  const trunk = clone(expected.workgraphDefinition);
+  trunk.steps.run.taskDefinition.children = [clone(chain)];
+  trunk.root.children = trunk.steps.run.taskDefinition.children;
+  const registerTrunk = (task) => {
+    trunk.steps.run.executionPolicies[task.taskDefinitionId] = {
+      ...policy,
+      workerId: "issue-validator",
+    };
+    for (const child of task.children) registerTrunk(child);
+  };
+  registerTrunk(chain);
+  assert.doesNotThrow(() => normalizeCompiledWorkflowDefinition(trunk));
+});
+
+test("reserved runtime inputs cannot be authored where the runtime writes them", async () => {
+  const [expected, mixed] = await Promise.all([
+    read(SCOPED_EXPECTED_PATH).then(JSON.parse),
+    read(".github/workgraph/fixtures/v1/mixed-control-flow.expected.json").then(
+      JSON.parse,
+    ),
+  ]);
+  assert.deepEqual(RESERVED_RUNTIME_INPUT_KEYS, [
+    "workgraphPredecessorTaskId",
+    "workgraphScopeEntryStepId",
+    "workgraphScopeEntryTaskId",
+    "workgraphScopeParentTaskId",
+  ]);
+
+  const authored = (mutate) => {
+    const workflow = scopedWorkflow();
+    mutate(workflow.spec.steps);
+    return workflow;
+  };
+  // A routed successor receives `workgraphPredecessorTaskId`, so no step that
+  // a transition targets may author it.
+  for (const stepId of ["fix-cleanup", "audit-verify"]) {
+    assert.throws(
+      () =>
+        normalizeIssueWorkflow(
+          authored((steps) => {
+            steps[stepId].inputs = { workgraphPredecessorTaskId: "x" };
+          }),
+        ),
+      new RegExp(
+        `step '${stepId}' uses reserved routed successor input 'workgraphPredecessorTaskId'`,
+      ),
+    );
+  }
+  // Every task of a routed scope receives the reserved scope strings, and the
+  // entry root must stay free of a routed predecessor.
+  for (const [stepId, key] of [
+    ["fix", "workgraphScopeEntryTaskId"],
+    ["fix", "workgraphPredecessorTaskId"],
+    ["notify", "workgraphScopeParentTaskId"],
+    ["audit", "workgraphScopeEntryStepId"],
+    ["fix-cleanup", "workgraphScopeParentTaskId"],
+  ]) {
+    assert.throws(
+      () =>
+        normalizeIssueWorkflow(
+          authored((steps) => {
+            steps[stepId].inputs = { [key]: "x" };
+          }),
+        ),
+      new RegExp(`step '${stepId}' uses reserved routed \\w+ input '${key}'`),
+    );
+  }
+  // A nested child of a scoped task inherits the same scope metadata.
+  assert.throws(
+    () =>
+      normalizeIssueWorkflow(
+        authored((steps) => {
+          steps.audit.children = {
+            join: "all",
+            tasks: {
+              probe: {
+                operation: "validate-body",
+                worker: "issue-validator",
+                inputs: { workgraphScopeParentTaskId: "x" },
+              },
+            },
+          };
+        }),
+      ),
+    /step 'audit' child task 'probe' uses reserved routed scope input 'workgraphScopeParentTaskId'/,
+  );
+  // `run` is the sole trunk task: it is the initial task and no transition
+  // targets it, so it is never generated as an entry or a successor.
+  for (const key of RESERVED_RUNTIME_INPUT_KEYS) {
+    assert.doesNotThrow(() =>
+      normalizeIssueWorkflow(
+        authored((steps) => {
+          steps.run.inputs = { [key]: "x" };
+        }),
+      ),
+    );
+  }
+
+  const collide = (fixture, stepId, key) => {
+    const definition = clone(fixture.workgraphDefinition);
+    definition.steps[stepId].taskDefinition.staticInputs[key] = "x";
+    if (definition.initialStepId === stepId) {
+      definition.root = definition.steps[stepId].taskDefinition;
+    }
+    return definition;
+  };
+  assert.throws(
+    () =>
+      normalizeCompiledWorkflowDefinition(
+        collide(expected, "audit", "workgraphScopeEntryTaskId"),
+      ),
+    /uses reserved routed scope input 'workgraphScopeEntryTaskId'/,
+  );
+  assert.throws(
+    () =>
+      normalizeCompiledWorkflowDefinition(
+        collide(expected, "fix", "workgraphPredecessorTaskId"),
+      ),
+    /uses reserved routed successor input 'workgraphPredecessorTaskId'/,
+  );
+  // The rule applies to legacy trunk successors too: `b` follows `a`.
+  assert.throws(
+    () =>
+      normalizeCompiledWorkflowDefinition(
+        collide(mixed, "b", "workgraphPredecessorTaskId"),
+      ),
+    /uses reserved routed successor input 'workgraphPredecessorTaskId'/,
+  );
+  // The legacy initial step is not a transition target, so it is unaffected.
+  assert.doesNotThrow(() =>
+    normalizeCompiledWorkflowDefinition(
+      collide(mixed, "a", "workgraphPredecessorTaskId"),
+    ),
+  );
+
+  // Every shipped Demo definition stays free of reserved authored inputs, so
+  // the committed bodies and digests are unchanged by this rule.
+  for (const name of [
+    "issue-lifecycle",
+    "fork-join-lifecycle",
+    "mixed-control-flow",
+    "scoped-control-flow",
+  ]) {
+    const body = await read(`.github/workgraph/workflows/${name}-v1.body`);
+    for (const key of RESERVED_RUNTIME_INPUT_KEYS) {
+      assert.equal(body.includes(key), false);
+    }
+    assert.equal(
+      formatCompiledWorkflowDefinition(parseCompiledWorkflowDefinition(body)),
+      body,
+    );
+  }
+});
+
+// Mirrors the standalone mock's mechanical selection: the trunk starts at
+// `initialStepId`, every routed scope starts at its declared entry step, both
+// walk the same pinned transitions, and each chain ends at the terminal its own
+// subgraph owns.
+function selectWorkGraphTestCase(definition, testCase) {
+  const chain = (startStepId) => {
+    const tasks = [];
+    const visited = new Set();
+    let stepId = startStepId;
+    for (;;) {
+      assert.equal(visited.has(stepId), false, `cycle at '${stepId}'`);
+      visited.add(stepId);
+      const step = definition.steps[stepId];
+      if (step.type === "terminal") {
+        return { tasks, terminalStepId: stepId, terminalOutcome: step.outcome };
+      }
+      if (step.type === "wait") {
+        stepId = step.nextStepId;
+        continue;
+      }
+      const { taskKey } = step.taskDefinition;
+      const selected = testCase.spec.steps[taskKey];
+      assert.ok(selected, `no Result for selected task '${taskKey}'`);
+      tasks.push(step.taskDefinition);
+      stepId =
+        step.transition.type === "next"
+          ? step.transition.targetStepId
+          : step.transition.targets[selected.result.output.outcome];
+      assert.ok(stepId, `unselected outcome for '${taskKey}'`);
+    }
+  };
+
+  const taskParents = {};
+  const flowEntries = [];
+  const insert = (task, parent) => {
+    assert.equal(task.taskKey in taskParents, false);
+    taskParents[task.taskKey] = parent;
+    for (const child of task.children) insert(child, task.taskKey);
+  };
+  const collect = (owner) => {
+    for (const entryStepId of owner.flowEntries ?? []) {
+      const selected = chain(entryStepId);
+      assert.notEqual(selected.tasks.length, 0);
+      flowEntries.push({
+        ownerTaskKey: owner.taskKey,
+        entryStepId,
+        taskKeys: selected.tasks.map(({ taskKey }) => taskKey),
+        terminalStepId: selected.terminalStepId,
+        terminalOutcome: selected.terminalOutcome,
+      });
+      for (const member of selected.tasks) insert(member, owner.taskKey);
+      for (const member of selected.tasks) collect(member);
+    }
+    for (const child of owner.children) collect(child);
+  };
+
+  const trunk = chain(definition.initialStepId);
+  for (const task of trunk.tasks) insert(task, null);
+  for (const task of trunk.tasks) collect(task);
+  flowEntries.sort((left, right) =>
+    left.ownerTaskKey === right.ownerTaskKey
+      ? (left.entryStepId < right.entryStepId ? -1 : 1)
+      : left.ownerTaskKey < right.ownerTaskKey
+        ? -1
+        : 1,
+  );
+  return {
+    topLevelTaskKeys: trunk.tasks.map(({ taskKey }) => taskKey),
+    taskParents,
+    terminalOutcome: trunk.terminalOutcome,
+    flowEntries,
+  };
+}
+
+test("the scoped test case matches the mechanically selected routed scopes", async () => {
+  const [expected, testCase] = await Promise.all([
+    read(SCOPED_EXPECTED_PATH).then(JSON.parse),
+    read(SCOPED_TEST_CASE_PATH).then(JSON.parse),
+  ]);
+  const definition = expected.workgraphDefinition;
+  const selected = selectWorkGraphTestCase(definition, testCase);
+
+  assert.deepEqual(selected.topLevelTaskKeys, ["run"]);
+  assert.deepEqual(
+    selected.topLevelTaskKeys,
+    testCase.spec.expected.topLevelTaskKeys,
+  );
+  assert.deepEqual(selected.taskParents, testCase.spec.expected.taskParents);
+  assert.equal(selected.terminalOutcome, testCase.spec.expected.terminalOutcome);
+  assert.deepEqual(selected.flowEntries, [
+    {
+      ownerTaskKey: "fix",
+      entryStepId: "audit",
+      taskKeys: ["audit", "audit-verify"],
+      terminalStepId: "audit-complete",
+      terminalOutcome: "completed",
+    },
+    {
+      ownerTaskKey: "run",
+      entryStepId: "fix",
+      taskKeys: ["fix", "fix-cleanup"],
+      terminalStepId: "fix-complete",
+      terminalOutcome: "completed",
+    },
+    {
+      ownerTaskKey: "run",
+      entryStepId: "notify",
+      taskKeys: ["notify"],
+      terminalStepId: "notify-complete",
+      terminalOutcome: "completed",
+    },
+  ]);
+  assert.deepEqual(selected.flowEntries, testCase.spec.expected.flowEntries);
+
+  // The mock deserializes with deny_unknown_fields, so the additive shape must
+  // use exactly these camelCase keys.
+  assert.deepEqual(Object.keys(testCase.spec.expected).sort(), [
+    "flowEntries",
+    "taskParents",
+    "terminalOutcome",
+    "topLevelTaskKeys",
+  ]);
+  for (const entry of testCase.spec.expected.flowEntries) {
+    assert.deepEqual(Object.keys(entry), [
+      "ownerTaskKey",
+      "entryStepId",
+      "taskKeys",
+      "terminalStepId",
+      "terminalOutcome",
+    ]);
+  }
+
+  // The mock's cross-checks: the case describes exactly the selected tasks,
+  // and every scope member is a native direct child of its owner.
+  assert.deepEqual(
+    Object.keys(testCase.spec.steps).sort(),
+    Object.keys(testCase.spec.expected.taskParents).sort(),
+  );
+  const flow = resolveCompiledFlowScopes(definition);
+  for (const entry of testCase.spec.expected.flowEntries) {
+    const scope = flow.scopes.get(entry.entryStepId);
+    assert.ok(scope, `'${entry.entryStepId}' is a compiled flow entry`);
+    assert.equal(
+      scope.ownerTaskDefinitionId,
+      entry.ownerTaskKey === "run"
+        ? definition.root.taskDefinitionId
+        : definition.steps[entry.ownerTaskKey].taskDefinition.taskDefinitionId,
+    );
+    assert.equal(scope.stepIds.has(entry.terminalStepId), true);
+    assert.equal(definition.steps[entry.terminalStepId].type, "terminal");
+    assert.equal(
+      definition.steps[entry.terminalStepId].outcome,
+      entry.terminalOutcome,
+    );
+    for (const taskKey of entry.taskKeys) {
+      assert.equal(scope.stepIds.has(taskKey), true);
+      assert.equal(
+        testCase.spec.expected.taskParents[taskKey],
+        entry.ownerTaskKey,
+      );
+    }
+    assert.equal(entry.taskKeys[0], entry.entryStepId);
+  }
+  // Only the entry root is Fork-named; the rest are predecessor-routed.
+  assert.deepEqual(
+    testCase.spec.expected.flowEntries.map(({ taskKeys }) => taskKeys.length),
+    [2, 2, 1],
+  );
+});
+
+test("existing test cases stay valid without the additive flowEntries field", async () => {
+  for (const name of [
+    "linear-sequence",
+    "fork-join",
+    "mixed-parallel",
+    "mixed-skip",
+    "mixed-reject",
+  ]) {
+    const testCase = JSON.parse(
+      await read(`.github/workgraph/tests/${name}-v1.json`),
+    );
+    assert.equal("flowEntries" in testCase.spec.expected, false);
+  }
+});
+
+// An authored chain of nested scopes: `plan` launches `flow-1`, which launches
+// `flow-2`, and so on. The deepest entry sits at fork depth `levels`.
+function nestedFlowChain(levels, childDepth = 0) {
+  const task = (operation, worker, next, extra = {}) => ({
+    type: "task",
+    operation,
+    worker,
+    inputs: {},
+    ...extra,
+    next,
+  });
+  const childTree = (depth) =>
+    depth === 0
+      ? undefined
+      : {
+          join: "all",
+          tasks: {
+            [`nested-${depth}`]: {
+              operation: "validate-title",
+              worker: "issue-validator",
+              ...(depth > 1 ? { children: childTree(depth - 1) } : {}),
+            },
+          },
+        };
+  const steps = {
+    plan: task("intake-issue", "issue-worker", "done", {
+      flowEntries: ["flow-1"],
+    }),
+    done: { type: "terminal", outcome: "completed" },
+  };
+  for (let level = 1; level <= levels; level += 1) {
+    const deepest = level === levels;
+    steps[`flow-${level}`] = task(
+      "normalize-issue",
+      "issue-worker",
+      `end-${level}`,
+      {
+        ...(deepest ? {} : { flowEntries: [`flow-${level + 1}`] }),
+        ...(deepest && childDepth > 0
+          ? { children: childTree(childDepth) }
+          : {}),
+      },
+    );
+    steps[`end-${level}`] = { type: "terminal", outcome: "completed" };
+  }
+  return {
+    apiVersion: "workgraph.drasi.io/v1",
+    kind: "IssueWorkflow",
+    metadata: { id: "deep-flow" },
+    spec: {
+      trigger: "workgraph",
+      initial: "plan",
+      defaults: {
+        evaluator: "result-evaluator",
+        orchestrator: "workflow-coordinator",
+        maxReworkAttempts: 3,
+      },
+      steps,
+    },
+  };
+}
+
+test("authored scope fork depth bounds recursive children like the compiler", async () => {
+  // A chain of nested scopes is bounded by its physical fork depth alone.
+  assert.doesNotThrow(() =>
+    normalizeIssueWorkflow(nestedFlowChain(MAX_TASK_DEFINITION_DEPTH)),
+  );
+  assert.throws(
+    () => normalizeIssueWorkflow(nestedFlowChain(MAX_TASK_DEFINITION_DEPTH + 1)),
+    new RegExp(`exceed maximum depth ${MAX_TASK_DEFINITION_DEPTH}`),
+  );
+
+  // Fork depth and authored child nesting add up: a scope at depth 2 may nest
+  // two further child levels, but not three.
+  assert.doesNotThrow(() => normalizeIssueWorkflow(nestedFlowChain(2, 2)));
+  assert.throws(
+    () => normalizeIssueWorkflow(nestedFlowChain(2, 3)),
+    /step 'flow-2' recursive children exceed maximum depth 4/,
+  );
+  // The same child tree on the trunk stays within the bound.
+  assert.doesNotThrow(() => {
+    const trunk = nestedFlowChain(1, 0);
+    trunk.spec.steps.plan.children =
+      nestedFlowChain(1, 4).spec.steps["flow-1"].children;
+    return normalizeIssueWorkflow(trunk);
+  });
+
+  // The committed scoped workflow: `fix` sits at fork depth 1 and nests one
+  // child level, and `audit` sits at fork depth 2.
+  const expected = JSON.parse(await read(SCOPED_EXPECTED_PATH));
+  const flow = resolveCompiledFlowScopes(
+    normalizeCompiledWorkflowDefinition(expected.workgraphDefinition),
+  );
+  assert.equal(flow.scopes.get("fix").forkDepth, 1);
+  assert.equal(flow.scopes.get("audit").forkDepth, 2);
+  const overNested = scopedWorkflow();
+  overNested.spec.steps.audit.children = {
+    join: "all",
+    tasks: {
+      "audit-a": {
+        operation: "validate-title",
+        worker: "issue-validator",
+        children: {
+          join: "all",
+          tasks: {
+            "audit-b": {
+              operation: "validate-body",
+              worker: "issue-validator",
+              children: {
+                join: "all",
+                tasks: {
+                  "audit-c": {
+                    operation: "validate-reproduction",
+                    worker: "issue-validator",
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  };
+  assert.throws(
+    () => normalizeIssueWorkflow(overNested),
+    /step 'audit' recursive children exceed maximum depth 4/,
+  );
+  // Two levels beneath the same depth-2 scope is exactly the bound.
+  const atBound = scopedWorkflow();
+  atBound.spec.steps.audit.children = {
+    join: "all",
+    tasks: {
+      "audit-a": {
+        operation: "validate-title",
+        worker: "issue-validator",
+        children: {
+          join: "all",
+          tasks: {
+            "audit-b": {
+              operation: "validate-body",
+              worker: "issue-validator",
+            },
+          },
+        },
+      },
+    },
+  };
+  assert.doesNotThrow(() => normalizeIssueWorkflow(atBound));
 });

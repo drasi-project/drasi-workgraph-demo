@@ -1,0 +1,76 @@
+apiVersion: workgraph.drasi.io/v1
+kind: IssueWorkflow
+metadata:
+  id: scoped-control-flow
+
+spec:
+  trigger: workgraph
+  initial: run
+  defaults:
+    evaluator: result-evaluator
+    orchestrator: workflow-coordinator
+    maxReworkAttempts: 3
+  steps:
+    run:
+      type: task
+      operation: coordinate-issue
+      worker: issue-coordinator
+      inputs: {}
+      flowEntries:
+        - fix
+        - notify
+      next: completed
+    completed:
+      type: terminal
+      outcome: completed
+    fix:
+      type: task
+      operation: coordinate-validation
+      worker: issue-worker
+      inputs: {}
+      children:
+        join: all
+        tasks:
+          fix-evidence:
+            operation: validate-reproduction
+            worker: issue-validator
+            inputs:
+              section: reproduction
+      flowEntries:
+        - audit
+      next: fix-cleanup
+    fix-cleanup:
+      type: task
+      operation: normalize-issue
+      worker: issue-worker
+      inputs: {}
+      next: fix-complete
+    fix-complete:
+      type: terminal
+      outcome: completed
+    audit:
+      type: task
+      operation: validate-title
+      worker: issue-validator
+      inputs:
+        field: title
+      next: audit-verify
+    audit-verify:
+      type: task
+      operation: validate-body
+      worker: issue-validator
+      inputs:
+        field: body
+      next: audit-complete
+    audit-complete:
+      type: terminal
+      outcome: completed
+    notify:
+      type: task
+      operation: intake-issue
+      worker: issue-info-requester
+      inputs: {}
+      next: notify-complete
+    notify-complete:
+      type: terminal
+      outcome: completed
