@@ -257,7 +257,7 @@ function taskIssue(number, nodeId, task) {
   };
 }
 
-function rootIssue({ stale = false } = {}) {
+function rootIssue({ stale = false, labels = ["workgraph"] } = {}) {
   return {
     number: ROOT_ISSUE_NUMBER,
     node_id: ROOT_ISSUE_ID,
@@ -265,7 +265,7 @@ function rootIssue({ stale = false } = {}) {
     state: "open",
     title: stale ? `${ROOT_TITLE} changed` : ROOT_TITLE,
     body: ROOT_BODY,
-    labels: [{ name: "workgraph" }],
+    labels: labels.map((name) => ({ name })),
     type: null,
     user: { id: 999, login: "author" },
   };
@@ -279,7 +279,10 @@ async function requestBody(request) {
 
 async function withFakeRuntime(options, callback) {
   const data = fixture();
-  const root = rootIssue({ stale: options.staleRootIssue === true });
+  const root = rootIssue({
+    stale: options.staleRootIssue === true,
+    labels: options.rootLabels,
+  });
   if (options.rootAdmitted === false) root.labels = [];
   const rootTask = taskIssue(
     ROOT_TASK_NUMBER,
@@ -902,7 +905,10 @@ async function withFakeLifecycle(options, callback) {
       rootIssueId: "I_wrong_root",
     });
   }
-  const root = rootIssue({ stale: options.staleRootIssue === true });
+  const root = rootIssue({
+    stale: options.staleRootIssue === true,
+    labels: options.rootLabels,
+  });
   if (options.rootAdmitted === false) root.labels = [];
   const rootTask = taskIssue(ROOT_TASK_NUMBER, ROOT_TASK_NODE_ID, data.rootTask);
   const parentTask = data.parentTask
@@ -1552,6 +1558,47 @@ test("Root Issue admission label is required on every read and Result", async ()
       assert.equal(state.leaseRequests.length, 0);
     },
   );
+});
+
+test("a configured selector label admits Root reads and Results", async () => {
+  await withFakeRuntime(
+    { rootLabels: ["workgraph:foo"] },
+    async ({ data, state }) => {
+      const root = await callTool("get_root_issue", {
+        taskLocator: childLocator(),
+        taskId: data.childTask.taskId,
+      });
+      assert.equal(root.rootIssueId, ROOT_ISSUE_ID);
+
+      const result = await callTool(
+        "submit_task_result",
+        resultInput(data.childTask, data.childDispatch, childLocator()),
+      );
+      assert.equal(result.reconciled, false);
+      assert.equal(state.writes.length, 1);
+      assert.equal(state.leaseRequests.length, 1);
+    },
+  );
+});
+
+test("reserved exclusion labels never admit a Root Issue", async () => {
+  for (const rootLabels of [
+    ["workgraph:ignore"],
+    ["workgraph:error"],
+    ["workgraph:foo", "workgraph:ignore"],
+  ]) {
+    await withFakeRuntime({ rootLabels }, async ({ data, state }) => {
+      await assert.rejects(
+        callTool("get_root_issue", {
+          taskLocator: childLocator(),
+          taskId: data.childTask.taskId,
+        }),
+        /Root Issue is missing, stale/,
+      );
+      assert.equal(state.writes.length, 0);
+      assert.equal(state.leaseRequests.length, 0);
+    });
+  }
 });
 
 test("get_root_issue requires open validator and Root Task Issues", async () => {

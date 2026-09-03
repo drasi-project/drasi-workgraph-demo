@@ -694,9 +694,17 @@ function linkedIssue(link, number, nodeId, label) {
 }
 
 function hasAdmissionLabel(issue) {
-  return (
-    Array.isArray(issue?.labels) &&
-    issue.labels.some((label) => object(label) && label.name === "workgraph")
+  if (!Array.isArray(issue?.labels)) return false;
+  const names = issue.labels
+    .filter((label) => object(label) && typeof label.name === "string")
+    .map((label) => label.name);
+  if (names.some((name) => ["workgraph:ignore", "workgraph:error"].includes(name))) {
+    return false;
+  }
+  return names.some(
+    (name) =>
+      name === "workgraph" ||
+      /^workgraph:[A-Za-z0-9._-]{1,64}$/.test(name),
   );
 }
 
