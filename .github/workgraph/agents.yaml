@@ -32,6 +32,10 @@ actors:
     kind: agent
     slots: 1
     leaseDuration: PT30M
+  - actorId: assignment-coordinator
+    kind: agent
+    slots: 1
+    leaseDuration: PT15M
   - actorId: human-agentofreality
     kind: human
     slots: 1

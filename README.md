@@ -10,6 +10,7 @@ The prototype has one protocol:
 
 - `WorkGraphWorkflowDefinition/v1`
 - `WorkGraphTask/v1`
+- `WorkGraphTaskAssignmentRequest/v1`
 - `WorkGraphTaskAssignment/v1`
 - `WorkGraphTaskFork/v1`
 - `WorkGraphTaskJoin/v1`
@@ -18,6 +19,7 @@ The prototype has one protocol:
 - `WorkGraphTaskEvaluation/v1`
 - `WorkGraphTaskRoute/v1`
 - `WorkGraphTaskError/v1`
+- `WorkGraphTaskResponse/v1`
 
 Every task and lifecycle body uses the strict `workgraph.drasi.io/v1` envelope:
 `kind` identifies the message, direct identity fields remain top-level,
@@ -74,19 +76,25 @@ identically in both directions; the `version: 2` actor catalog in
 `agents.yaml` is what marks `human-agentofreality` as a human and binds the
 GitHub account it speaks as.
 
+`assigner-parity.yaml` allocates the Assignment decision itself to an actor.
+Its first task has `human-agentofreality` choose an agent worker; its second has
+the `assignment-coordinator` agent choose a human worker. The assigner receives
+no lease. Only the selected worker enters the ordinary
+Assignment → Lease → Dispatch lifecycle.
+
 Dogfooding's Rust `workgraph-compile` turns that YAML into the canonical
 `WorkGraphWorkflowDefinition/v1` body. The committed
 [`issue-lifecycle-v1.body`](.github/workgraph/workflows/issue-lifecycle-v1.body)
 is that canonical body, and
 [`issue-lifecycle.expected.json`](.github/workgraph/fixtures/v1/issue-lifecycle.expected.json)
 is the exact complete compiler output. Sequence, branch, fork/join, and
-terminal processing share 24 fixed admission, lifecycle, and detail queries;
-only workflows with human waits add generated resume queries.
+terminal processing share the same five fixed, definition-independent `wg-*`
+fact queries. No workflow shape or human role adds generated queries.
 
-Evaluator and orchestrator profiles are lifecycle roles. Through the narrow
-reporter they read a verified current task snapshot and write one canonical
-Evaluate or Route comment on that existing task. The snapshot exposes only the
-effective compiled policy and bounded verdict, action, and transition choices.
+Assigner, evaluator, and orchestrator profiles are lifecycle roles. Through the
+narrow reporter they read a verified current task snapshot and write one
+canonical Assignment, Evaluation, or Route comment on that existing task. The
+snapshot exposes only the effective compiled policy and bounded choices.
 These roles cannot create or close tasks or mutate the Root Issue. The shared `issue-worker` profile handles all four stages. Lifecycle messages
 use one-based attempts and deterministic claim identities so concurrent retries
 in one reporter process reconcile one immutable comment. Runtime task IDs must

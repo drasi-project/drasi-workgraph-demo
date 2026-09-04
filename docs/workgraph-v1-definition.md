@@ -104,7 +104,7 @@ The Rust compiler stays authoritative;
 compiler output and
 `.github/workgraph/workflows/scoped-control-flow-v1.body` is its
 `canonicalDefinitionBody`. `node scripts/check-workgraph-compiler.mjs` compares
-all four Demo workflows against the sibling compiler byte-for-byte.
+all six Demo workflows against the sibling compiler byte-for-byte.
 
 ## Human and agent parity
 
@@ -115,6 +115,22 @@ ID) or a `human` (which binds the exact GitHub `databaseId`, `nodeId`, and
 `login` that person speaks as). A human worker takes a normal Assignment,
 Lease, and Dispatch; a human evaluator takes none, exactly like an agent
 evaluator.
+
+The Assignment decision itself may also be allocated to either transport:
+
+```yaml
+      worker:
+        candidates: [human-agentofreality, issue-worker]
+        selection: assigned
+      assigner: assignment-coordinator
+```
+
+This produces `WorkGraphTaskAssignmentRequest/v1` before Assignment. The
+assigner has no lease; it chooses one candidate and records a rationale. A
+human answers with `@workgraph assign <actor-id> ...`, which becomes Response
+evidence before the trusted runtime writes Assignment. An agent uses only
+`get_task_snapshot` and `submit_task_assignment`. The selected worker then
+enters the ordinary Assignment, Lease, and Dispatch lifecycle.
 
 A task definition may pin optional actor-neutral `instructions`: a `summary`,
 optional `details`, ordered `acceptanceCriteria`, and an optional
@@ -157,8 +173,9 @@ carries no `resultDigest`, no outcome, and no verdict.
 
 Evidence is bound to the exact lifecycle subject it answers, in the references
 and in `responseId`, so one comment cannot be replayed across attempts or roles.
-`worker` evidence references its Dispatch and Lease and never a Result;
-`evaluator` evidence references its Result and never a Dispatch or Lease.
+`worker` evidence references its Dispatch and Lease, `evaluator` evidence
+references its Result, and `assigner` evidence references its
+AssignmentRequest. Each role forbids the other roles' subjects.
 
 Only a comment whose first non-empty line opens with `@workgraph` is normalized,
 matched case-insensitively on an exact login boundary, so `@workgraphs` is a
@@ -190,12 +207,12 @@ Every task and lifecycle body contains exactly `apiVersion`, `kind`, `id`,
 `rootIssueId`, `workflowRunId`, `taskId`, `workflowContext`, `references`, and
 `data`. `apiVersion` is `workgraph.drasi.io/v1`. Workflow context always contains the pinned
 definition ID, version, digest, task-definition ID, `taskKey`, and `operation`.
-The markers and kinds are Task, TaskFork, TaskJoin, TaskAssignment,
-TaskDispatch, TaskResult, TaskEvaluation, TaskRoute, and TaskError using their matching
+The markers and kinds are Task, TaskFork, TaskJoin, TaskAssignmentRequest,
+TaskAssignment, TaskDispatch, TaskResult, TaskEvaluation, TaskRoute, and TaskError using their matching
 `WorkGraph<kind>/v1` marker. Flat legacy bodies and old marker spellings are not
 accepted.
 
-The eight task-comment message kinds are the `WorkGraphTaskAction` log.
+The ten task-comment message kinds are the `WorkGraphTaskAction` log.
 TaskFork is persisted only after all declared child tasks are observed, and
 TaskJoin is persisted only after all joined children close with accepted
 Result/Evaluation pairs.
@@ -212,8 +229,11 @@ rejected by Task and lifecycle formatters, parsers, and ID derivation helpers.
 
 References/data are strict: Task uses `{}`/`{resolvedInputs}`; Fork records
 ordered child TaskDefinition/Task references; Join records its Fork and ordered
-child Task/Result/Evaluation references; Assignment uses
-`{join:{kind,id}|null}`/`{permittedExecutors}`; Dispatch uses `{assignment:{kind,id}}` with
+child Task/Result/Evaluation references. AssignmentRequest carries an assigner,
+canonical candidates, and optional decision instructions. Legacy Assignment
+uses `{join:{kind,id}|null}`/`{permittedExecutors}`; decision-bound Assignment
+also references its request and optional human Response and carries the
+assigner and rationale. Dispatch uses `{assignment:{kind,id}}` with
 `{launchId, lease:{id,executorId,slotId}}`; Result uses
 typed `dispatch` and `lease` roles with `{attempt,outcome,output}`; Evaluation
 uses a typed `result` role; and Route uses typed `result` and `evaluation`

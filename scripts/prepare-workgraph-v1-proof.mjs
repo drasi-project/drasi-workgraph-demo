@@ -29,33 +29,14 @@ const COMPILED_PATH = resolve(
 );
 const CANONICAL_GENERIC_INVENTORY_PATH = resolve(
   REPOSITORY_ROOT,
-  "../drasi-dogfooding/.github/extensions/workgraph-v1-view/contract/query-inventory.json",
+  "../drasi-dogfooding/git-workgraph/contract/runtime-v1.json",
 );
 const GENERIC_QUERY_IDS = [
-  "wg-issues-waiting-for-admission",
-  "wg-tasks-waiting-for-fork",
-  "wg-tasks-waiting-for-fork-action",
-  "wg-tasks-waiting-for-join-all",
-  "wg-tasks-waiting-for-join-action",
-  "wg-task-leaves-waiting-for-assign",
-  "wg-task-parents-waiting-for-assign",
-  "wg-tasks-waiting-for-lease",
-  "wg-tasks-waiting-for-dispatch",
-  "wg-tasks-waiting-for-result",
-  "wg-tasks-waiting-for-evaluate",
-  "wg-tasks-waiting-for-route",
-  "wg-tasks-waiting-for-close",
-  "wg-tasks-closed",
-  "wg-task-detail",
-  "wg-task-definition-detail",
-  "wg-child-realization-detail",
-  "wg-task-artifact-detail",
-  "wg-result-detail",
-  "wg-evaluation-detail",
-  "wg-route-detail",
-  "wg-error-detail",
-  "wg-terminal-detail",
-  "wg-predecessor-result-detail",
+  "wg-root-state",
+  "wg-task-state",
+  "wg-task-actions",
+  "wg-lease-state",
+  "wg-root-comments",
 ];
 const GENERATED_QUERY_COUNT = 0;
 
@@ -182,9 +163,10 @@ export function validateGeneratedQueryInventory(queryBundle) {
 export async function buildWorkGraphV1Proof() {
   const inputs = JSON.parse(await readFile(INPUTS_PATH, "utf8"));
   const compiled = JSON.parse(await readFile(COMPILED_PATH, "utf8"));
-  const canonicalGenericInventory = JSON.parse(
+  const runtimeContract = JSON.parse(
     await readFile(CANONICAL_GENERIC_INVENTORY_PATH, "utf8"),
   );
+  const canonicalGenericInventory = runtimeContract.factQueries;
   exact(
     inputs,
     [
@@ -243,24 +225,10 @@ export async function buildWorkGraphV1Proof() {
       "proof query IDs must be the exact ordered generic and generated sets",
     );
   }
-  const genericSections = [
-    "admissionQueries",
-    "lifecycleQueries",
-    "detailQueries",
-  ];
-  if (
-    genericSections.some(
-      (section) => !Array.isArray(canonicalGenericInventory[section]),
-    )
-  ) {
-    throw new Error(
-      "canonical sibling inventory must contain generic query arrays",
-    );
-  }
   const genericInventory = queryDigestEntries(
-    genericSections.flatMap((section) => canonicalGenericInventory[section]),
+    canonicalGenericInventory,
     GENERIC_QUERY_IDS,
-    "canonical sibling generic query inventory",
+    "canonical sibling runtime query inventory",
   );
   const contractDigest = queryContractDigest([
     ...genericInventory,

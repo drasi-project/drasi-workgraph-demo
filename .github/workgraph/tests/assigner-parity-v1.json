@@ -1,0 +1,50 @@
+{
+  "apiVersion": "drasi.io/v1",
+  "kind": "WorkGraphTestCase",
+  "metadata": {
+    "id": "assigner-parity"
+  },
+  "spec": {
+    "workflowDefinitionId": "assigner-parity",
+    "rootIssue": {
+      "title": "Assigner parity WorkGraph proof",
+      "body": "Exercise a human assigner selecting an agent worker, then an agent assigner selecting a human worker.",
+      "labels": [
+        "workgraph"
+      ]
+    },
+    "steps": {
+      "human-triage": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "summary": "The Root Issue requests assigner parity.",
+            "step": "human-triage"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "agent-triage": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "proposal": "Use one canonical AssignmentRequest before the worker lease.",
+            "step": "agent-triage"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      }
+    },
+    "expected": {
+      "topLevelTaskKeys": [
+        "human-triage",
+        "agent-triage"
+      ],
+      "taskParents": {
+        "human-triage": null,
+        "agent-triage": null
+      },
+      "terminalOutcome": "completed"
+    }
+  }
+}

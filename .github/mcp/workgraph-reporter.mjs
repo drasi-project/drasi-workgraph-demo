@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   TASK_ASSIGNMENT_MARKER,
+  TASK_ASSIGNMENT_REQUEST_MARKER,
   TASK_DISPATCH_MARKER,
   TASK_ERROR_MARKER,
   TASK_EVALUATION_MARKER,
@@ -19,17 +20,20 @@ import {
   WORKGRAPH_ID_NAMESPACE,
   canonicalTaskResultEnvelopeJson,
   deriveWorkGraphProtocolId,
+  deriveWorkGraphTaskAssignmentDecisionId,
   deriveWorkGraphTaskEvaluationId,
   deriveWorkGraphTaskResultId,
   deriveWorkGraphTaskRouteId,
   deriveWorkGraphTaskErrorId,
   formatTaskDispatch,
+  formatTaskAssignment,
   formatTaskError,
   formatTaskEvaluation,
   formatTaskResult,
   formatTaskRoute,
   normalizeCompiledWorkflowDefinition,
   parseTaskAssignment,
+  parseTaskAssignmentRequest,
   parseRuntimeTask,
   parseTaskDispatch,
   parseTaskError,
@@ -112,6 +116,7 @@ for (const workflowDefinitionId of [
   "mixed-control-flow",
   "scoped-control-flow",
   "human-parity",
+  "assigner-parity",
 ]) {
   const fixture = JSON.parse(
     readFileSync(
@@ -453,6 +458,7 @@ export function validateLeaseValidationUrl(value) {
 function configuration(toolName) {
   const lifecycleTools = [
     "get_task_snapshot",
+    "submit_task_assignment",
     "submit_task_evaluation",
     "submit_task_route",
   ];
@@ -498,16 +504,22 @@ function configuration(toolName) {
     };
   }
   if (lifecycleTools.includes(toolName)) {
+    const assignerId = process.env.COPILOT_MCP_WORKGRAPH_ASSIGNER_ID ?? "";
     const evaluatorId = process.env.COPILOT_MCP_WORKGRAPH_EVALUATOR_ID ?? "";
     const orchestratorId =
       process.env.COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_ID ?? "";
-    if ((evaluatorId === "") === (orchestratorId === "")) {
+    if ([assignerId, evaluatorId, orchestratorId].filter(Boolean).length !== 1) {
       throw new WorkGraphReporterError(
-        "exactly one evaluator or orchestrator profile identity is required",
+        "exactly one assigner, evaluator, or orchestrator profile identity is required",
       );
     }
-    const role = evaluatorId ? "evaluator" : "orchestrator";
+    const role = assignerId
+      ? "assigner"
+      : evaluatorId
+        ? "evaluator"
+        : "orchestrator";
     if (
+      (toolName === "submit_task_assignment" && role !== "assigner") ||
       (toolName === "submit_task_evaluation" && role !== "evaluator") ||
       (toolName === "submit_task_route" && role !== "orchestrator")
     ) {
@@ -518,11 +530,15 @@ function configuration(toolName) {
     return {
       ...config,
       role,
-      lifecycleAgentId: evaluatorId || orchestratorId,
-      evaluationId: envUserId(
-        "COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID",
-      ),
-      routeId: envUserId("COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID"),
+      lifecycleAgentId: assignerId || evaluatorId || orchestratorId,
+      evaluationId:
+        role === "assigner"
+          ? null
+          : envUserId("COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID"),
+      routeId:
+        role === "assigner"
+          ? config.routeId
+          : envUserId("COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID"),
     };
   }
   return config;
@@ -2130,9 +2146,15 @@ async function loadLifecycleAncestry(
     github.parent(locator.issueNumber),
     github.comments(locator.issueNumber),
   ]);
+  const reporterId =
+    config.role === "assigner"
+      ? config.assignmentId
+      : config.role === "evaluator"
+        ? config.evaluationId
+        : config.routeId;
   verifyReporterIdentity(
     identity,
-    config.role === "evaluator" ? config.evaluationId : config.routeId,
+    reporterId,
     `${config.role} reporter`,
   );
   verifyRepository(repository, locator.repositoryNodeId);
@@ -2141,10 +2163,13 @@ async function loadLifecycleAncestry(
   if (requireOpen && issue.state !== "open") {
     throw new WorkGraphReporterError("lifecycle reporting requires an open Task");
   }
+  if (task.taskId !== input.taskId) {
+    throw new WorkGraphReporterError("taskId must directly match the Task");
+  }
   if (
-    task.rootIssueId !== input.rootIssueId ||
-    task.workflowRunId !== input.workflowRunId ||
-    task.taskId !== input.taskId
+    config.role !== "assigner" &&
+    (task.rootIssueId !== input.rootIssueId ||
+      task.workflowRunId !== input.workflowRunId)
   ) {
     throw new WorkGraphReporterError(
       "rootIssueId, workflowRunId, and taskId must directly match the Task",
@@ -2209,8 +2234,8 @@ async function loadLifecycleAncestry(
   const [{ issue: rootTaskIssue, task: rootTask }] = initialTasks;
   if (
     rootTask.taskDefinitionId !== compiled.workflow.root.taskDefinitionId ||
-    rootTask.rootIssueId !== input.rootIssueId ||
-    rootTask.workflowRunId !== input.workflowRunId
+    rootTask.rootIssueId !== task.rootIssueId ||
+    rootTask.workflowRunId !== task.workflowRunId
   ) {
     throw new WorkGraphReporterError("Initial Task direct identities do not match");
   }
@@ -2225,6 +2250,14 @@ async function loadLifecycleAncestry(
       validateContract: false,
     },
   );
+  if (
+    config.role === "assigner" &&
+    config.lifecycleAgentId !== compiled.policy.assignerId
+  ) {
+    throw new WorkGraphReporterError(
+      "configured assigner does not match the effective compiled policy",
+    );
+  }
   if (
     config.role === "evaluator" &&
     config.lifecycleAgentId !== compiled.policy.evaluatorId
@@ -2241,13 +2274,15 @@ async function loadLifecycleAncestry(
       "configured orchestrator does not match the effective compiled policy",
     );
   }
-  validateTaskActionPrefix(
-    task,
-    compiled.taskDefinition,
-    comments,
-    config,
-    compiled.workflow,
-  );
+  if (config.role !== "assigner") {
+    validateTaskActionPrefix(
+      task,
+      compiled.taskDefinition,
+      comments,
+      config,
+      compiled.workflow,
+    );
+  }
   return {
     issue,
     task,
@@ -2683,6 +2718,117 @@ function authorizedRoutePlan(context, result, verdict, attempt) {
   return { actions, transitions };
 }
 
+function assignmentArtifacts(context, config) {
+  const requests = markedComments(
+    context.comments,
+    TASK_ASSIGNMENT_REQUEST_MARKER,
+    parseTaskAssignmentRequest,
+  ).map((entry) =>
+    validateProtocolComment(
+      entry,
+      config.assignmentId,
+      TASK_ASSIGNMENT_REQUEST_MARKER,
+    ),
+  );
+  const assignments = markedComments(
+    context.comments,
+    TASK_ASSIGNMENT_MARKER,
+    parseTaskAssignment,
+  ).map((entry) =>
+    validateProtocolComment(entry, config.assignmentId, TASK_ASSIGNMENT_MARKER),
+  );
+  if (
+    requests.length !== 1 ||
+    requests.some(
+      ({ payload }) =>
+        !dispatchMatchesTask(payload, context.task) ||
+        payload.assignerId !== context.policy.assignerId ||
+        !isDeepStrictEqual(
+          payload.candidates,
+          context.taskDefinition.routing.permittedExecutors,
+        ),
+    )
+  ) {
+    throw new WorkGraphReporterError(
+      "task requires exactly one AssignmentRequest matching its effective assigner policy",
+    );
+  }
+  if (assignments.length > 1) {
+    throw new WorkGraphReporterError(
+      "task has duplicate or conflicting Assignment actions",
+    );
+  }
+  const request = requests[0];
+  const assignment = assignments[0] ?? null;
+  if (
+    assignment &&
+    (commentOrder(request.comment, assignment.comment) >= 0 ||
+      !dispatchMatchesTask(assignment.payload, context.task) ||
+      assignment.payload.requestId !== request.payload.requestId ||
+      assignment.payload.assignerId !== request.payload.assignerId ||
+      assignment.payload.permittedExecutors.length !== 1 ||
+      !request.payload.candidates.includes(
+        assignment.payload.permittedExecutors[0],
+      ))
+  ) {
+    throw new WorkGraphReporterError(
+      "task Assignment does not answer its exact AssignmentRequest",
+    );
+  }
+  const forks = markedComments(
+    context.comments,
+    TASK_FORK_MARKER,
+    parseTaskFork,
+  ).map((entry) =>
+    validateProtocolComment(entry, config.assignmentId, TASK_FORK_MARKER),
+  );
+  const joins = markedComments(
+    context.comments,
+    TASK_JOIN_MARKER,
+    parseTaskJoin,
+  ).map((entry) =>
+    validateProtocolComment(entry, config.assignmentId, TASK_JOIN_MARKER),
+  );
+  const hasChildren =
+    context.taskDefinition.children.length > 0 ||
+    flowEntryDefinitionIds(
+      context.workflow,
+      context.taskDefinition,
+    ).length > 0;
+  if (
+    (!hasChildren && (forks.length !== 0 || joins.length !== 0)) ||
+    (hasChildren &&
+      (forks.length !== 1 ||
+        joins.length !== 1 ||
+        commentOrder(joins[0].comment, request.comment) >= 0))
+  ) {
+    throw new WorkGraphReporterError(
+      "AssignmentRequest does not follow the task's canonical Fork and Join prefix",
+    );
+  }
+  return {
+    request,
+    assignment,
+    joinId: hasChildren ? joins[0].payload.joinId : null,
+  };
+}
+
+function assignmentSnapshot(context, artifacts) {
+  return {
+    rootIssueId: context.task.rootIssueId,
+    workflowRunId: context.task.workflowRunId,
+    taskId: context.task.taskId,
+    taskDefinitionId: context.task.taskDefinitionId,
+    sourceStepId: context.sourceStepId,
+    requestId: artifacts.request.payload.requestId,
+    assignerId: context.policy.assignerId,
+    candidates: [...artifacts.request.payload.candidates],
+    instructions: artifacts.request.payload.instructions ?? null,
+    taskInstructions: context.taskDefinition.instructions ?? null,
+    existingAssignment: artifacts.assignment?.payload ?? null,
+  };
+}
+
 function lifecycleSnapshot(context, artifacts, config) {
   const common = {
     rootIssueId: context.task.rootIssueId,
@@ -2739,6 +2885,17 @@ function lifecycleSnapshot(context, artifacts, config) {
 }
 
 async function getTaskSnapshot(input, github, config) {
+  if (config.role === "assigner") {
+    const locator = validateAssignmentContextInput(input);
+    const context = await loadLifecycleAncestry(
+      locator,
+      input,
+      github,
+      config,
+      true,
+    );
+    return assignmentSnapshot(context, assignmentArtifacts(context, config));
+  }
   const { context, artifacts } = await readLifecycleContext(
     input,
     github,
@@ -2747,20 +2904,55 @@ async function getTaskSnapshot(input, github, config) {
   return lifecycleSnapshot(context, artifacts, config);
 }
 
+const ASSIGNMENT_CONTEXT_KEYS = ["taskLocator", "taskId"];
+
+function validateAssignmentContextInput(input, extraKeys = []) {
+  exact(input, [...ASSIGNMENT_CONTEXT_KEYS, ...extraKeys], "arguments");
+  const locator = validateTaskLocator(input.taskLocator);
+  canonicalTaskId(input.taskId, "arguments.taskId");
+  return locator;
+}
+
+async function readAssignmentContext(
+  input,
+  github,
+  config,
+  extraKeys = [],
+  requireOpen = true,
+) {
+  const locator = validateAssignmentContextInput(input, extraKeys);
+  const context = await loadLifecycleAncestry(
+    locator,
+    input,
+    github,
+    config,
+    requireOpen,
+  );
+  return {
+    locator,
+    context,
+    artifacts: assignmentArtifacts(context, config),
+  };
+}
+
 export function deriveWorkGraphArtifactClaimId(
   artifactKind,
   taskId,
   subjectId,
 ) {
-  if (!["evaluation", "route"].includes(artifactKind)) {
+  if (!["assignment", "evaluation", "route"].includes(artifactKind)) {
     throw new WorkGraphReporterError(
-      "artifactKind must be evaluation or route",
+      "artifactKind must be assignment, evaluation, or route",
     );
   }
   canonicalTaskId(taskId, "artifact claim taskId");
   protocolId(
     subjectId,
-    artifactKind === "evaluation" ? "result" : "evaluation",
+    artifactKind === "assignment"
+      ? "assignment-request"
+      : artifactKind === "evaluation"
+        ? "result"
+        : "evaluation",
     "artifact claim subjectId",
   );
   return deriveWorkGraphProtocolId("artifact-claim", [
@@ -2848,6 +3040,62 @@ async function reconcileLifecycleComment({
       lifecycleClaims.delete(claimId);
     }
   }
+}
+
+async function submitTaskAssignment(input, github, config) {
+  const extra = ["requestId", "selectedExecutorId", "rationale"];
+  const initial = await readAssignmentContext(input, github, config, extra, false);
+  const request = initial.artifacts.request.payload;
+  if (input.requestId !== request.requestId) {
+    throw new WorkGraphReporterError(
+      "requestId does not identify the task's current AssignmentRequest",
+    );
+  }
+  if (!request.candidates.includes(input.selectedExecutorId)) {
+    throw new WorkGraphReporterError(
+      "selectedExecutorId is not a candidate in the current AssignmentRequest",
+    );
+  }
+  const assignmentId = deriveWorkGraphTaskAssignmentDecisionId(
+    initial.context.task.taskId,
+    request.requestId,
+    input.selectedExecutorId,
+    request.assignerId,
+    null,
+    input.rationale,
+  );
+  const assignment = {
+    assignmentId,
+    rootIssueId: initial.context.task.rootIssueId,
+    workflowRunId: initial.context.task.workflowRunId,
+    taskId: initial.context.task.taskId,
+    task: lifecycleTaskIdentity(initial.context.task),
+    joinId: initial.artifacts.joinId,
+    permittedExecutors: [input.selectedExecutorId],
+    requestId: request.requestId,
+    assignerId: request.assignerId,
+    rationale: input.rationale,
+  };
+  const body = formatTaskAssignment(assignment);
+  const readAny = () =>
+    readAssignmentContext(input, github, config, extra, false);
+  const readOpen = () =>
+    readAssignmentContext(input, github, config, extra, true);
+  const outcome = await reconcileLifecycleComment({
+    readAny,
+    readOpen,
+    existing: ({ artifacts }) => artifacts.assignment,
+    body,
+    github,
+    issueNumber: initial.locator.issueNumber,
+    actorId: config.assignmentId,
+    id: "assignment",
+    kind: "Assignment",
+    artifactKind: "assignment",
+    taskId: assignment.taskId,
+    subjectId: request.requestId,
+  });
+  return { ...outcome, requestId: request.requestId };
 }
 
 async function submitTaskEvaluation(input, github, config) {
@@ -3235,6 +3483,11 @@ const protocolIdSchema = (type) => ({
 });
 const taskIdSchema = protocolIdSchema("task");
 
+const assignmentContextProperties = {
+  taskLocator: locatorSchema,
+  taskId: taskIdSchema,
+};
+
 const lifecycleContextProperties = {
   taskLocator: locatorSchema,
   rootIssueId: { type: "string", minLength: 1, maxLength: MAX_ID_BYTES },
@@ -3282,8 +3535,33 @@ export const tools = [
   {
     name: "get_task_snapshot",
     description:
-      "Read the exact current Dispatch, Result, policy, and bounded evaluator or orchestrator choices for one open WorkGraphTask.",
-    inputSchema: schema(lifecycleContextProperties),
+      "Read the exact current AssignmentRequest or the current Dispatch, Result, policy, and bounded lifecycle choices for one open WorkGraphTask.",
+    inputSchema: {
+      type: "object",
+      oneOf: [
+        schema(assignmentContextProperties),
+        schema(lifecycleContextProperties),
+      ],
+    },
+  },
+  {
+    name: "submit_task_assignment",
+    description:
+      "Create or reconcile one canonical WorkGraphTaskAssignment/v1 selecting one candidate from the current AssignmentRequest.",
+    inputSchema: schema({
+      ...assignmentContextProperties,
+      requestId: protocolIdSchema("assignment-request"),
+      selectedExecutorId: {
+        type: "string",
+        minLength: 1,
+        maxLength: 64,
+      },
+      rationale: {
+        type: "string",
+        minLength: 1,
+        maxLength: 4096,
+      },
+    }),
   },
   {
     name: "submit_task_evaluation",
@@ -3341,6 +3619,9 @@ export async function callTool(name, args) {
   if (name === "get_root_issue") return getRootIssue(args, github, config);
   if (name === "get_task_snapshot") {
     return getTaskSnapshot(args, github, config);
+  }
+  if (name === "submit_task_assignment") {
+    return submitTaskAssignment(args, github, config);
   }
   if (name === "submit_task_evaluation") {
     return submitTaskEvaluation(args, github, config);

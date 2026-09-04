@@ -1,0 +1,49 @@
+apiVersion: workgraph.drasi.io/v1
+kind: IssueWorkflow
+metadata:
+  id: assigner-parity
+spec:
+  trigger: workgraph
+  defaults:
+    evaluator: result-evaluator
+    orchestrator: workflow-coordinator
+    maxReworkAttempts: 2
+  initial: human-triage
+  steps:
+    human-triage:
+      type: task
+      operation: normalize-issue
+      worker:
+        candidates:
+          - issue-validator
+          - issue-worker
+        selection: assigned
+      assigner: human-agentofreality
+      inputs: {}
+      instructions:
+        summary: Normalize the Root Issue after the human chooses the best agent.
+        details: The assigner should choose the agent whose profile best matches the Root Issue.
+        acceptanceCriteria:
+          - The result restates the Root Issue request.
+          - The result does not invent facts.
+      next: agent-triage
+    agent-triage:
+      type: task
+      operation: draft-proposal
+      worker:
+        candidates:
+          - human-agentofreality
+          - issue-worker
+        selection: assigned
+      assigner: assignment-coordinator
+      inputs: {}
+      instructions:
+        summary: Draft a short implementation proposal.
+        details: The assignment coordinator must choose one permitted executor before work starts.
+        acceptanceCriteria:
+          - The proposal names the requested change.
+          - The proposal includes an acceptance check.
+      next: completed
+    completed:
+      type: terminal
+      outcome: completed

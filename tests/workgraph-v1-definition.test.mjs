@@ -11,11 +11,14 @@ import {
   MAX_TASK_RESPONSE_BODY_BYTES,
   RESERVED_RUNTIME_INPUT_KEYS,
   RUNTIME_TASK_MARKER,
+  TASK_ASSIGNMENT_REQUEST_MARKER,
   TASK_ERROR_MARKER,
   TASK_FORK_MARKER,
   TASK_JOIN_MARKER,
   decodeWorkGraphText,
   deriveWorkGraphProtocolId,
+  deriveWorkGraphTaskAssignmentDecisionId,
+  deriveWorkGraphTaskAssignmentRequestId,
   deriveWorkGraphResponseBodyDigest,
   deriveWorkGraphTaskResponseId,
   encodeWorkGraphText,
@@ -27,6 +30,7 @@ import {
   deriveWorkGraphTaskRouteId,
   formatTaskEvaluation,
   formatTaskAssignment,
+  formatTaskAssignmentRequest,
   formatTaskDispatch,
   formatTaskError,
   formatTaskFork,
@@ -42,6 +46,7 @@ import {
   normalizeIssueWorkflow,
   parseTaskEvaluation,
   parseTaskAssignment,
+  parseTaskAssignmentRequest,
   parseTaskDispatch,
   parseTaskError,
   parseTaskFork,
@@ -94,30 +99,11 @@ const LEASE_ID = protocolId("lease", "lease-1");
 const LAUNCH_ID = protocolId("dispatch-launch", "launch-1");
 const RESULT_ID = protocolId("result", "result-1");
 const PROOF_QUERY_IDS = [
-  "wg-issues-waiting-for-admission",
-  "wg-tasks-waiting-for-fork",
-  "wg-tasks-waiting-for-fork-action",
-  "wg-tasks-waiting-for-join-all",
-  "wg-tasks-waiting-for-join-action",
-  "wg-task-leaves-waiting-for-assign",
-  "wg-task-parents-waiting-for-assign",
-  "wg-tasks-waiting-for-lease",
-  "wg-tasks-waiting-for-dispatch",
-  "wg-tasks-waiting-for-result",
-  "wg-tasks-waiting-for-evaluate",
-  "wg-tasks-waiting-for-route",
-  "wg-tasks-waiting-for-close",
-  "wg-tasks-closed",
-  "wg-task-detail",
-  "wg-task-definition-detail",
-  "wg-child-realization-detail",
-  "wg-task-artifact-detail",
-  "wg-result-detail",
-  "wg-evaluation-detail",
-  "wg-route-detail",
-  "wg-error-detail",
-  "wg-terminal-detail",
-  "wg-predecessor-result-detail",
+  "wg-root-state",
+  "wg-task-state",
+  "wg-task-actions",
+  "wg-lease-state",
+  "wg-root-comments",
 ];
 const sourceContext = (stepId) => ({
   sourceStepId: stepId,
@@ -368,19 +354,17 @@ test("proof inputs pin the exact loopback query contract and remain inactive", a
     inputs.runtimeContract.stateStorePath,
     "data/workgraph-v1-loopback.redb",
   );
-  const canonicalGenericInventory = JSON.parse(
+  const runtimeContract = JSON.parse(
     await readFile(
       new URL(
-        "../../drasi-dogfooding/.github/extensions/workgraph-v1-view/contract/query-inventory.json",
+        "../../drasi-dogfooding/git-workgraph/contract/runtime-v1.json",
         import.meta.url,
       ),
       "utf8",
     ),
   );
   const digestEntries = [
-    ...canonicalGenericInventory.admissionQueries,
-    ...canonicalGenericInventory.lifecycleQueries,
-    ...canonicalGenericInventory.detailQueries,
+    ...runtimeContract.factQueries,
     ...COMPILED_OUTPUT.queryBundle.canvasInventory,
   ].map(({ id, sha256 }) => ({ id, sha256 }));
   assert.deepEqual(
@@ -392,7 +376,7 @@ test("proof inputs pin the exact loopback query contract and remain inactive", a
     .digest("hex")}`;
   assert.equal(
     inputs.runtimeContract.queryContractDigest,
-    "sha256:85a25c8f38b4a31868c0934771c9bf698e433f15b99f59aed3f2cd73069c7ec7",
+    "sha256:83fdd2110faa47c711903b5268b6c6c412b25e44f78e3ff0caf7ca1a716fef18",
   );
   assert.equal(inputs.runtimeContract.queryContractDigest, queryContractDigest);
   assert.deepEqual(inputs.activation, {
@@ -2890,6 +2874,89 @@ test("a candidate worker set canonicalizes to a sorted permitted executor set", 
   );
 });
 
+test("assigned selection and decision artifacts match the Rust kernel contract", () => {
+  const workflow = humanParityWorkflow({
+    draft: {
+      summary: "Choose and complete the work",
+      acceptanceCriteria: ["The task is complete"],
+    },
+    review: {
+      summary: "Review the work",
+      acceptanceCriteria: ["The result is correct"],
+    },
+  });
+  workflow.spec.steps.draft.worker = {
+    candidates: ["human-agentofreality", "issue-worker"],
+    selection: "assigned",
+  };
+  workflow.spec.steps.draft.assigner = "issue-coordinator";
+  const normalized = normalizeIssueWorkflow(workflow);
+  assert.equal(normalized.spec.steps.draft.assigner, "issue-coordinator");
+  assert.equal(normalized.spec.steps.draft.worker.selection, "assigned");
+
+  const task = responseTaskIdentity();
+  const candidates = ["human-agentofreality", "issue-worker"];
+  const requestId = deriveWorkGraphTaskAssignmentRequestId(
+    task.taskId,
+    task.taskDefinitionId,
+    "issue-coordinator",
+    candidates,
+  );
+  const request = {
+    requestId,
+    rootIssueId: "I_human_root",
+    workflowRunId: task.workflowRunId,
+    taskId: task.taskId,
+    task,
+    assignerId: "issue-coordinator",
+    candidates,
+    instructions: {
+      summary: "Choose the best executor",
+      details: "Use the issue context.",
+    },
+  };
+  const requestBody = formatTaskAssignmentRequest(request);
+  assert.match(requestBody, new RegExp(`^${TASK_ASSIGNMENT_REQUEST_MARKER}`));
+  assert.deepEqual(parseTaskAssignmentRequest(requestBody), request);
+
+  const rationale = "The human owns the product decision.";
+  const assignment = {
+    assignmentId: deriveWorkGraphTaskAssignmentDecisionId(
+      task.taskId,
+      requestId,
+      "human-agentofreality",
+      "issue-coordinator",
+      null,
+      rationale,
+    ),
+    rootIssueId: request.rootIssueId,
+    workflowRunId: task.workflowRunId,
+    taskId: task.taskId,
+    task,
+    joinId: null,
+    permittedExecutors: ["human-agentofreality"],
+    requestId,
+    assignerId: "issue-coordinator",
+    rationale,
+  };
+  assert.deepEqual(parseTaskAssignment(formatTaskAssignment(assignment)), assignment);
+
+  const selfAssigned = clone(assignment);
+  selfAssigned.assignerId = "human-agentofreality";
+  selfAssigned.assignmentId = deriveWorkGraphTaskAssignmentDecisionId(
+    task.taskId,
+    requestId,
+    "human-agentofreality",
+    "human-agentofreality",
+    null,
+    rationale,
+  );
+  assert.throws(
+    () => formatTaskAssignment(selfAssigned),
+    /must not select its own assigner/,
+  );
+});
+
 const RESPONSE_TASK_ID = protocolId("task", "response-task");
 const RESPONSE_RUN_ID = protocolId("workflow-run", "response-run");
 const RESPONSE_DEFINITION_ID = protocolId("task-definition", "response-def");
@@ -3008,8 +3075,29 @@ test("TaskResponse evidence is role and subject bound and carries raw text verba
     parseTaskResponse(formatTaskResponse(evaluator)),
     evaluator,
   );
+  const requestId = deriveWorkGraphTaskAssignmentRequestId(
+    RESPONSE_TASK_ID,
+    RESPONSE_DEFINITION_ID,
+    "human-agentofreality",
+    ["issue-worker"],
+  );
+  const assigner = {
+    ...workerResponse("@workgraph assign issue-worker because it owns the code."),
+    role: "assigner",
+    requestId,
+  };
+  delete assigner.dispatchId;
+  delete assigner.leaseId;
+  assigner.responseId = deriveWorkGraphTaskResponseId(
+    RESPONSE_TASK_ID,
+    { role: "assigner", requestId },
+    RESPONSE_COMMENT_NODE_ID,
+    RESPONSE_AUTHOR_NODE_ID,
+  );
+  assert.deepEqual(parseTaskResponse(formatTaskResponse(assigner)), assigner);
   // The same comment yields a different identity per role and per subject.
   assert.notEqual(evaluator.responseId, workerResponse().responseId);
+  assert.notEqual(assigner.responseId, workerResponse().responseId);
   assert.notEqual(
     deriveWorkGraphTaskResponseId(
       RESPONSE_TASK_ID,

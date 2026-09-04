@@ -25,7 +25,8 @@ the currently selected Dispatch is what authorizes the reporting profile.
 
 Lifecycle tools pin the committed compiled fixtures in
 `.github/workgraph/fixtures/v1/` (`issue-lifecycle`, `fork-join-lifecycle`,
-`mixed-control-flow`, `scoped-control-flow`, and `human-parity`). They resolve
+`mixed-control-flow`, `scoped-control-flow`, `human-parity`, and
+`assigner-parity`). They resolve
 the
 task's source step and effective evaluator, orchestrator, and rework maximum
 from that compiled definition. They require the latest immutable Dispatch and
@@ -204,6 +205,14 @@ immutable Assignment authored by the configured assigner. A parent task must
 also have an earlier Fork and Join, in that order, and its Assignment must
 reference that Join; a leaf must have neither. Every Dispatch must follow and
 reference that exact Assignment.
+
+An agent allocated to the pre-lease assignment position calls
+`get_task_snapshot` with only the task locator and task ID. The snapshot returns
+the canonical AssignmentRequest, effective assigner, candidate set, and
+instructions. `submit_task_assignment` accepts one listed executor and a
+bounded rationale, derives the decision-bound Assignment ID, and reconciles one
+immutable `WorkGraphTaskAssignment/v1`. It cannot create a task, acquire a
+lease, dispatch work, or choose an actor outside the request.
 
 The reporter requires every Dispatch attempt to be a unique, canonical,
 assignment-reporter-authored, never-edited `WorkGraphTaskDispatch/v1` comment,

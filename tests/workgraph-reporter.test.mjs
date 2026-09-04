@@ -10,19 +10,24 @@ import test from "node:test";
 
 import {
   RESERVED_RUNTIME_INPUT_KEYS,
+  TASK_ASSIGNMENT_REQUEST_MARKER,
   TASK_FORK_MARKER,
   TASK_RESULT_MARKER,
   TASK_ROUTE_MARKER,
   formatRuntimeTask,
   formatTaskAssignment,
+  formatTaskAssignmentRequest,
   formatTaskEvaluation,
   formatTaskFork,
   formatTaskJoin,
   formatTaskRoute,
   normalizeCompiledWorkflowDefinition,
+  parseTaskAssignment,
   parseTaskEvaluation,
   parseTaskRoute,
   deriveWorkGraphProtocolId,
+  deriveWorkGraphTaskAssignmentDecisionId,
+  deriveWorkGraphTaskAssignmentRequestId,
   deriveWorkGraphTaskForkId,
   deriveWorkGraphTaskJoinId,
   deriveWorkGraphTaskResponseId,
@@ -106,6 +111,15 @@ const COMPILED = JSON.parse(
   ),
 ).workgraphDefinition;
 const DEFAULT_COMPILED = COMPILED;
+const ASSIGNER_COMPILED = JSON.parse(
+  readFileSync(
+    new URL(
+      "../.github/workgraph/fixtures/v1/assigner-parity.expected.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+).workgraphDefinition;
 
 function fixture() {
   const contentDigest = deriveWorkGraphRootIssueContentDigest(
@@ -886,6 +900,52 @@ function lifecycleFixture({
 
 async function withFakeLifecycle(options, callback) {
   const data = lifecycleFixture(options);
+  if (options.assignmentStage === true) {
+    const compiled = options.compiled ?? DEFAULT_COMPILED;
+    const taskDefinition =
+      compiled.steps[options.stepId ?? "c"].taskDefinition;
+    const candidates = [...taskDefinition.routing.permittedExecutors];
+    const requestId = deriveWorkGraphTaskAssignmentRequestId(
+      data.task.taskId,
+      data.task.taskDefinitionId,
+      data.policy.assignerId,
+      candidates,
+    );
+    data.assignmentRequest = {
+      requestId,
+      rootIssueId: data.task.rootIssueId,
+      workflowRunId: data.task.workflowRunId,
+      taskId: data.task.taskId,
+      task: Object.fromEntries(
+        [
+          "taskId",
+          "workflowRunId",
+          "workflowDefinitionId",
+          "workflowDefinitionVersion",
+          "workflowDefinitionDigest",
+          "taskDefinitionId",
+          "taskKey",
+          "operation",
+        ].map((key) => [key, data.task[key]]),
+      ),
+      assignerId: data.policy.assignerId,
+      candidates,
+    };
+    data.comments = [
+      {
+        id: 180,
+        node_id: "IC_assignment_request",
+        body: formatTaskAssignmentRequest(data.assignmentRequest),
+        user: { id: ASSIGNMENT_ID, login: "assigner" },
+        created_at: "2026-08-29T19:58:00Z",
+        updated_at: "2026-08-29T19:58:00Z",
+      },
+    ];
+    data.input = {
+      taskLocator: data.input.taskLocator,
+      taskId: data.task.taskId,
+    };
+  }
   if (options.taskMetadataDrift === true) {
     data.task.operation = "different-operation";
   }
@@ -944,6 +1004,8 @@ async function withFakeLifecycle(options, callback) {
   const actorId =
     role === "worker"
       ? RESULT_ID
+      : role === "assigner"
+        ? ASSIGNMENT_ID
       : role === "evaluator"
         ? EVALUATION_ID
         : ROUTE_ID;
@@ -1102,14 +1164,22 @@ async function withFakeLifecycle(options, callback) {
       options.executorId ?? data.dispatch.lease.executorId;
     delete process.env.COPILOT_MCP_WORKGRAPH_EVALUATOR_ID;
     delete process.env.COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_ID;
+    delete process.env.COPILOT_MCP_WORKGRAPH_ASSIGNER_ID;
+  } else if (role === "assigner") {
+    process.env.COPILOT_MCP_WORKGRAPH_ASSIGNER_ID =
+      options.assignerId ?? data.policy.assignerId;
+    delete process.env.COPILOT_MCP_WORKGRAPH_EVALUATOR_ID;
+    delete process.env.COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_ID;
   } else if (role === "evaluator") {
     process.env.COPILOT_MCP_WORKGRAPH_EVALUATOR_ID =
       options.evaluatorId ?? data.policy.evaluatorId;
     delete process.env.COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_ID;
+    delete process.env.COPILOT_MCP_WORKGRAPH_ASSIGNER_ID;
   } else {
     process.env.COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_ID =
       options.orchestratorId ?? data.policy.orchestratorId;
     delete process.env.COPILOT_MCP_WORKGRAPH_EVALUATOR_ID;
+    delete process.env.COPILOT_MCP_WORKGRAPH_ASSIGNER_ID;
   }
   try {
     await callback({ data, writes, comments });
@@ -1425,6 +1495,7 @@ test("MCP exposes only narrow WorkGraph readers and lifecycle writers", async ()
       "get_root_issue",
       "submit_task_result",
       "get_task_snapshot",
+      "submit_task_assignment",
       "submit_task_evaluation",
       "submit_task_route",
     ],
@@ -1445,12 +1516,23 @@ test("MCP exposes only narrow WorkGraph readers and lifecycle writers", async ()
     tools.find(({ name }) => name === "submit_task_route").inputSchema.required,
     [...lifecycleWriteKeys, "evaluationId", "routeId", "action"],
   );
-  for (const tool of tools) {
+  for (const tool of tools.filter(
+    ({ name }) => name !== "get_task_snapshot",
+  )) {
     assert.equal(
       tool.inputSchema.properties.taskId.pattern,
       "^urn:drasi:workgraph:id:v1:task:sha256:[0-9a-f]{64}$",
     );
   }
+  assert.equal(
+    tools.find(({ name }) => name === "get_task_snapshot").inputSchema.oneOf[0]
+      .properties.taskId.pattern,
+    "^urn:drasi:workgraph:id:v1:task:sha256:[0-9a-f]{64}$",
+  );
+  assert.equal(
+    tools.find(({ name }) => name === "get_task_snapshot").inputSchema.type,
+    "object",
+  );
   const resultSchema = tools.find(
     ({ name }) => name === "submit_task_result",
   ).inputSchema.properties;
@@ -1464,7 +1546,7 @@ test("MCP exposes only narrow WorkGraph readers and lifecycle writers", async ()
   );
   const snapshotSchema = tools.find(
     ({ name }) => name === "get_task_snapshot",
-  ).inputSchema.properties;
+  ).inputSchema.oneOf[1].properties;
   for (const [field, type] of [
     ["workflowRunId", "workflow-run"],
     ["dispatchId", "dispatch"],
@@ -1481,6 +1563,7 @@ test("MCP exposes only narrow WorkGraph readers and lifecycle writers", async ()
     env: { ...process.env, NODE_ENV: "test" },
     stdio: ["pipe", "pipe", "pipe"],
   });
+
   let output = "";
   child.stdout.on("data", (chunk) => {
     output += chunk;
@@ -1508,9 +1591,100 @@ test("MCP exposes only narrow WorkGraph readers and lifecycle writers", async ()
       "get_root_issue",
       "submit_task_result",
       "get_task_snapshot",
+      "submit_task_assignment",
       "submit_task_evaluation",
       "submit_task_route",
     ],
+  );
+});
+
+test("agent assigner snapshots and submits one canonical worker choice", async () => {
+  await withFakeLifecycle(
+    {
+      compiled: ASSIGNER_COMPILED,
+      stepId: "agent-triage",
+      role: "assigner",
+      assignmentStage: true,
+    },
+    async ({ data, writes }) => {
+      const snapshot = await callTool("get_task_snapshot", data.input);
+      assert.equal(snapshot.assignerId, "assignment-coordinator");
+      assert.equal(snapshot.requestId, data.assignmentRequest.requestId);
+      assert.deepEqual(snapshot.candidates, [
+        "human-agentofreality",
+        "issue-worker",
+      ]);
+      assert.equal(snapshot.existingAssignment, null);
+
+      const rationale = "The human owns the product decision.";
+      const input = {
+        ...data.input,
+        requestId: snapshot.requestId,
+        selectedExecutorId: "human-agentofreality",
+        rationale,
+      };
+      const [first, second] = await Promise.all([
+        callTool("submit_task_assignment", input),
+        callTool("submit_task_assignment", input),
+      ]);
+      assert.equal(writes.length, 1);
+      assert.equal(first.assignmentId, second.assignmentId);
+      assert.equal(first.requestId, snapshot.requestId);
+      const assignment = parseTaskAssignment(writes[0].body);
+      assert.equal(
+        assignment.assignmentId,
+        deriveWorkGraphTaskAssignmentDecisionId(
+          data.task.taskId,
+          snapshot.requestId,
+          "human-agentofreality",
+          "assignment-coordinator",
+          null,
+          rationale,
+        ),
+      );
+      assert.deepEqual(assignment.permittedExecutors, [
+        "human-agentofreality",
+      ]);
+      assert.equal(assignment.responseId, undefined);
+    },
+  );
+});
+
+test("agent assigner rejects a foreign candidate and wrong profile", async () => {
+  await withFakeLifecycle(
+    {
+      compiled: ASSIGNER_COMPILED,
+      stepId: "agent-triage",
+      role: "assigner",
+      assignmentStage: true,
+    },
+    async ({ data, writes }) => {
+      await assert.rejects(
+        callTool("submit_task_assignment", {
+          ...data.input,
+          requestId: data.assignmentRequest.requestId,
+          selectedExecutorId: "not-a-candidate",
+          rationale: "Try an unlisted actor.",
+        }),
+        /not a candidate/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
+  await withFakeLifecycle(
+    {
+      compiled: ASSIGNER_COMPILED,
+      stepId: "agent-triage",
+      role: "assigner",
+      assignmentStage: true,
+      assignerId: "wrong-assigner",
+    },
+    async ({ data }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", data.input),
+        /configured assigner does not match/,
+      );
+    },
   );
 });
 

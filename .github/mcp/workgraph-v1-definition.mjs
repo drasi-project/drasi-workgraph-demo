@@ -4,6 +4,8 @@ import { isDeepStrictEqual, TextEncoder } from "node:util";
 export const WORKFLOW_DEFINITION_MARKER = "WorkGraphWorkflowDefinition/v1";
 export const RUNTIME_TASK_MARKER = "WorkGraphTask/v1";
 export const TASK_ASSIGNMENT_MARKER = "WorkGraphTaskAssignment/v1";
+export const TASK_ASSIGNMENT_REQUEST_MARKER =
+  "WorkGraphTaskAssignmentRequest/v1";
 export const TASK_FORK_MARKER = "WorkGraphTaskFork/v1";
 export const TASK_JOIN_MARKER = "WorkGraphTaskJoin/v1";
 export const TASK_DISPATCH_MARKER = "WorkGraphTaskDispatch/v1";
@@ -36,6 +38,7 @@ export const MAX_TASK_INSTRUCTIONS_CRITERION_BYTES = 1024;
 export const MAX_TASK_RESPONSE_BODY_BYTES = 16 * 1024;
 // Bound of a normalized Response author login, matching GitHub's own limit.
 export const MAX_TASK_RESPONSE_LOGIN_BYTES = 39;
+export const MAX_ASSIGNMENT_RATIONALE_BYTES = 4 * 1024;
 // Runtime writes these into `resolvedInputs` for generated entry, routed
 // scope, and routed successor tasks, so a definition may not author them.
 export const RESERVED_SUCCESSOR_INPUT_KEY = "workgraphPredecessorTaskId";
@@ -55,6 +58,7 @@ const RESERVED_MARKERS = [
   WORKFLOW_DEFINITION_MARKER,
   RUNTIME_TASK_MARKER,
   TASK_ASSIGNMENT_MARKER,
+  TASK_ASSIGNMENT_REQUEST_MARKER,
   TASK_FORK_MARKER,
   TASK_JOIN_MARKER,
   TASK_DISPATCH_MARKER,
@@ -766,7 +770,16 @@ function parseEnvelopeBody(
       `${kind} references`,
     );
   }
-  exactKeys(envelope.data, dataKeys, `${kind} data`);
+  if (Array.isArray(dataKeys)) {
+    exactKeys(envelope.data, dataKeys, `${kind} data`);
+  } else {
+    exactAllowedKeys(
+      envelope.data,
+      dataKeys.required,
+      [...dataKeys.required, ...dataKeys.optional],
+      `${kind} data`,
+    );
+  }
   const value = fromEnvelope(envelope);
   if (formatter(value) !== body) {
     throw new WorkGraphDefinitionError(`${marker} body is not canonical`);
@@ -891,6 +904,7 @@ const TASK_STEP_KEYS = [
   "next",
   "evaluator",
   "orchestrator",
+  "assigner",
   "maxReworkAttempts",
   "outcomes",
   "children",
@@ -903,6 +917,7 @@ const CHILD_TASK_KEYS = [
   "inputs",
   "evaluator",
   "orchestrator",
+  "assigner",
   "maxReworkAttempts",
   "children",
   "flowEntries",
@@ -929,6 +944,21 @@ const ASSIGNMENT_KEYS = [
   "task",
   "joinId",
   "permittedExecutors",
+];
+const ASSIGNMENT_OPTIONAL_KEYS = [
+  "requestId",
+  "responseId",
+  "assignerId",
+  "rationale",
+];
+const ASSIGNMENT_REQUEST_KEYS = [
+  "requestId",
+  "rootIssueId",
+  "workflowRunId",
+  "taskId",
+  "task",
+  "assignerId",
+  "candidates",
 ];
 const FORK_KEYS = [
   "forkId",
@@ -1188,9 +1218,9 @@ function normalizeWorkerSelector(value, context) {
     return value;
   }
   exactKeys(value, ["candidates", "selection"], context);
-  if (value.selection !== "first-available") {
+  if (!["first-available", "assigned"].includes(value.selection)) {
     throw new WorkGraphDefinitionError(
-      `${context}.selection must be first-available`,
+      `${context}.selection must be first-available or assigned`,
     );
   }
   if (
@@ -1269,14 +1299,26 @@ function normalizeChildTask(value, workflowDefaults, context, depth, label) {
     ...(instructions === undefined ? {} : { instructions }),
     evaluator: null,
     orchestrator: null,
+    ...(value.assigner === undefined ? {} : { assigner: value.assigner }),
     maxReworkAttempts: null,
     children,
     ...(flowEntries.length > 0 ? { flowEntries } : {}),
   };
-  for (const role of ["evaluator", "orchestrator"]) {
+  for (const role of ["evaluator", "orchestrator", "assigner"]) {
     if (role in value) {
       identifier(value[role], `${context}.${role}`);
       normalized[role] = value[role];
+    }
+    const assigned = typeof worker !== "string" && worker.selection === "assigned";
+    if (assigned !== (normalized.assigner !== undefined)) {
+      throw new WorkGraphDefinitionError(
+        `${context} selection: assigned requires an assigner, and an assigner requires selection: assigned`,
+      );
+    }
+    if (assigned && worker.candidates.includes(normalized.assigner)) {
+      throw new WorkGraphDefinitionError(
+        `${context} assigner '${normalized.assigner}' must not be one of its own candidates`,
+      );
     }
   }
   if ("maxReworkAttempts" in value) {
@@ -1357,6 +1399,7 @@ function normalizeWorkflowStep(id, value, stepIds) {
     ...(instructions === undefined ? {} : { instructions }),
     evaluator: null,
     orchestrator: null,
+    ...(value.assigner === undefined ? {} : { assigner: value.assigner }),
     maxReworkAttempts: null,
     children,
     ...(flowEntries.length > 0 ? { flowEntries } : {}),
@@ -1379,10 +1422,21 @@ function normalizeWorkflowStep(id, value, stepIds) {
     normalized.next = value.next;
   }
 
-  for (const role of ["evaluator", "orchestrator"]) {
+  for (const role of ["evaluator", "orchestrator", "assigner"]) {
     if (role in value) {
       identifier(value[role], `${context}.${role}`);
       normalized[role] = value[role];
+    }
+    const assigned = typeof worker !== "string" && worker.selection === "assigned";
+    if (assigned !== (normalized.assigner !== undefined)) {
+      throw new WorkGraphDefinitionError(
+        `${context} selection: assigned requires an assigner, and an assigner requires selection: assigned`,
+      );
+    }
+    if (assigned && worker.candidates.includes(normalized.assigner)) {
+      throw new WorkGraphDefinitionError(
+        `${context} assigner '${normalized.assigner}' must not be one of its own candidates`,
+      );
     }
   }
   if ("maxReworkAttempts" in value) {
@@ -1820,13 +1874,23 @@ function normalizeExecutionPolicies(value, context) {
         "task-definition",
         `${context} key`,
       );
-      exactKeys(
+      exactAllowedKeys(
         policy,
         ["workerId", "evaluatorId", "orchestratorId", "maxReworkAttempts"],
+        [
+          "workerId",
+          "evaluatorId",
+          "orchestratorId",
+          "assignerId",
+          "maxReworkAttempts",
+        ],
         `${context}.${taskDefinitionId}`,
       );
       for (const role of ["workerId", "evaluatorId", "orchestratorId"]) {
         identifier(policy[role], `${context}.${taskDefinitionId}.${role}`);
+      }
+      if (policy.assignerId !== undefined) {
+        identifier(policy.assignerId, `${context}.${taskDefinitionId}.assignerId`);
       }
       boundedCount(
         policy.maxReworkAttempts,
@@ -1838,6 +1902,9 @@ function normalizeExecutionPolicies(value, context) {
           workerId: policy.workerId,
           evaluatorId: policy.evaluatorId,
           orchestratorId: policy.orchestratorId,
+          ...(policy.assignerId === undefined
+            ? {}
+            : { assignerId: policy.assignerId }),
           maxReworkAttempts: policy.maxReworkAttempts,
         },
       ];
@@ -1916,6 +1983,18 @@ function validateCompiledPolicies(taskDefinition, policies, context) {
       if (executor === policy.orchestratorId) {
         throw new WorkGraphDefinitionError(
           `${context}.${taskDefinitionId} must not permit its orchestrator '${executor}' to execute the task`,
+        );
+      }
+    }
+    if (policy.assignerId !== undefined) {
+      if (task.routing.permittedExecutors.includes(policy.assignerId)) {
+        throw new WorkGraphDefinitionError(
+          `${context}.${taskDefinitionId} must not permit its assigner '${policy.assignerId}' to execute the task`,
+        );
+      }
+      if (policy.assignerId === policy.orchestratorId) {
+        throw new WorkGraphDefinitionError(
+          `${context}.${taskDefinitionId} assignerId must differ from orchestratorId`,
         );
       }
     }
@@ -2272,6 +2351,7 @@ const REFERENCE_KINDS = {
   taskDefinition: ["TaskDefinition", "task-definition"],
   fork: ["TaskFork", "fork"],
   join: ["TaskJoin", "join"],
+  assignmentRequest: ["TaskAssignmentRequest", "assignment-request"],
   assignment: ["TaskAssignment", "assignment"],
   dispatch: ["TaskDispatch", "dispatch"],
   lease: ["TaskLease", "lease"],
@@ -2307,6 +2387,7 @@ export function normalizeTaskAssignment(value) {
     "task assignment",
     "assignmentId",
     "assignment",
+    ASSIGNMENT_OPTIONAL_KEYS,
   );
   if (value.joinId !== null) {
     validateWorkGraphProtocolId(value.joinId, "join", "task assignment joinId");
@@ -2330,11 +2411,80 @@ export function normalizeTaskAssignment(value) {
     }
     executors.add(executor);
   }
+  const decisionFields = ["requestId", "assignerId", "rationale"];
+  const hasDecision = decisionFields.some((field) => value[field] !== undefined);
+  const hasResponse = value.responseId !== undefined;
+  if (hasDecision) {
+    if (decisionFields.some((field) => value[field] === undefined)) {
+      throw new WorkGraphDefinitionError(
+        "task assignment decision must carry requestId, assignerId, and rationale together",
+      );
+    }
+    if (value.permittedExecutors.length !== 1) {
+      throw new WorkGraphDefinitionError(
+        "task assignment decision must select exactly one permitted executor",
+      );
+    }
+    validateWorkGraphProtocolId(
+      value.requestId,
+      "assignment-request",
+      "task assignment requestId",
+    );
+    if (hasResponse) {
+      validateWorkGraphProtocolId(
+        value.responseId,
+        "response",
+        "task assignment responseId",
+      );
+    }
+    identifier(value.assignerId, "task assignment assignerId");
+    if (value.assignerId === value.permittedExecutors[0]) {
+      throw new WorkGraphDefinitionError(
+        "task assignment decision must not select its own assigner",
+      );
+    }
+    if (
+      typeof value.rationale !== "string" ||
+      value.rationale.trim() === "" ||
+      new TextEncoder().encode(value.rationale).length >
+        MAX_ASSIGNMENT_RATIONALE_BYTES ||
+      !ordinaryText(value.rationale)
+    ) {
+      throw new WorkGraphDefinitionError(
+        `task assignment rationale must be 1-${MAX_ASSIGNMENT_RATIONALE_BYTES} characters of ordinary LF text without a reserved WorkGraph marker`,
+      );
+    }
+    const expected = deriveWorkGraphTaskAssignmentDecisionId(
+      value.taskId,
+      value.requestId,
+      value.permittedExecutors[0],
+      value.assignerId,
+      hasResponse ? value.responseId : null,
+      value.rationale,
+    );
+    if (value.assignmentId !== expected) {
+      throw new WorkGraphDefinitionError(
+        "task assignment decision assignmentId is not canonical",
+      );
+    }
+  } else if (hasResponse) {
+    throw new WorkGraphDefinitionError(
+      "task assignment responseId requires a complete assignment decision",
+    );
+  }
   return {
     assignmentId: value.assignmentId,
     ...base,
     joinId: value.joinId,
     permittedExecutors: [...value.permittedExecutors],
+    ...(hasDecision
+      ? {
+          requestId: value.requestId,
+          ...(hasResponse ? { responseId: value.responseId } : {}),
+          assignerId: value.assignerId,
+          rationale: value.rationale,
+        }
+      : {}),
   };
 }
 
@@ -2350,8 +2500,27 @@ export function formatTaskAssignment(value) {
         normalized.joinId === null
           ? null
           : typedReference("join", normalized.joinId),
+      ...(normalized.requestId === undefined
+        ? {}
+        : {
+            request: typedReference(
+              "assignmentRequest",
+              normalized.requestId,
+            ),
+          }),
+      ...(normalized.responseId === undefined
+        ? {}
+        : { response: typedReference("response", normalized.responseId) }),
     },
-    { permittedExecutors: normalized.permittedExecutors },
+    {
+      permittedExecutors: normalized.permittedExecutors,
+      ...(normalized.assignerId === undefined
+        ? {}
+        : {
+            assignerId: normalized.assignerId,
+            rationale: normalized.rationale,
+          }),
+    },
   );
 }
 
@@ -2360,8 +2529,11 @@ export function parseTaskAssignment(body) {
     body,
     TASK_ASSIGNMENT_MARKER,
     "TaskAssignment",
-    ["join"],
-    ["permittedExecutors"],
+    { required: ["join"], optional: ["request", "response"] },
+    {
+      required: ["permittedExecutors"],
+      optional: ["assignerId", "rationale"],
+    },
     (envelope) => ({
       assignmentId: envelope.id,
       rootIssueId: envelope.rootIssueId,
@@ -2374,8 +2546,236 @@ export function parseTaskAssignment(body) {
         true,
       )?.id ?? null,
       permittedExecutors: envelope.data.permittedExecutors,
+      ...(envelope.references.request === undefined
+        ? {}
+        : {
+            requestId: validateTypedReference(
+              envelope.references.request,
+              "assignmentRequest",
+            ).id,
+          }),
+      ...(envelope.references.response === undefined
+        ? {}
+        : {
+            responseId: validateTypedReference(
+              envelope.references.response,
+              "response",
+            ).id,
+          }),
+      ...(envelope.data.assignerId === undefined
+        ? {}
+        : { assignerId: envelope.data.assignerId }),
+      ...(envelope.data.rationale === undefined
+        ? {}
+        : { rationale: envelope.data.rationale }),
     }),
     formatTaskAssignment,
+  );
+}
+
+export function deriveWorkGraphTaskAssignmentRequestId(
+  taskId,
+  taskDefinitionId,
+  assignerId,
+  candidates,
+) {
+  validateWorkGraphTaskId(taskId, "task AssignmentRequest taskId");
+  validateWorkGraphProtocolId(
+    taskDefinitionId,
+    "task-definition",
+    "task AssignmentRequest taskDefinitionId",
+  );
+  identifier(assignerId, "task AssignmentRequest assignerId");
+  normalizeAssignmentCandidates(
+    candidates,
+    "task AssignmentRequest candidates",
+  );
+  return deriveWorkGraphProtocolId("assignment-request", [
+    taskId,
+    taskDefinitionId,
+    assignerId,
+    ...candidates,
+  ]);
+}
+
+export function deriveWorkGraphTaskAssignmentDecisionId(
+  taskId,
+  requestId,
+  selectedExecutorId,
+  assignerId,
+  responseId,
+  rationale,
+) {
+  validateWorkGraphTaskId(taskId, "task Assignment taskId");
+  validateWorkGraphProtocolId(
+    requestId,
+    "assignment-request",
+    "task Assignment requestId",
+  );
+  identifier(selectedExecutorId, "task Assignment selectedExecutorId");
+  identifier(assignerId, "task Assignment assignerId");
+  if (responseId !== null && responseId !== undefined) {
+    validateWorkGraphProtocolId(
+      responseId,
+      "response",
+      "task Assignment responseId",
+    );
+  }
+  if (
+    typeof rationale !== "string" ||
+    rationale.trim() === "" ||
+    new TextEncoder().encode(rationale).length > MAX_ASSIGNMENT_RATIONALE_BYTES ||
+    !ordinaryText(rationale)
+  ) {
+    throw new WorkGraphDefinitionError(
+      `task Assignment rationale must be 1-${MAX_ASSIGNMENT_RATIONALE_BYTES} characters of ordinary LF text without a reserved WorkGraph marker`,
+    );
+  }
+  return `${WORKGRAPH_ID_NAMESPACE}:assignment:sha256:${framedSha256([
+    WORKGRAPH_ID_NAMESPACE,
+    "assignment",
+    "decision",
+    taskId,
+    requestId,
+    selectedExecutorId,
+    assignerId,
+    responseId ?? "none",
+    rationale,
+  ])}`;
+}
+
+function normalizeAssignmentCandidates(value, context) {
+  if (
+    !Array.isArray(value) ||
+    value.length < 1 ||
+    value.length > MAX_TASK_DEFINITION_EXECUTORS
+  ) {
+    throw new WorkGraphDefinitionError(
+      `${context} must contain 1-${MAX_TASK_DEFINITION_EXECUTORS} entries`,
+    );
+  }
+  for (const [index, candidate] of value.entries()) {
+    identifier(candidate, `${context} entry`);
+    if (index > 0 && utf8Compare(value[index - 1], candidate) >= 0) {
+      throw new WorkGraphDefinitionError(
+        `${context} must be sorted and contain no duplicates`,
+      );
+    }
+  }
+  return [...value];
+}
+
+function normalizeAssignmentInstructions(value, context) {
+  exactAllowedKeys(value, ["summary"], ["summary", "details"], context);
+  for (const [field, max] of [
+    ["summary", MAX_TASK_INSTRUCTIONS_SUMMARY_BYTES],
+    ["details", MAX_TASK_INSTRUCTIONS_DETAILS_BYTES],
+  ]) {
+    if (value[field] === undefined && field === "details") continue;
+    if (
+      typeof value[field] !== "string" ||
+      value[field].trim() === "" ||
+      new TextEncoder().encode(value[field]).length > max ||
+      !ordinaryText(value[field])
+    ) {
+      throw new WorkGraphDefinitionError(
+        `${context}.${field} must be 1-${max} characters of ordinary LF text without a reserved WorkGraph marker`,
+      );
+    }
+  }
+  return {
+    summary: value.summary,
+    ...(value.details === undefined ? {} : { details: value.details }),
+  };
+}
+
+export function normalizeTaskAssignmentRequest(value) {
+  const base = normalizeLifecycleBase(
+    value,
+    ASSIGNMENT_REQUEST_KEYS,
+    "task AssignmentRequest",
+    "requestId",
+    "assignment-request",
+    ["instructions"],
+  );
+  identifier(value.assignerId, "task AssignmentRequest assignerId");
+  const candidates = normalizeAssignmentCandidates(
+    value.candidates,
+    "task AssignmentRequest candidates",
+  );
+  if (candidates.includes(value.assignerId)) {
+    throw new WorkGraphDefinitionError(
+      "task AssignmentRequest assigner must not be one of its candidates",
+    );
+  }
+  const instructions =
+    value.instructions === undefined
+      ? undefined
+      : normalizeAssignmentInstructions(
+          value.instructions,
+          "task AssignmentRequest instructions",
+        );
+  const expected = deriveWorkGraphTaskAssignmentRequestId(
+    value.taskId,
+    value.task.taskDefinitionId,
+    value.assignerId,
+    candidates,
+  );
+  if (value.requestId !== expected) {
+    throw new WorkGraphDefinitionError(
+      "task AssignmentRequest requestId is not canonical",
+    );
+  }
+  return {
+    requestId: value.requestId,
+    ...base,
+    assignerId: value.assignerId,
+    candidates,
+    ...(instructions === undefined ? {} : { instructions }),
+  };
+}
+
+export function formatTaskAssignmentRequest(value) {
+  const normalized = normalizeTaskAssignmentRequest(value);
+  return formatEnvelope(
+    TASK_ASSIGNMENT_REQUEST_MARKER,
+    "TaskAssignmentRequest",
+    normalized.requestId,
+    normalized,
+    {},
+    {
+      assignerId: normalized.assignerId,
+      candidates: normalized.candidates,
+      ...(normalized.instructions === undefined
+        ? {}
+        : { instructions: normalized.instructions }),
+    },
+  );
+}
+
+export function parseTaskAssignmentRequest(body) {
+  return parseEnvelopeBody(
+    body,
+    TASK_ASSIGNMENT_REQUEST_MARKER,
+    "TaskAssignmentRequest",
+    [],
+    {
+      required: ["assignerId", "candidates"],
+      optional: ["instructions"],
+    },
+    (envelope) => ({
+      requestId: envelope.id,
+      rootIssueId: envelope.rootIssueId,
+      workflowRunId: envelope.workflowRunId,
+      taskId: envelope.taskId,
+      task: taskFromEnvelope(envelope),
+      assignerId: envelope.data.assignerId,
+      candidates: envelope.data.candidates,
+      ...(envelope.data.instructions === undefined
+        ? {}
+        : { instructions: envelope.data.instructions }),
+    }),
+    formatTaskAssignmentRequest,
   );
 }
 
@@ -3062,7 +3462,12 @@ const RESPONSE_KEYS = [
   "updatedRevision",
   "body",
 ];
-const RESPONSE_OPTIONAL_KEYS = ["dispatchId", "leaseId", "resultId"];
+const RESPONSE_OPTIONAL_KEYS = [
+  "dispatchId",
+  "leaseId",
+  "resultId",
+  "requestId",
+];
 const MAX_SAFE_REVISION = Number.MAX_SAFE_INTEGER;
 
 // Raw human text travels hex-encoded so CRLF and fenced code blocks survive
@@ -3137,9 +3542,16 @@ export function deriveWorkGraphTaskResponseId(
       "task Response result",
     );
     parts.push(subject.resultId);
+  } else if (subject.role === "assigner") {
+    validateWorkGraphProtocolId(
+      subject.requestId,
+      "assignment-request",
+      "task Response request",
+    );
+    parts.push(subject.requestId);
   } else {
     throw new WorkGraphDefinitionError(
-      "task Response role must be worker or evaluator",
+      "task Response role must be worker, evaluator, or assigner",
     );
   }
   parts.push(commentNodeId, authorNodeId);
@@ -3202,9 +3614,12 @@ function responseSubject(value) {
         "task Response worker evidence must reference its lease",
       );
     }
-    if (value.resultId !== undefined && value.resultId !== null) {
+    if (
+      (value.resultId !== undefined && value.resultId !== null) ||
+      (value.requestId !== undefined && value.requestId !== null)
+    ) {
       throw new WorkGraphDefinitionError(
-        "task Response worker evidence must not reference a result",
+        "task Response worker evidence must not reference a result or assignment request",
       );
     }
     return {
@@ -3221,16 +3636,34 @@ function responseSubject(value) {
     }
     if (
       (value.dispatchId !== undefined && value.dispatchId !== null) ||
-      (value.leaseId !== undefined && value.leaseId !== null)
+      (value.leaseId !== undefined && value.leaseId !== null) ||
+      (value.requestId !== undefined && value.requestId !== null)
     ) {
       throw new WorkGraphDefinitionError(
-        "task Response evaluator evidence must not reference a dispatch or lease",
+        "task Response evaluator evidence must not reference a dispatch or lease; it also cannot reference an assignment request",
       );
     }
     return { role: "evaluator", resultId: value.resultId };
   }
+  if (value.role === "assigner") {
+    if (value.requestId === undefined || value.requestId === null) {
+      throw new WorkGraphDefinitionError(
+        "task Response assigner evidence must reference its assignment request",
+      );
+    }
+    if (
+      (value.dispatchId !== undefined && value.dispatchId !== null) ||
+      (value.leaseId !== undefined && value.leaseId !== null) ||
+      (value.resultId !== undefined && value.resultId !== null)
+    ) {
+      throw new WorkGraphDefinitionError(
+        "task Response assigner evidence must not reference a dispatch, lease, or result",
+      );
+    }
+    return { role: "assigner", requestId: value.requestId };
+  }
   throw new WorkGraphDefinitionError(
-    "task Response role must be worker or evaluator",
+    "task Response role must be worker, evaluator, or assigner",
   );
 }
 
@@ -3306,7 +3739,9 @@ export function normalizeTaskResponse(value) {
     role: value.role,
     ...(subject.role === "worker"
       ? { dispatchId: subject.dispatchId, leaseId: subject.leaseId }
-      : { resultId: subject.resultId }),
+      : subject.role === "evaluator"
+        ? { resultId: subject.resultId }
+        : { requestId: subject.requestId }),
     commentNodeId: value.commentNodeId,
     authorDatabaseId: value.authorDatabaseId,
     authorNodeId: value.authorNodeId,
@@ -3330,7 +3765,14 @@ export function formatTaskResponse(value) {
           dispatch: typedReference("dispatch", normalized.dispatchId),
           lease: typedReference("lease", normalized.leaseId),
         }
-      : { result: typedReference("result", normalized.resultId) },
+      : normalized.role === "evaluator"
+        ? { result: typedReference("result", normalized.resultId) }
+        : {
+            request: typedReference(
+              "assignmentRequest",
+              normalized.requestId,
+            ),
+          },
     {
       actorId: normalized.actorId,
       role: normalized.role,
@@ -3355,7 +3797,10 @@ export function parseTaskResponse(body) {
     body,
     TASK_RESPONSE_MARKER,
     "TaskResponse",
-    { required: [], optional: ["dispatch", "lease", "result"] },
+    {
+      required: [],
+      optional: ["dispatch", "lease", "result", "request"],
+    },
     ["actorId", "role", "comment"],
     (envelope) => {
       const comment = envelope.data.comment;
@@ -3393,6 +3838,12 @@ export function parseTaskResponse(body) {
         references.resultId = validateTypedReference(
           envelope.references.result,
           "result",
+        ).id;
+      }
+      if (envelope.references.request !== undefined) {
+        references.requestId = validateTypedReference(
+          envelope.references.request,
+          "assignmentRequest",
         ).id;
       }
       return {
@@ -3767,6 +4218,11 @@ export function parseTaskError(body) {
 const TASK_ACTION_CODECS = {
   TaskFork: [TASK_FORK_MARKER, formatTaskFork, parseTaskFork],
   TaskJoin: [TASK_JOIN_MARKER, formatTaskJoin, parseTaskJoin],
+  TaskAssignmentRequest: [
+    TASK_ASSIGNMENT_REQUEST_MARKER,
+    formatTaskAssignmentRequest,
+    parseTaskAssignmentRequest,
+  ],
   TaskAssignment: [
     TASK_ASSIGNMENT_MARKER,
     formatTaskAssignment,

@@ -5,32 +5,13 @@
     "serverConfig": "server-config-v1-loopback.yaml",
     "stateStorePath": "data/workgraph-v1-loopback.redb",
     "queryIds": [
-      "wg-issues-waiting-for-admission",
-      "wg-tasks-waiting-for-fork",
-      "wg-tasks-waiting-for-fork-action",
-      "wg-tasks-waiting-for-join-all",
-      "wg-tasks-waiting-for-join-action",
-      "wg-task-leaves-waiting-for-assign",
-      "wg-task-parents-waiting-for-assign",
-      "wg-tasks-waiting-for-lease",
-      "wg-tasks-waiting-for-dispatch",
-      "wg-tasks-waiting-for-result",
-      "wg-tasks-waiting-for-evaluate",
-      "wg-tasks-waiting-for-route",
-      "wg-tasks-waiting-for-close",
-      "wg-tasks-closed",
-      "wg-task-detail",
-      "wg-task-definition-detail",
-      "wg-child-realization-detail",
-      "wg-task-artifact-detail",
-      "wg-result-detail",
-      "wg-evaluation-detail",
-      "wg-route-detail",
-      "wg-error-detail",
-      "wg-terminal-detail",
-      "wg-predecessor-result-detail"
+      "wg-root-state",
+      "wg-task-state",
+      "wg-task-actions",
+      "wg-lease-state",
+      "wg-root-comments"
     ],
-    "queryContractDigest": "sha256:85a25c8f38b4a31868c0934771c9bf698e433f15b99f59aed3f2cd73069c7ec7"
+    "queryContractDigest": "sha256:83fdd2110faa47c711903b5268b6c6c412b25e44f78e3ff0caf7ca1a716fef18"
   },
   "definition": {
     "bodyPath": "../../workflows/issue-lifecycle-v1.body",

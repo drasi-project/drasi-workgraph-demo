@@ -1,0 +1,117 @@
+WorkGraphWorkflowDefinition/v1
+
+```json
+{
+  "workflowDefinitionId": "assigner-parity",
+  "version": "v1",
+  "digest": "sha256:82b954c015aaa71bf6b69e36422816862db931d0b82072085da428af85b1842d",
+  "trigger": "workgraph",
+  "defaults": {
+    "evaluator": "result-evaluator",
+    "orchestrator": "workflow-coordinator",
+    "maxReworkAttempts": 2
+  },
+  "initialStepId": "human-triage",
+  "root": {
+    "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:89af6ea4cff38a4afeb46250678ab06e4c3bc653d1bee50f210edde522592efd",
+    "taskKey": "human-triage",
+    "operation": "normalize-issue",
+    "routing": {
+      "permittedExecutors": [
+        "issue-validator",
+        "issue-worker"
+      ]
+    },
+    "staticInputs": {},
+    "instructions": {
+      "summary": "Normalize the Root Issue after the human chooses the best agent.",
+      "details": "The assigner should choose the agent whose profile best matches the Root Issue.",
+      "acceptanceCriteria": [
+        "The result restates the Root Issue request.",
+        "The result does not invent facts."
+      ]
+    },
+    "children": []
+  },
+  "steps": {
+    "agent-triage": {
+      "type": "task",
+      "taskDefinition": {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:e029db5930323f0c8fe3e9c7d325112e716b3a6dd1c67a894c400a5c4ff25eff",
+        "taskKey": "agent-triage",
+        "operation": "draft-proposal",
+        "routing": {
+          "permittedExecutors": [
+            "human-agentofreality",
+            "issue-worker"
+          ]
+        },
+        "staticInputs": {},
+        "instructions": {
+          "summary": "Draft a short implementation proposal.",
+          "details": "The assignment coordinator must choose one permitted executor before work starts.",
+          "acceptanceCriteria": [
+            "The proposal names the requested change.",
+            "The proposal includes an acceptance check."
+          ]
+        },
+        "children": []
+      },
+      "executionPolicies": {
+        "urn:drasi:workgraph:id:v1:task-definition:sha256:e029db5930323f0c8fe3e9c7d325112e716b3a6dd1c67a894c400a5c4ff25eff": {
+          "workerId": "human-agentofreality",
+          "evaluatorId": "result-evaluator",
+          "orchestratorId": "workflow-coordinator",
+          "assignerId": "assignment-coordinator",
+          "maxReworkAttempts": 2
+        }
+      },
+      "transition": {
+        "type": "next",
+        "targetStepId": "completed"
+      }
+    },
+    "completed": {
+      "type": "terminal",
+      "outcome": "completed"
+    },
+    "human-triage": {
+      "type": "task",
+      "taskDefinition": {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:89af6ea4cff38a4afeb46250678ab06e4c3bc653d1bee50f210edde522592efd",
+        "taskKey": "human-triage",
+        "operation": "normalize-issue",
+        "routing": {
+          "permittedExecutors": [
+            "issue-validator",
+            "issue-worker"
+          ]
+        },
+        "staticInputs": {},
+        "instructions": {
+          "summary": "Normalize the Root Issue after the human chooses the best agent.",
+          "details": "The assigner should choose the agent whose profile best matches the Root Issue.",
+          "acceptanceCriteria": [
+            "The result restates the Root Issue request.",
+            "The result does not invent facts."
+          ]
+        },
+        "children": []
+      },
+      "executionPolicies": {
+        "urn:drasi:workgraph:id:v1:task-definition:sha256:89af6ea4cff38a4afeb46250678ab06e4c3bc653d1bee50f210edde522592efd": {
+          "workerId": "issue-validator",
+          "evaluatorId": "result-evaluator",
+          "orchestratorId": "workflow-coordinator",
+          "assignerId": "human-agentofreality",
+          "maxReworkAttempts": 2
+        }
+      },
+      "transition": {
+        "type": "next",
+        "targetStepId": "agent-triage"
+      }
+    }
+  }
+}
+```

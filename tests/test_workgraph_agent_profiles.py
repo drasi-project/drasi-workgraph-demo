@@ -39,6 +39,10 @@ EXPECTED_TOOLS = {
         "workgraph/get_root_issue",
         "workgraph/submit_task_result",
     ],
+    "assignment-coordinator": [
+        "workgraph/get_task_snapshot",
+        "workgraph/submit_task_assignment",
+    ],
 }
 
 
@@ -123,6 +127,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
                 ("workflow-coordinator", "1", "PT15M"),
                 ("validation-stage-coordinator", "1", "PT15M"),
                 ("issue-info-requester", "1", "PT30M"),
+                ("assignment-coordinator", "1", "PT15M"),
             ],
         )
         # Exactly one human actor, bound to the exact GitHub account it speaks
@@ -145,6 +150,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
 
     def test_evaluators_and_coordinators_write_on_existing_tasks(self):
         lifecycle_profiles = (
+            "assignment-coordinator",
             "result-evaluator",
             "issue-validation-evaluator",
             "workflow-coordinator",
@@ -153,23 +159,27 @@ class WorkGraphProfilesTest(unittest.TestCase):
         for name in lifecycle_profiles:
             with self.subTest(reporter_identity=name):
                 self.assertIn(
-                    "COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID: "
-                    "${{ vars.COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID }}",
-                    self.agents[name],
-                )
-                self.assertIn(
                     "COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID: "
                     "${{ vars.COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID }}",
                     self.agents[name],
                 )
-        for name in lifecycle_profiles[:2]:
+        for name in lifecycle_profiles[1:3]:
             with self.subTest(name=name):
+                self.assertIn(
+                    "COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID: "
+                    "${{ vars.COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID }}",
+                    self.agents[name],
+                )
                 self.assertIn("existing", self.agents[name].lower())
                 self.assertIn("WorkGraphTaskEvaluation/v1", self.agents[name])
                 self.assertNotRegex(
                     self.agents[name], r"workgraph/(?:create|assign|dispatch)_task"
                 )
-        for name in lifecycle_profiles[2:]:
+        self.assertIn(
+            "WorkGraphTaskAssignment/v1",
+            self.agents["assignment-coordinator"],
+        )
+        for name in lifecycle_profiles[3:]:
             with self.subTest(name=name):
                 self.assertIn("WorkGraphTaskRoute/v1", self.agents[name])
                 self.assertRegex(self.agents[name], r"(?i)never create")
