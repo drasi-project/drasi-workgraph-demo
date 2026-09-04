@@ -13,6 +13,7 @@ const targets = [
   "scoped-control-flow",
   "human-parity",
   "assigner-parity",
+  "human-assigner-live",
 ].map((name) => ({
   name,
   workflow: resolve(root, `.github/workgraph/workflows/${name}.yaml`),

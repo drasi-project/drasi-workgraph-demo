@@ -1,0 +1,80 @@
+WorkGraphWorkflowDefinition/v1
+
+```json
+{
+  "workflowDefinitionId": "human-assigner-live",
+  "version": "v1",
+  "digest": "sha256:86a5b2971bcd1187b42c31dbce37a1a068ffc72179c09b951cc51d23e4da58f6",
+  "trigger": "workgraph",
+  "defaults": {
+    "evaluator": "result-evaluator",
+    "orchestrator": "workflow-coordinator",
+    "maxReworkAttempts": 2
+  },
+  "initialStepId": "triage",
+  "root": {
+    "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:c924170a30bef1a5f2fa71da8c6d82a4ddf7932b98a9dc09319eea680af9d657",
+    "taskKey": "triage",
+    "operation": "validate-issue",
+    "routing": {
+      "permittedExecutors": [
+        "issue-validator",
+        "issue-worker"
+      ]
+    },
+    "staticInputs": {},
+    "instructions": {
+      "summary": "Validate the Root Issue after the human chooses the best agent.",
+      "details": "Select the profile best suited to validate the title, body, and reproduction details.",
+      "acceptanceCriteria": [
+        "The Issue has a non-empty title.",
+        "The Issue body is present."
+      ]
+    },
+    "children": []
+  },
+  "steps": {
+    "completed": {
+      "type": "terminal",
+      "outcome": "completed"
+    },
+    "triage": {
+      "type": "task",
+      "taskDefinition": {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:c924170a30bef1a5f2fa71da8c6d82a4ddf7932b98a9dc09319eea680af9d657",
+        "taskKey": "triage",
+        "operation": "validate-issue",
+        "routing": {
+          "permittedExecutors": [
+            "issue-validator",
+            "issue-worker"
+          ]
+        },
+        "staticInputs": {},
+        "instructions": {
+          "summary": "Validate the Root Issue after the human chooses the best agent.",
+          "details": "Select the profile best suited to validate the title, body, and reproduction details.",
+          "acceptanceCriteria": [
+            "The Issue has a non-empty title.",
+            "The Issue body is present."
+          ]
+        },
+        "children": []
+      },
+      "executionPolicies": {
+        "urn:drasi:workgraph:id:v1:task-definition:sha256:c924170a30bef1a5f2fa71da8c6d82a4ddf7932b98a9dc09319eea680af9d657": {
+          "workerId": "issue-validator",
+          "evaluatorId": "result-evaluator",
+          "orchestratorId": "workflow-coordinator",
+          "assignerId": "human-agentofreality",
+          "maxReworkAttempts": 2
+        }
+      },
+      "transition": {
+        "type": "next",
+        "targetStepId": "completed"
+      }
+    }
+  }
+}
+```

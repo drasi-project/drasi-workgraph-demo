@@ -1,0 +1,32 @@
+apiVersion: workgraph.drasi.io/v1
+kind: IssueWorkflow
+metadata:
+  id: human-assigner-live
+spec:
+  trigger: workgraph
+  defaults:
+    evaluator: result-evaluator
+    orchestrator: workflow-coordinator
+    maxReworkAttempts: 2
+  initial: triage
+  steps:
+    triage:
+      type: task
+      operation: validate-issue
+      worker:
+        candidates:
+          - issue-validator
+          - issue-worker
+        selection: assigned
+      assigner: human-agentofreality
+      inputs: {}
+      instructions:
+        summary: Validate the Root Issue after the human chooses the best agent.
+        details: Select the profile best suited to validate the title, body, and reproduction details.
+        acceptanceCriteria:
+          - The Issue has a non-empty title.
+          - The Issue body is present.
+      next: completed
+    completed:
+      type: terminal
+      outcome: completed

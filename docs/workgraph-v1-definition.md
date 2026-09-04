@@ -104,7 +104,7 @@ The Rust compiler stays authoritative;
 compiler output and
 `.github/workgraph/workflows/scoped-control-flow-v1.body` is its
 `canonicalDefinitionBody`. `node scripts/check-workgraph-compiler.mjs` compares
-all six Demo workflows against the sibling compiler byte-for-byte.
+all seven Demo workflows against the sibling compiler byte-for-byte.
 
 ## Human and agent parity
 

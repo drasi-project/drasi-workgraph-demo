@@ -117,6 +117,7 @@ for (const workflowDefinitionId of [
   "scoped-control-flow",
   "human-parity",
   "assigner-parity",
+  "human-assigner-live",
 ]) {
   const fixture = JSON.parse(
     readFileSync(

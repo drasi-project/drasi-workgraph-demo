@@ -1,0 +1,192 @@
+{
+  "definitionDigest": "sha256:86a5b2971bcd1187b42c31dbce37a1a068ffc72179c09b951cc51d23e4da58f6",
+  "definition": {
+    "apiVersion": "workgraph.drasi.io/v1",
+    "kind": "IssueWorkflow",
+    "metadata": {
+      "id": "human-assigner-live"
+    },
+    "spec": {
+      "trigger": "workgraph",
+      "defaults": {
+        "evaluator": "result-evaluator",
+        "orchestrator": "workflow-coordinator",
+        "maxReworkAttempts": 2
+      },
+      "initial": "triage",
+      "steps": {
+        "completed": {
+          "type": "terminal",
+          "outcome": "completed"
+        },
+        "triage": {
+          "type": "task",
+          "operation": "validate-issue",
+          "worker": {
+            "candidates": [
+              "issue-validator",
+              "issue-worker"
+            ],
+            "selection": "assigned"
+          },
+          "inputs": {},
+          "instructions": {
+            "summary": "Validate the Root Issue after the human chooses the best agent.",
+            "details": "Select the profile best suited to validate the title, body, and reproduction details.",
+            "acceptanceCriteria": [
+              "The Issue has a non-empty title.",
+              "The Issue body is present."
+            ]
+          },
+          "evaluator": null,
+          "orchestrator": null,
+          "assigner": "human-agentofreality",
+          "maxReworkAttempts": null,
+          "children": null,
+          "next": "completed",
+          "outcomes": {}
+        }
+      }
+    }
+  },
+  "workgraphDefinition": {
+    "workflowDefinitionId": "human-assigner-live",
+    "version": "v1",
+    "digest": "sha256:86a5b2971bcd1187b42c31dbce37a1a068ffc72179c09b951cc51d23e4da58f6",
+    "trigger": "workgraph",
+    "defaults": {
+      "evaluator": "result-evaluator",
+      "orchestrator": "workflow-coordinator",
+      "maxReworkAttempts": 2
+    },
+    "initialStepId": "triage",
+    "root": {
+      "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:c924170a30bef1a5f2fa71da8c6d82a4ddf7932b98a9dc09319eea680af9d657",
+      "taskKey": "triage",
+      "operation": "validate-issue",
+      "routing": {
+        "permittedExecutors": [
+          "issue-validator",
+          "issue-worker"
+        ]
+      },
+      "staticInputs": {},
+      "instructions": {
+        "summary": "Validate the Root Issue after the human chooses the best agent.",
+        "details": "Select the profile best suited to validate the title, body, and reproduction details.",
+        "acceptanceCriteria": [
+          "The Issue has a non-empty title.",
+          "The Issue body is present."
+        ]
+      },
+      "children": []
+    },
+    "steps": {
+      "completed": {
+        "type": "terminal",
+        "outcome": "completed"
+      },
+      "triage": {
+        "type": "task",
+        "taskDefinition": {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:c924170a30bef1a5f2fa71da8c6d82a4ddf7932b98a9dc09319eea680af9d657",
+          "taskKey": "triage",
+          "operation": "validate-issue",
+          "routing": {
+            "permittedExecutors": [
+              "issue-validator",
+              "issue-worker"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Validate the Root Issue after the human chooses the best agent.",
+            "details": "Select the profile best suited to validate the title, body, and reproduction details.",
+            "acceptanceCriteria": [
+              "The Issue has a non-empty title.",
+              "The Issue body is present."
+            ]
+          },
+          "children": []
+        },
+        "executionPolicies": {
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:c924170a30bef1a5f2fa71da8c6d82a4ddf7932b98a9dc09319eea680af9d657": {
+            "workerId": "issue-validator",
+            "evaluatorId": "result-evaluator",
+            "orchestratorId": "workflow-coordinator",
+            "assignerId": "human-agentofreality",
+            "maxReworkAttempts": 2
+          }
+        },
+        "transition": {
+          "type": "next",
+          "targetStepId": "completed"
+        }
+      }
+    }
+  },
+  "canonicalDefinitionBody": "WorkGraphWorkflowDefinition/v1\n\n```json\n{\n  \"workflowDefinitionId\": \"human-assigner-live\",\n  \"version\": \"v1\",\n  \"digest\": \"sha256:86a5b2971bcd1187b42c31dbce37a1a068ffc72179c09b951cc51d23e4da58f6\",\n  \"trigger\": \"workgraph\",\n  \"defaults\": {\n    \"evaluator\": \"result-evaluator\",\n    \"orchestrator\": \"workflow-coordinator\",\n    \"maxReworkAttempts\": 2\n  },\n  \"initialStepId\": \"triage\",\n  \"root\": {\n    \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:c924170a30bef1a5f2fa71da8c6d82a4ddf7932b98a9dc09319eea680af9d657\",\n    \"taskKey\": \"triage\",\n    \"operation\": \"validate-issue\",\n    \"routing\": {\n      \"permittedExecutors\": [\n        \"issue-validator\",\n        \"issue-worker\"\n      ]\n    },\n    \"staticInputs\": {},\n    \"instructions\": {\n      \"summary\": \"Validate the Root Issue after the human chooses the best agent.\",\n      \"details\": \"Select the profile best suited to validate the title, body, and reproduction details.\",\n      \"acceptanceCriteria\": [\n        \"The Issue has a non-empty title.\",\n        \"The Issue body is present.\"\n      ]\n    },\n    \"children\": []\n  },\n  \"steps\": {\n    \"completed\": {\n      \"type\": \"terminal\",\n      \"outcome\": \"completed\"\n    },\n    \"triage\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:c924170a30bef1a5f2fa71da8c6d82a4ddf7932b98a9dc09319eea680af9d657\",\n        \"taskKey\": \"triage\",\n        \"operation\": \"validate-issue\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"issue-validator\",\n            \"issue-worker\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"instructions\": {\n          \"summary\": \"Validate the Root Issue after the human chooses the best agent.\",\n          \"details\": \"Select the profile best suited to validate the title, body, and reproduction details.\",\n          \"acceptanceCriteria\": [\n            \"The Issue has a non-empty title.\",\n            \"The Issue body is present.\"\n          ]\n        },\n        \"children\": []\n      },\n      \"executionPolicies\": {\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:c924170a30bef1a5f2fa71da8c6d82a4ddf7932b98a9dc09319eea680af9d657\": {\n          \"workerId\": \"issue-validator\",\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"assignerId\": \"human-agentofreality\",\n          \"maxReworkAttempts\": 2\n        }\n      },\n      \"transition\": {\n        \"type\": \"next\",\n        \"targetStepId\": \"completed\"\n      }\n    }\n  }\n}\n```\n",
+  "queryPlan": {
+    "version": "v1",
+    "workflowDefinitionId": "human-assigner-live",
+    "definitionDigest": "sha256:86a5b2971bcd1187b42c31dbce37a1a068ffc72179c09b951cc51d23e4da58f6",
+    "lifecycleTemplates": [
+      {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:c924170a30bef1a5f2fa71da8c6d82a4ddf7932b98a9dc09319eea680af9d657",
+        "taskDefinition": {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:c924170a30bef1a5f2fa71da8c6d82a4ddf7932b98a9dc09319eea680af9d657",
+          "taskKey": "triage",
+          "operation": "validate-issue",
+          "routing": {
+            "permittedExecutors": [
+              "issue-validator",
+              "issue-worker"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Validate the Root Issue after the human chooses the best agent.",
+            "details": "Select the profile best suited to validate the title, body, and reproduction details.",
+            "acceptanceCriteria": [
+              "The Issue has a non-empty title.",
+              "The Issue body is present."
+            ]
+          },
+          "children": []
+        },
+        "workerId": "issue-validator",
+        "evaluatorId": "result-evaluator",
+        "orchestratorId": "workflow-coordinator",
+        "maxReworkAttempts": 2,
+        "childTaskDefinitionIds": []
+      }
+    ],
+    "instances": [
+      {
+        "type": "workflow-entry",
+        "targetStepId": "triage",
+        "targetTaskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:c924170a30bef1a5f2fa71da8c6d82a4ddf7932b98a9dc09319eea680af9d657"
+      },
+      {
+        "type": "terminal",
+        "stepId": "completed",
+        "outcome": "completed"
+      },
+      {
+        "type": "next",
+        "sourceStepId": "triage",
+        "targetStepId": "completed",
+        "targetStepKind": "terminal"
+      }
+    ]
+  },
+  "queryBundle": {
+    "version": "v1",
+    "workflowDefinitionId": "human-assigner-live",
+    "definitionDigest": "sha256:86a5b2971bcd1187b42c31dbce37a1a068ffc72179c09b951cc51d23e4da58f6",
+    "queries": [],
+    "workgraphReactionQueries": [],
+    "sseQueries": [],
+    "canvasInventory": []
+  }
+}
