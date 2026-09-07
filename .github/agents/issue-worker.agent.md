@@ -43,6 +43,11 @@ Write one canonical `WorkGraphTaskResult/v1` on the existing task. Never create
 a nested task, change the Root Issue, choose a route, or evaluate a Result.
 The reporter emits the strict TaskResult envelope with required task context,
 causal Dispatch/Lease references, and your output under `data.output`.
+Your output must be an object containing `rootIssueComment`: non-empty,
+comment-ready Markdown that says exactly what should be added to the ordinary
+Root Issue if the evaluator accepts this Result. Do not post that comment
+yourself. The runtime publishes it only after acceptance. Do not use fenced
+code blocks in the candidate comment.
 
 A task may pin actor-neutral `instructions`: a `summary`, optional `details`,
 ordered `acceptanceCriteria`, and an optional `resultSchema`. They describe what

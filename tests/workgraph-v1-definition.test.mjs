@@ -11,6 +11,7 @@ import {
   MAX_TASK_RESPONSE_BODY_BYTES,
   RESERVED_RUNTIME_INPUT_KEYS,
   RUNTIME_TASK_MARKER,
+  WORKFLOW_DEFINITION_MARKER,
   TASK_ASSIGNMENT_REQUEST_MARKER,
   TASK_ERROR_MARKER,
   TASK_FORK_MARKER,
@@ -40,7 +41,6 @@ import {
   formatTaskRoute,
   formatCompiledWorkflowDefinition,
   formatRuntimeTask,
-  formatWorkflowDefinition,
   nextReworkAttempt,
   normalizeCompiledWorkflowDefinition,
   normalizeIssueWorkflow,
@@ -57,18 +57,17 @@ import {
   parseTaskRoute,
   parseCompiledWorkflowDefinition,
   parseRuntimeTask,
-  parseWorkflowDefinition,
   resolveCompiledFlowScopes,
   startsWithWorkGraphMention,
   taskResultDigest,
   workerSelectorCandidates,
-  workerSelectorPreferred,
   validateRootRuntimeTask,
   validateTaskRouteAgainstDefinition,
 } from "../.github/mcp/workgraph-v1-definition.mjs";
 import {
   buildWorkGraphV1Proof,
   validateGeneratedQueryInventory,
+  validateProofInputs,
 } from "../scripts/prepare-workgraph-v1-proof.mjs";
 
 const DEFINITION_PATH = ".github/workgraph/workflows/issue-lifecycle-v1.body";
@@ -90,6 +89,10 @@ const clone = (value) => structuredClone(value);
 const COMPILED_OUTPUT = JSON.parse(await read(EXPECTED_PATH));
 const COMPILED_FIXTURE = COMPILED_OUTPUT.workgraphDefinition;
 const protocolId = (type, seed) => deriveWorkGraphProtocolId(type, [seed]);
+const automaticWorker = (actorId) => ({
+  candidates: [actorId],
+  selection: "first-available",
+});
 const MESSAGE_RUN_ID = protocolId("workflow-run", "message-run");
 const TASK_C_ID = protocolId("task", "task-c");
 const VECTOR_TASK_ID = protocolId("task", "task-1");
@@ -105,60 +108,34 @@ const PROOF_QUERY_IDS = [
   "wg-lease-state",
   "wg-root-comments",
 ];
+const TEST_CASE_EXPECTED_KEYS = [
+  "topLevelTaskKeys",
+  "taskParents",
+  "terminalOutcome",
+  "flowEntries",
+];
+function validateTestCaseExpected(expected) {
+  if (
+    !expected ||
+    typeof expected !== "object" ||
+    Array.isArray(expected)
+  ) {
+    throw new Error("test case expected must be an object");
+  }
+  if (!Object.hasOwn(expected, "flowEntries")) {
+    throw new Error("test case expected.flowEntries is required");
+  }
+  if (!Array.isArray(expected.flowEntries)) {
+    throw new Error("test case expected.flowEntries must be an array");
+  }
+  assert.deepEqual(Object.keys(expected), TEST_CASE_EXPECTED_KEYS);
+  return expected;
+}
 const sourceContext = (stepId) => ({
   sourceStepId: stepId,
   taskDefinitionId:
     COMPILED_FIXTURE.steps[stepId].taskDefinition.taskDefinitionId,
 });
-
-function nestedDefinition() {
-  return {
-    workflowDefinitionId: "issue-validation",
-    version: "v1",
-    digest: `sha256:${"a".repeat(64)}`,
-    root: {
-      taskDefinitionId: protocolId("task-definition", "issue-validation-root"),
-      taskKey: "root",
-      operation: "summarize",
-      routing: { permittedExecutors: ["summary-agent"] },
-      staticInputs: { objective: "validate the issue" },
-      children: [
-        {
-          taskDefinitionId: protocolId("task-definition", "issue-validation-body"),
-          taskKey: "body",
-          operation: "validate-body",
-          routing: { permittedExecutors: ["body-agent"] },
-          staticInputs: {},
-          children: [
-            {
-              taskDefinitionId: protocolId(
-                "task-definition",
-                "issue-validation-body-links",
-              ),
-              taskKey: "body-links",
-              operation: "validate-links",
-              routing: { permittedExecutors: ["link-agent"] },
-              staticInputs: {},
-              children: [],
-            },
-          ],
-        },
-        {
-          taskDefinitionId: protocolId("task-definition", "issue-validation-title"),
-          taskKey: "title",
-          operation: "validate-title",
-          routing: { permittedExecutors: ["title-agent"] },
-          staticInputs: {},
-          children: [],
-        },
-      ],
-    },
-  };
-}
-
-function taskDefinitions(root) {
-  return [root, ...root.children.flatMap(taskDefinitions)];
-}
 
 test("the v1 workflow definition remains byte exact", async () => {
   const body = await read(DEFINITION_PATH);
@@ -176,118 +153,21 @@ test("the v1 workflow definition remains byte exact", async () => {
   );
 });
 
-test("recursive definitions preserve deterministic global task identities", () => {
-  const definition = parseWorkflowDefinition(
-    formatWorkflowDefinition(nestedDefinition()),
-  );
-  const tasks = taskDefinitions(definition.root);
-  assert.deepEqual(
-    definition.root.children.map(({ taskKey }) => taskKey),
-    ["body", "title"],
-  );
-  assert.deepEqual(
-    definition.root.children[0].children.map(({ taskKey }) => taskKey),
-    ["body-links"],
-  );
-  assert.equal(
-    new Set(tasks.map(({ taskDefinitionId }) => taskDefinitionId)).size,
-    tasks.length,
-  );
-  assert.equal(new Set(tasks.map(({ taskKey }) => taskKey)).size, tasks.length);
-});
-
-test("formatting canonicalizes data maps and requires child ordering", () => {
-  const definition = nestedDefinition();
-  definition.root.staticInputs = {
-    proofMode: "isolated",
-    evaluationRoutes: { succeeded: "complete", failed: "fail" },
+test("the compact pre-compiler definition shape is rejected", () => {
+  const compact = {
+    workflowDefinitionId: "issue-validation",
+    version: "v1",
+    digest: `sha256:${"a".repeat(64)}`,
+    root: COMPILED_FIXTURE.root,
   };
-  const body = formatWorkflowDefinition(definition);
-  assert.ok(body.indexOf('"evaluationRoutes"') < body.indexOf('"proofMode"'));
-  assert.ok(body.indexOf('"failed"') < body.indexOf('"succeeded"'));
-
-  definition.root.children.reverse();
   assert.throws(
-    () => formatWorkflowDefinition(definition),
-    /children must be ordered by unique taskKey/,
-  );
-});
-
-test("definition validation rejects duplicate identities and invalid bounds", () => {
-  const duplicate = nestedDefinition();
-  duplicate.root.children[1].taskDefinitionId =
-    duplicate.root.children[0].taskDefinitionId;
-  assert.throws(
-    () => formatWorkflowDefinition(duplicate),
-    /repeats taskDefinitionId/,
-  );
-
-  const tooWide = nestedDefinition();
-  const leaf = clone(tooWide.root.children[1]);
-  tooWide.root.children = Array.from(
-    { length: MAX_TASK_DEFINITION_CHILDREN + 1 },
-    (_, index) => ({
-      ...clone(leaf),
-      taskDefinitionId: `wide-${String(index).padStart(2, "0")}`,
-      taskKey: `wide-${String(index).padStart(2, "0")}`,
-    }),
-  );
-  assert.throws(
-    () => formatWorkflowDefinition(tooWide),
-    /exceeds 16 direct children/,
-  );
-
-  for (const permittedExecutors of [
-    [],
-    ["issue-validator", "issue-validator"],
-    Array.from({ length: 9 }, (_, index) => `executor-${index}`),
-  ]) {
-    const invalid = nestedDefinition();
-    invalid.root.routing.permittedExecutors = permittedExecutors;
-    assert.throws(
-      () => formatWorkflowDefinition(invalid),
-      /permittedExecutors|repeats permitted executor/,
-    );
-  }
-});
-
-test("parsing rejects unknown, oversized, reserved-marker, and noncanonical bodies", async () => {
-  const definition = nestedDefinition();
-  const unknown = clone(definition);
-  unknown.root.unexpected = true;
-  assert.throws(
-    () => formatWorkflowDefinition(unknown),
+    () => normalizeCompiledWorkflowDefinition(compact),
     /properties must be exactly/,
   );
-
-  for (const marker of [
-    "WorkGraphTask/v1",
-    "WorkGraphTaskAssignment/v1",
-    "WorkGraphTaskDispatch/v1",
-    "WorkGraphTaskResult/v1",
-    "WorkGraphTaskEvaluation/v1",
-    "WorkGraphTaskRoute/v1",
-    "WorkGraphTaskError/v1",
-  ]) {
-    const marked = clone(definition);
-    marked.root.staticInputs = { unsafe: marker };
-    assert.throws(() => formatWorkflowDefinition(marked), /protocol markers/);
-  }
-
-  const body = formatWorkflowDefinition(definition);
+  const body = `${WORKFLOW_DEFINITION_MARKER}\n\n\`\`\`json\n${JSON.stringify(compact, null, 2)}\n\`\`\`\n`;
   assert.throws(
-    () => parseWorkflowDefinition(body.replace('  "version"', ' "version"')),
-    /not canonical/,
-  );
-  assert.throws(
-    () => parseWorkflowDefinition(body.replace("\n", "\r\n")),
-    /not canonical/,
-  );
-  const oversized = clone(definition);
-  oversized.root.staticInputs = { payload: "x".repeat(64 * 1024) };
-  assert.throws(
-    () => formatWorkflowDefinition(oversized),
-    /exceeds 65536 bytes/,
+    () => parseCompiledWorkflowDefinition(body),
+    /properties must be exactly/,
   );
 });
 
@@ -327,12 +207,40 @@ test("runtime tasks require top-level Root Issue identity and exact definition p
     () => formatRuntimeTask(missingRootIssue),
     /properties must be exactly/,
   );
-  const legacy = { ...root };
-  delete legacy.taskKey;
-  delete legacy.operation;
-  const legacyBody = `${RUNTIME_TASK_MARKER}\n\n\`\`\`json\n${JSON.stringify(legacy, null, 2)}\n\`\`\`\n`;
-  assert.throws(() => parseRuntimeTask(legacyBody), /properties must be exactly/);
-  assert.throws(() => formatRuntimeTask(legacy), /properties must be exactly/);
+  const missingResolvedInputs = { ...root };
+  delete missingResolvedInputs.resolvedInputs;
+  assert.throws(
+    () => formatRuntimeTask(missingResolvedInputs),
+    /properties must be exactly/,
+  );
+  assert.throws(
+    () => formatRuntimeTask({ ...root, resolvedInputs: null }),
+    /resolvedInputs must be an object/,
+  );
+  const missingResolvedInputsEnvelope = clone(envelope);
+  delete missingResolvedInputsEnvelope.data.resolvedInputs;
+  assert.throws(
+    () =>
+      parseRuntimeTask(
+        `${RUNTIME_TASK_MARKER}\n\n\`\`\`json\n${JSON.stringify(missingResolvedInputsEnvelope, null, 2)}\n\`\`\`\n`,
+      ),
+    /Task data properties must be exactly resolvedInputs/,
+  );
+  const nullResolvedInputsEnvelope = clone(envelope);
+  nullResolvedInputsEnvelope.data.resolvedInputs = null;
+  assert.throws(
+    () =>
+      parseRuntimeTask(
+        `${RUNTIME_TASK_MARKER}\n\n\`\`\`json\n${JSON.stringify(nullResolvedInputsEnvelope, null, 2)}\n\`\`\`\n`,
+      ),
+    /resolvedInputs must be an object/,
+  );
+  const obsolete = { ...root };
+  delete obsolete.taskKey;
+  delete obsolete.operation;
+  const obsoleteBody = `${RUNTIME_TASK_MARKER}\n\n\`\`\`json\n${JSON.stringify(obsolete, null, 2)}\n\`\`\`\n`;
+  assert.throws(() => parseRuntimeTask(obsoleteBody), /properties must be exactly/);
+  assert.throws(() => formatRuntimeTask(obsolete), /properties must be exactly/);
 });
 
 test("proof inputs pin the exact loopback query contract and remain inactive", async () => {
@@ -357,7 +265,7 @@ test("proof inputs pin the exact loopback query contract and remain inactive", a
   const runtimeContract = JSON.parse(
     await readFile(
       new URL(
-        "../../drasi-dogfooding/git-workgraph/contract/runtime-v1.json",
+        "../.github/workgraph/contracts/runtime-v1.json",
         import.meta.url,
       ),
       "utf8",
@@ -376,7 +284,7 @@ test("proof inputs pin the exact loopback query contract and remain inactive", a
     .digest("hex")}`;
   assert.equal(
     inputs.runtimeContract.queryContractDigest,
-    "sha256:83fdd2110faa47c711903b5268b6c6c412b25e44f78e3ff0caf7ca1a716fef18",
+    "sha256:e8e40e33c6639213f9cef8a1f25b38c646896a7ebea14596f6089ee3f70f18d3",
   );
   assert.equal(inputs.runtimeContract.queryContractDigest, queryContractDigest);
   assert.deepEqual(inputs.activation, {
@@ -388,7 +296,62 @@ test("proof inputs pin the exact loopback query contract and remain inactive", a
     liveAcknowledgment: false,
     githubWritesAllowed: false,
   });
-  assert.equal(inputs.rootIssueAdmission.label, "workgraph");
+  assert.equal("definition" in inputs, false);
+  assert.equal("rootIssueAdmission" in inputs, false);
+  assert.deepEqual(inputs.rootIssue.workgraphLabels, [
+    "workgraph:issue-lifecycle",
+  ]);
+  assert.equal(inputs.rootIssue.workflowMappings.length, 1);
+  const [mapping] = inputs.rootIssue.workflowMappings;
+  assert.deepEqual(
+    {
+      id: mapping.mappingId,
+      label: mapping.label,
+    },
+    {
+      id: "issue-lifecycle",
+      label: "workgraph:issue-lifecycle",
+    },
+  );
+  assert.equal(
+    mapping.admissionId,
+    deriveWorkGraphProtocolId("admission", [
+      inputs.rootIssue.rootIssueId,
+      "delivery-1",
+      mapping.mappingId,
+      mapping.label,
+    ]),
+  );
+  assert.notEqual(
+    mapping.admissionId,
+    deriveWorkGraphProtocolId("admission", [
+      inputs.rootIssue.rootIssueId,
+      "delivery-1",
+    ]),
+  );
+  assert.notEqual(
+    mapping.admissionId,
+    deriveWorkGraphProtocolId("admission", [
+      inputs.rootIssue.rootIssueId,
+      "delivery-1",
+      "other-workflow",
+      "workgraph:other-workflow",
+    ]),
+  );
+  const obsolete = clone(inputs);
+  obsolete.workflowMappings = obsolete.rootIssue.workflowMappings;
+  delete obsolete.rootIssue.workflowMappings;
+  obsolete.workflowDefinition = {
+    path: mapping.definitionPath,
+  };
+  obsolete.rootIssueAdmission = {
+    ...obsolete.rootIssue,
+    admissionId: mapping.admissionId,
+  };
+  assert.throws(
+    () => validateProofInputs(obsolete),
+    /proof inputs properties must be exactly/,
+  );
   assert.equal(
     inputs.leaseValidation.path,
     "/github/workgraph-v1/lease/validate",
@@ -403,21 +366,48 @@ test("proof inputs pin the exact loopback query contract and remain inactive", a
   ]);
 });
 
-test("offline proof derives the Root Task from Root Issue admission", async () => {
+test("offline proof derives the Root Task from its explicit workflow mapping", async () => {
   const proof = await buildWorkGraphV1Proof();
-  assert.deepEqual(proof.expectedAdmissionQuery, {
-    queryId: "wg-issues-waiting-for-admission",
-    rootIssueId: "I_workgraph_root_issue",
-    admissionId:
-      "urn:drasi:workgraph:id:v1:admission:sha256:077e3315d4fcc9cbd8eb0377863c0bac07f859bbb0143b5661e3101ca1276198",
-  });
+  assert.equal("workflowDefinition" in proof, false);
+  assert.equal("rootIssueAdmission" in proof, false);
+  assert.equal(proof.rootIssue.workflowMappings.length, 1);
+  assert.deepEqual(Object.keys(proof.rootIssue).sort(), [
+    "isOpen",
+    "issueNumber",
+    "repositoryName",
+    "repositoryNodeId",
+    "repositoryOwner",
+    "rootIssueId",
+    "workflowMappings",
+    "workgraphInclude",
+    "workgraphLabels",
+  ]);
+  assert.deepEqual(
+    Object.keys(proof.rootIssue.workflowMappings[0]).sort(),
+    [
+      "admissionId",
+      "body",
+      "definitionPath",
+      "definitionRef",
+      "definitionRepository",
+      "label",
+      "mappingId",
+      "title",
+    ],
+  );
+  assert.equal(proof.rootIssue.workflowMappings[0].mappingId, "issue-lifecycle");
+  assert.equal(
+    "workflowDefinition" in proof.rootIssue.workflowMappings[0],
+    false,
+  );
+  assert.equal("expectedAdmissionQuery" in proof, false);
   assert.equal(
     proof.expectedRootTask.value.taskId,
-    "urn:drasi:workgraph:id:v1:task:sha256:f000b1854ea3b9b009c43bdbf68e7786298016514e52a81d46f5461116b4ee4b",
+    "urn:drasi:workgraph:id:v1:task:sha256:0f0233b648875f8b0b722d1aca8b7cd445843417aa231454713423d8af6e1369",
   );
   assert.equal(
     proof.expectedRootTask.value.workflowRunId,
-    "urn:drasi:workgraph:id:v1:workflow-run:sha256:086749d7bbfd8c7b6f665a099f7344d71314674c9f89f1a2021f0c9ac2ff1691",
+    "urn:drasi:workgraph:id:v1:workflow-run:sha256:a813797e7fab4b9a7b415d15fed2b49a88e9604ece4c34277146216bdbabcded",
   );
   assert.equal(
     proof.expectedRootTask.value.resolvedInputs.rootIssue.issueNodeId,
@@ -443,7 +433,7 @@ function linearWorkflow() {
   const task = (operation, next) => ({
     type: "task",
     operation,
-    worker: "issue-worker",
+    worker: automaticWorker("issue-worker"),
     inputs: {},
     next,
   });
@@ -452,7 +442,6 @@ function linearWorkflow() {
     kind: "IssueWorkflow",
     metadata: { id: "issue-lifecycle" },
     spec: {
-      trigger: "workgraph",
       initial: "a",
       defaults: {
         evaluator: "result-evaluator",
@@ -471,8 +460,13 @@ function linearWorkflow() {
 }
 
 function complexWorkflow() {
-  const task = (operation, worker, transition, inputs = {}) => {
-    const value = { type: "task", operation, worker, inputs };
+  const task = (operation, actorId, transition, inputs = {}) => {
+    const value = {
+      type: "task",
+      operation,
+      worker: automaticWorker(actorId),
+      inputs,
+    };
     if (typeof transition === "string") value.next = transition;
     else value.outcomes = transition;
     return value;
@@ -482,7 +476,6 @@ function complexWorkflow() {
     kind: "IssueWorkflow",
     metadata: { id: "issue-lifecycle" },
     spec: {
-      trigger: "workgraph",
       initial: "a",
       defaults: {
         evaluator: "result-evaluator",
@@ -495,7 +488,7 @@ function complexWorkflow() {
         c: {
           type: "task",
           operation: "validate-issue",
-          worker: "issue-validator",
+          worker: automaticWorker("issue-validator"),
           inputs: { profile: "new-issue-default" },
           evaluator: "issue-validation-evaluator",
           outcomes: { "needs-info": "d", continue: "e", reject: "f" },
@@ -526,21 +519,20 @@ function complexWorkflow() {
           orchestrator: "validation-stage-coordinator",
           maxReworkAttempts: 2,
           children: {
-            join: "all",
             tasks: {
               title: {
                 operation: "validate-title",
-                worker: "issue-validator",
+                worker: automaticWorker("issue-validator"),
                 inputs: { field: "title" },
               },
               body: {
                 operation: "validate-body",
-                worker: "issue-validator",
+                worker: automaticWorker("issue-validator"),
                 inputs: { field: "body" },
               },
               reproduction: {
                 operation: "validate-reproduction",
-                worker: "issue-validator",
+                worker: automaticWorker("issue-validator"),
                 inputs: { section: "reproduction" },
               },
             },
@@ -561,7 +553,7 @@ test("linear v1 authoring and test case match the compiled sequence", async () =
     read(TEST_CASE_PATH).then(JSON.parse),
   ]);
   assert.match(yaml, /^apiVersion: workgraph\.drasi\.io\/v1$/m);
-  assert.match(yaml, /^  trigger: workgraph$/m);
+  assert.doesNotMatch(yaml, /^\s+trigger:/m);
   assert.match(yaml, /^  initial: a$/m);
   assert.match(yaml, /^    maxReworkAttempts: 3$/m);
   assert.doesNotMatch(yaml, /\bagent:|\bmaxRework:|waitFor:|^\s+[A-H]:/m);
@@ -601,7 +593,6 @@ test("linear v1 authoring and test case match the compiled sequence", async () =
     assert.equal(step.transition.type, "next");
     assert.deepEqual(Object.values(step.executionPolicies), [
       {
-        workerId: "issue-worker",
         evaluatorId: "result-evaluator",
         orchestratorId: "workflow-coordinator",
         maxReworkAttempts: 3,
@@ -647,7 +638,9 @@ test("linear v1 authoring and test case match the compiled sequence", async () =
   ]);
   assert.equal(typeof testCase.spec.rootIssue.title, "string");
   assert.equal(typeof testCase.spec.rootIssue.body, "string");
-  assert.deepEqual(testCase.spec.rootIssue.labels, ["workgraph"]);
+  assert.deepEqual(testCase.spec.rootIssue.labels, [
+    "workgraph:issue-lifecycle",
+  ]);
   assert.deepEqual(Object.keys(testCase.spec.steps), taskKeys);
   for (const stepId of taskKeys) {
     const step = testCase.spec.steps[stepId];
@@ -657,16 +650,13 @@ test("linear v1 authoring and test case match the compiled sequence", async () =
     assert.deepEqual(step.result.output, { step: stepId });
     assert.equal(step.evaluationVerdict, "accepted");
   }
-  assert.deepEqual(Object.keys(testCase.spec.expected), [
-    "topLevelTaskKeys",
-    "taskParents",
-    "terminalOutcome",
-  ]);
+  validateTestCaseExpected(testCase.spec.expected);
   assert.deepEqual(testCase.spec.expected.topLevelTaskKeys, taskKeys);
   assert.deepEqual(
     testCase.spec.expected.taskParents,
     Object.fromEntries(taskKeys.map((taskKey) => [taskKey, null])),
   );
+  assert.deepEqual(testCase.spec.expected.flowEntries, []);
   const traversed = [];
   let stepId = definition.initialStepId;
   while (definition.steps[stepId].type === "task") {
@@ -700,7 +690,6 @@ test("linear v1 authoring and test case match the compiled sequence", async () =
   extraPolicy.steps.c.executionPolicies[
     protocolId("task-definition", "extra-policy")
   ] = {
-    workerId: "issue-worker",
     evaluatorId: "result-evaluator",
     orchestratorId: "workflow-coordinator",
     maxReworkAttempts: 3,
@@ -710,11 +699,11 @@ test("linear v1 authoring and test case match the compiled sequence", async () =
     /exactly match all recursive taskDefinitionIds/,
   );
 
-  const wrongWorker = clone(definition);
-  wrongWorker.steps.c.executionPolicies[cId].workerId = "other-worker";
+  const obsoleteWorker = clone(definition);
+  obsoleteWorker.steps.c.executionPolicies[cId].workerId = "issue-worker";
   assert.throws(
-    () => normalizeCompiledWorkflowDefinition(wrongWorker),
-    /workerId must be one of its permitted executors/,
+    () => normalizeCompiledWorkflowDefinition(obsoleteWorker),
+    /invalid properties/,
   );
 });
 
@@ -790,9 +779,19 @@ test("high-level IssueWorkflow shape is strict and resolves all graph references
   const workflow = linearWorkflow();
   assert.deepEqual(normalizeIssueWorkflow(workflow), COMPILED_OUTPUT.definition);
 
-  const wrongTrigger = clone(workflow);
-  wrongTrigger.spec.trigger = "new";
-  assert.throws(() => normalizeIssueWorkflow(wrongTrigger), /must be workgraph/);
+  const obsoleteTrigger = clone(workflow);
+  obsoleteTrigger.spec.trigger = "workgraph";
+  assert.throws(
+    () => normalizeIssueWorkflow(obsoleteTrigger),
+    /properties must be exactly/,
+  );
+
+  const obsoleteJoin = complexWorkflow();
+  obsoleteJoin.spec.steps.g.children.join = "all";
+  assert.throws(
+    () => normalizeIssueWorkflow(obsoleteJoin),
+    /properties must be exactly/,
+  );
 
   const inlineWait = clone(workflow);
   inlineWait.spec.steps.b.next = {
@@ -867,11 +866,10 @@ test("recursive child namespaces and overrides are independent at every depth", 
     orchestrator: "validation-stage-coordinator",
     maxReworkAttempts: 1,
     children: {
-      join: "all",
       tasks: {
         a: {
           operation: "validate-title-format",
-          worker: "issue-validator",
+          worker: automaticWorker("issue-validator"),
           inputs: { format: "plain-text" },
           maxReworkAttempts: 0,
         },
@@ -892,7 +890,7 @@ test("graph validation rejects unreachable work and cycles without waits", () =>
   unreachable.spec.steps.orphan = {
     type: "task",
     operation: "orphan",
-    worker: "issue-worker",
+    worker: automaticWorker("issue-worker"),
     inputs: {},
     next: "completed",
   };
@@ -1737,10 +1735,10 @@ test("Route matrix, advance pair, exclusions, and bounded same-task rework are s
 });
 
 function scopedWorkflow() {
-  const task = (operation, worker, next, extra = {}) => ({
+  const task = (operation, actorId, next, extra = {}) => ({
     type: "task",
     operation,
-    worker,
+    worker: automaticWorker(actorId),
     inputs: {},
     ...extra,
     next,
@@ -1750,7 +1748,6 @@ function scopedWorkflow() {
     kind: "IssueWorkflow",
     metadata: { id: "scoped-control-flow" },
     spec: {
-      trigger: "workgraph",
       initial: "run",
       defaults: {
         evaluator: "result-evaluator",
@@ -1764,11 +1761,10 @@ function scopedWorkflow() {
         completed: { type: "terminal", outcome: "completed" },
         fix: task("coordinate-validation", "issue-worker", "fix-cleanup", {
           children: {
-            join: "all",
             tasks: {
               "fix-evidence": {
                 operation: "validate-reproduction",
-                worker: "issue-validator",
+                worker: automaticWorker("issue-validator"),
                 inputs: { section: "reproduction" },
               },
             },
@@ -1780,14 +1776,14 @@ function scopedWorkflow() {
         audit: {
           type: "task",
           operation: "validate-title",
-          worker: "issue-validator",
+          worker: automaticWorker("issue-validator"),
           inputs: { field: "title" },
           next: "audit-verify",
         },
         "audit-verify": {
           type: "task",
           operation: "validate-body",
-          worker: "issue-validator",
+          worker: automaticWorker("issue-validator"),
           inputs: { field: "body" },
           next: "audit-complete",
         },
@@ -1839,7 +1835,7 @@ test("scoped flow entries compile to disjoint routed scopes with nested owners",
     2,
   );
   for (const stepId of ["fix-cleanup", "audit", "audit-verify", "notify"]) {
-    assert.equal("flowEntries" in definition.steps[stepId].taskDefinition, false);
+    assert.deepEqual(definition.steps[stepId].taskDefinition.flowEntries, []);
   }
 
   const flow = resolveCompiledFlowScopes(definition);
@@ -1945,7 +1941,7 @@ test("scoped flow entries compile to disjoint routed scopes with nested owners",
   );
 });
 
-test("existing v1 definitions never mention flowEntries and keep their digests", async () => {
+test("compiled definitions without routed scopes emit empty flowEntries", async () => {
   for (const [name, digest] of [
     ["issue-lifecycle", COMPILED_OUTPUT.definitionDigest],
     ["fork-join-lifecycle", null],
@@ -1957,11 +1953,23 @@ test("existing v1 definitions never mention flowEntries and keep their digests",
         JSON.parse,
       ),
     ]);
-    assert.equal(body.includes("flowEntries"), false);
+    assert.equal(body.includes('"flowEntries": []'), true);
     assert.equal(
       JSON.stringify(expected.definition).includes("flowEntries"),
       false,
     );
+    const definitions = [];
+    const collect = (task) => {
+      definitions.push(task);
+      for (const child of task.children) collect(child);
+    };
+    collect(expected.workgraphDefinition.root);
+    for (const step of Object.values(expected.workgraphDefinition.steps)) {
+      if (step.type === "task") collect(step.taskDefinition);
+    }
+    for (const taskDefinition of definitions) {
+      assert.deepEqual(taskDefinition.flowEntries, []);
+    }
     assert.equal(expected.canonicalDefinitionBody, body);
     assert.equal(expected.definitionDigest, expected.workgraphDefinition.digest);
     if (digest) assert.equal(expected.definitionDigest, digest);
@@ -2016,7 +2024,7 @@ test("flow entry declarations are strict at authoring and canonical layers", asy
     workflow.spec.steps["notify-complete"] = {
       type: "task",
       operation: "finalize-issue",
-      worker: "issue-worker",
+      worker: automaticWorker("issue-worker"),
       inputs: {},
       next: "notify",
     };
@@ -2040,11 +2048,13 @@ test("flow entry declarations are strict at authoring and canonical layers", asy
 
   const bounded = scopedWorkflow();
   bounded.spec.steps.run.children = {
-    join: "all",
     tasks: Object.fromEntries(
       Array.from({ length: MAX_TASK_DEFINITION_CHILDREN - 1 }, (_, index) => [
         `child-${String(index).padStart(2, "0")}`,
-        { operation: "validate-title", worker: "issue-validator" },
+        {
+          operation: "validate-title",
+          worker: automaticWorker("issue-validator"),
+        },
       ]),
     ),
   };
@@ -2078,24 +2088,51 @@ test("flow entry declarations are strict at authoring and canonical layers", asy
     () => normalizeCompiledWorkflowDefinition(unknownKey),
     /properties must be exactly/,
   );
+
+  const missingEntries = clone(expected.workgraphDefinition);
+  delete missingEntries.root.flowEntries;
+  assert.throws(
+    () => normalizeCompiledWorkflowDefinition(missingEntries),
+    /properties must be exactly/,
+  );
+
+  const nullEntries = clone(expected.workgraphDefinition);
+  nullEntries.root.flowEntries = null;
+  assert.throws(
+    () => normalizeCompiledWorkflowDefinition(nullEntries),
+    /flowEntries must be an array/,
+  );
+
+  const missingStaticInputs = clone(expected.workgraphDefinition);
+  delete missingStaticInputs.root.staticInputs;
+  assert.throws(
+    () => normalizeCompiledWorkflowDefinition(missingStaticInputs),
+    /properties must be exactly/,
+  );
+
+  const nullStaticInputs = clone(expected.workgraphDefinition);
+  nullStaticInputs.root.staticInputs = null;
+  assert.throws(
+    () => normalizeCompiledWorkflowDefinition(nullStaticInputs),
+    /staticInputs must be an object/,
+  );
 });
 
 test("nested owners and scope fork depth stay recursively bounded", async () => {
   const expected = JSON.parse(await read(SCOPED_EXPECTED_PATH));
   const policy = {
-    workerId: "issue-validator",
     evaluatorId: "result-evaluator",
     orchestratorId: "workflow-coordinator",
     maxReworkAttempts: 3,
   };
-  const leaf = (key, flowEntries = null) => ({
+  const leaf = (key, flowEntries = []) => ({
     taskDefinitionId: protocolId("task-definition", `scoped-${key}`),
     taskKey: key,
     operation: "validate-title",
     routing: { permittedExecutors: ["issue-validator"] },
     staticInputs: {},
     children: [],
-    ...(flowEntries ? { flowEntries } : {}),
+    flowEntries,
   });
   const register = (definition, task) => {
     definition.steps.fix.executionPolicies[task.taskDefinitionId] = {
@@ -2107,7 +2144,7 @@ test("nested owners and scope fork depth stay recursively bounded", async () => 
   // A nested fixed child may own a routed scope. Its physical fork depth counts
   // the owner's own nesting: fix (1) -> owner child (1) -> audit (3).
   const nested = clone(expected.workgraphDefinition);
-  delete nested.steps.fix.taskDefinition.flowEntries;
+  nested.steps.fix.taskDefinition.flowEntries = [];
   const owner = leaf("audit-owner", ["audit"]);
   // `fix` keeps its existing fixed child; children stay ordered by taskKey.
   nested.steps.fix.taskDefinition.children = [
@@ -2154,7 +2191,6 @@ test("nested owners and scope fork depth stay recursively bounded", async () => 
   const registerTrunk = (task) => {
     trunk.steps.run.executionPolicies[task.taskDefinitionId] = {
       ...policy,
-      workerId: "issue-validator",
     };
     for (const child of task.children) registerTrunk(child);
   };
@@ -2221,11 +2257,10 @@ test("reserved runtime inputs cannot be authored where the runtime writes them",
       normalizeIssueWorkflow(
         authored((steps) => {
           steps.audit.children = {
-            join: "all",
             tasks: {
               probe: {
                 operation: "validate-body",
-                worker: "issue-validator",
+                worker: automaticWorker("issue-validator"),
                 inputs: { workgraphScopeParentTaskId: "x" },
               },
             },
@@ -2268,7 +2303,7 @@ test("reserved runtime inputs cannot be authored where the runtime writes them",
       ),
     /uses reserved routed successor input 'workgraphPredecessorTaskId'/,
   );
-  // The rule applies to legacy trunk successors too: `b` follows `a`.
+  // The rule also applies to trunk successors: `b` follows `a`.
   assert.throws(
     () =>
       normalizeCompiledWorkflowDefinition(
@@ -2276,15 +2311,14 @@ test("reserved runtime inputs cannot be authored where the runtime writes them",
       ),
     /uses reserved routed successor input 'workgraphPredecessorTaskId'/,
   );
-  // The legacy initial step is not a transition target, so it is unaffected.
+  // The initial step is not a transition target, so it is unaffected.
   assert.doesNotThrow(() =>
     normalizeCompiledWorkflowDefinition(
       collide(mixed, "a", "workgraphPredecessorTaskId"),
     ),
   );
 
-  // Every shipped Demo definition stays free of reserved authored inputs, so
-  // the committed bodies and digests are unchanged by this rule.
+  // Every shipped Demo definition stays free of reserved authored inputs.
   for (const name of [
     "issue-lifecycle",
     "fork-join-lifecycle",
@@ -2383,6 +2417,7 @@ test("the scoped test case matches the mechanically selected routed scopes", asy
   ]);
   const definition = expected.workgraphDefinition;
   const selected = selectWorkGraphTestCase(definition, testCase);
+  validateTestCaseExpected(testCase.spec.expected);
 
   assert.deepEqual(selected.topLevelTaskKeys, ["run"]);
   assert.deepEqual(
@@ -2418,12 +2453,6 @@ test("the scoped test case matches the mechanically selected routed scopes", asy
 
   // The mock deserializes with deny_unknown_fields, so the additive shape must
   // use exactly these camelCase keys.
-  assert.deepEqual(Object.keys(testCase.spec.expected).sort(), [
-    "flowEntries",
-    "taskParents",
-    "terminalOutcome",
-    "topLevelTaskKeys",
-  ]);
   for (const entry of testCase.spec.expected.flowEntries) {
     assert.deepEqual(Object.keys(entry), [
       "ownerTaskKey",
@@ -2472,28 +2501,45 @@ test("the scoped test case matches the mechanically selected routed scopes", asy
   );
 });
 
-test("existing test cases stay valid without the additive flowEntries field", async () => {
+test("every test case requires flowEntries and uses an empty array without routed scopes", async () => {
   for (const name of [
     "linear-sequence",
     "fork-join",
     "mixed-parallel",
     "mixed-skip",
     "mixed-reject",
+    "human-parity",
+    "assigner-parity",
   ]) {
     const testCase = JSON.parse(
       await read(`.github/workgraph/tests/${name}-v1.json`),
     );
-    assert.equal("flowEntries" in testCase.spec.expected, false);
+    validateTestCaseExpected(testCase.spec.expected);
+    assert.deepEqual(testCase.spec.expected.flowEntries, []);
+
+    const preFlowCase = clone(testCase);
+    delete preFlowCase.spec.expected.flowEntries;
+    assert.throws(
+      () => validateTestCaseExpected(preFlowCase.spec.expected),
+      /expected\.flowEntries is required/,
+    );
+
+    const nullFlowCase = clone(testCase);
+    nullFlowCase.spec.expected.flowEntries = null;
+    assert.throws(
+      () => validateTestCaseExpected(nullFlowCase.spec.expected),
+      /expected\.flowEntries must be an array/,
+    );
   }
 });
 
 // An authored chain of nested scopes: `plan` launches `flow-1`, which launches
 // `flow-2`, and so on. The deepest entry sits at fork depth `levels`.
 function nestedFlowChain(levels, childDepth = 0) {
-  const task = (operation, worker, next, extra = {}) => ({
+  const task = (operation, actorId, next, extra = {}) => ({
     type: "task",
     operation,
-    worker,
+    worker: automaticWorker(actorId),
     inputs: {},
     ...extra,
     next,
@@ -2502,11 +2548,10 @@ function nestedFlowChain(levels, childDepth = 0) {
     depth === 0
       ? undefined
       : {
-          join: "all",
           tasks: {
             [`nested-${depth}`]: {
               operation: "validate-title",
-              worker: "issue-validator",
+              worker: automaticWorker("issue-validator"),
               ...(depth > 1 ? { children: childTree(depth - 1) } : {}),
             },
           },
@@ -2537,7 +2582,6 @@ function nestedFlowChain(levels, childDepth = 0) {
     kind: "IssueWorkflow",
     metadata: { id: "deep-flow" },
     spec: {
-      trigger: "workgraph",
       initial: "plan",
       defaults: {
         evaluator: "result-evaluator",
@@ -2584,23 +2628,20 @@ test("authored scope fork depth bounds recursive children like the compiler", as
   assert.equal(flow.scopes.get("audit").forkDepth, 2);
   const overNested = scopedWorkflow();
   overNested.spec.steps.audit.children = {
-    join: "all",
     tasks: {
       "audit-a": {
         operation: "validate-title",
-        worker: "issue-validator",
+        worker: automaticWorker("issue-validator"),
         children: {
-          join: "all",
           tasks: {
             "audit-b": {
               operation: "validate-body",
-              worker: "issue-validator",
+              worker: automaticWorker("issue-validator"),
               children: {
-                join: "all",
                 tasks: {
                   "audit-c": {
                     operation: "validate-reproduction",
-                    worker: "issue-validator",
+                    worker: automaticWorker("issue-validator"),
                   },
                 },
               },
@@ -2617,17 +2658,15 @@ test("authored scope fork depth bounds recursive children like the compiler", as
   // Two levels beneath the same depth-2 scope is exactly the bound.
   const atBound = scopedWorkflow();
   atBound.spec.steps.audit.children = {
-    join: "all",
     tasks: {
       "audit-a": {
         operation: "validate-title",
-        worker: "issue-validator",
+        worker: automaticWorker("issue-validator"),
         children: {
-          join: "all",
           tasks: {
             "audit-b": {
               operation: "validate-body",
-              worker: "issue-validator",
+              worker: automaticWorker("issue-validator"),
             },
           },
         },
@@ -2649,7 +2688,6 @@ function humanParityWorkflow(instructions) {
     kind: "IssueWorkflow",
     metadata: { id: "human-parity" },
     spec: {
-      trigger: "workgraph",
       initial: "draft",
       defaults: {
         evaluator: "result-evaluator",
@@ -2660,7 +2698,7 @@ function humanParityWorkflow(instructions) {
         draft: {
           type: "task",
           operation: "draft-proposal",
-          worker: "human-agentofreality",
+          worker: automaticWorker("human-agentofreality"),
           inputs: {},
           instructions: instructions.draft,
           next: "review",
@@ -2668,7 +2706,7 @@ function humanParityWorkflow(instructions) {
         review: {
           type: "task",
           operation: "normalize-issue",
-          worker: "issue-worker",
+          worker: automaticWorker("issue-worker"),
           evaluator: "human-agentofreality",
           inputs: {},
           instructions: instructions.review,
@@ -2712,14 +2750,6 @@ test("human parity compiles a human worker and a human evaluator identically", a
   ]);
   assert.equal(review.taskDefinition.operation, "normalize-issue");
   assert.equal(
-    review.executionPolicies[review.taskDefinition.taskDefinitionId].workerId,
-    "issue-worker",
-  );
-  assert.equal(
-    draft.executionPolicies[draft.taskDefinition.taskDefinitionId].workerId,
-    "human-agentofreality",
-  );
-  assert.equal(
     draft.executionPolicies[draft.taskDefinition.taskDefinitionId].evaluatorId,
     "result-evaluator",
   );
@@ -2741,7 +2771,10 @@ test("human parity compiles a human worker and a human evaluator identically", a
     rationale: "string",
   });
   assert.equal("resultSchema" in review.taskDefinition.instructions, false);
-  assert.match(yaml, /^      worker: human-agentofreality$/m);
+  assert.match(
+    yaml,
+    /^      worker: \{"candidates": \["human-agentofreality"\], "selection": "first-available"\}$/m,
+  );
   assert.match(yaml, /^        acceptanceCriteria:$/m);
 
   assert.deepEqual(
@@ -2768,7 +2801,7 @@ test("human parity compiles a human worker and a human evaluator identically", a
   ]);
 });
 
-test("a candidate worker set canonicalizes to a sorted permitted executor set", async () => {
+test("explicit worker candidate sets canonicalize to sorted permitted executors", async () => {
   const expected = JSON.parse(await read(HUMAN_EXPECTED_PATH));
   const instructions = {
     draft: expected.definition.spec.steps.draft.instructions,
@@ -2796,13 +2829,9 @@ test("a candidate worker set canonicalizes to a sorted permitted executor set", 
     workerSelectorCandidates(authored.spec.steps.draft.worker),
     ["human-agentofreality", "zulu-actor"],
   );
-  assert.equal(
-    workerSelectorPreferred(authored.spec.steps.draft.worker),
-    "human-agentofreality",
-  );
-  // A single-candidate set is the scalar form.
-  assert.deepEqual(workerSelectorCandidates("solo-actor"), ["solo-actor"]);
-  assert.equal(workerSelectorPreferred("solo-actor"), "solo-actor");
+  assert.deepEqual(workerSelectorCandidates(automaticWorker("solo-actor")), [
+    "solo-actor",
+  ]);
   assert.deepEqual(
     workerSelectorCandidates(
       normalizeIssueWorkflow(withCandidates(["human-agentofreality"])).spec
@@ -2825,6 +2854,11 @@ test("a candidate worker set canonicalizes to a sorted permitted executor set", 
     () => normalizeIssueWorkflow(withCandidates(["Actor"])),
     /must be 1-64 lowercase letters/,
   );
+  assert.throws(() => {
+    const workflow = humanParityWorkflow(instructions);
+    workflow.spec.steps.draft.worker = "human-agentofreality";
+    return normalizeIssueWorkflow(workflow);
+  }, /worker must be an object/);
   assert.throws(() => {
     const workflow = withCandidates(["a-actor"]);
     workflow.spec.steps.draft.worker.selection = "round-robin";
@@ -2857,20 +2891,12 @@ test("a candidate worker set canonicalizes to a sorted permitted executor set", 
     () => normalizeCompiledWorkflowDefinition(compiled),
     /must not permit its orchestrator 'workflow-coordinator' to execute the task/,
   );
-  // Membership authorizes execution; the policy default must be a member.
-  draft.taskDefinition.routing.permittedExecutors = ["some-other-actor"];
+  const obsoleteWorker = clone(expected.workgraphDefinition);
+  obsoleteWorker.steps.draft.executionPolicies[draftId].workerId =
+    "human-agentofreality";
   assert.throws(
-    () => normalizeCompiledWorkflowDefinition(compiled),
-    /workerId must be one of its permitted executors/,
-  );
-  draft.taskDefinition.routing.permittedExecutors = [
-    "human-agentofreality",
-    "some-other-actor",
-  ];
-  assert.doesNotThrow(() => normalizeCompiledWorkflowDefinition(compiled));
-  assert.equal(
-    draft.executionPolicies[draftId].workerId,
-    "human-agentofreality",
+    () => normalizeCompiledWorkflowDefinition(obsoleteWorker),
+    /invalid properties/,
   );
 });
 
@@ -3147,7 +3173,7 @@ test("TaskResponse evidence is role and subject bound and carries raw text verba
   );
 });
 
-test("Result and Evaluation carry optional Response provenance without changing legacy bytes", async () => {
+test("Result and Evaluation carry optional Response provenance", async () => {
   const response = workerResponse();
   const reference = { kind: "TaskResponse", id: response.responseId };
   const result = {
@@ -3211,7 +3237,7 @@ test("Result and Evaluation carry optional Response provenance without changing 
   );
   assert.equal(attributedEvaluation.evaluationId, evaluation.evaluationId);
 
-  // Every committed body predates Response and instructions and is unchanged.
+  // Bodies without Response provenance remain canonical.
   for (const name of [
     "issue-lifecycle",
     "fork-join-lifecycle",

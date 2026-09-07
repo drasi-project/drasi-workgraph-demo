@@ -5,7 +5,13 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const plugins = resolve(root, "..", "drasi-dogfooding", "git-workgraph", "plugins");
+const configuredPlugins = process.env.WORKGRAPH_PLUGINS_DIR;
+if (!configuredPlugins) {
+  throw new Error(
+    "WORKGRAPH_PLUGINS_DIR must point to the canonical WorkGraph plugins workspace",
+  );
+}
+const plugins = resolve(root, configuredPlugins);
 const targets = [
   "issue-lifecycle",
   "fork-join-lifecycle",
@@ -24,10 +30,38 @@ const targets = [
   body: resolve(root, `.github/workgraph/workflows/${name}-v1.body`),
 }));
 
-if (!existsSync(resolve(plugins, "workgraph-kernel/Cargo.toml"))) {
-  console.log("SKIP: sibling workgraph-compile is unavailable");
-  process.exit(0);
+function validateExplicitWorkers(definition) {
+  const validateTask = (task, context) => {
+    const keys =
+      task.worker && typeof task.worker === "object" && !Array.isArray(task.worker)
+        ? Object.keys(task.worker).sort()
+        : [];
+    if (JSON.stringify(keys) !== JSON.stringify(["candidates", "selection"])) {
+      throw new Error(`${context}.worker must be an explicit candidate set`);
+    }
+    for (const [id, child] of Object.entries(task.children?.tasks ?? {})) {
+      validateTask(child, `${context}.children.tasks.${id}`);
+    }
+  };
+  for (const [id, step] of Object.entries(definition.spec.steps)) {
+    if (step.type === "task") validateTask(step, `workflow step '${id}'`);
+  }
 }
+
+if (!existsSync(resolve(plugins, "workgraph-kernel/Cargo.toml"))) {
+  throw new Error(
+    `WORKGRAPH_PLUGINS_DIR does not contain workgraph-kernel: ${plugins}`,
+  );
+}
+
+assert.equal(
+  readFileSync(
+    resolve(root, ".github/workgraph/contracts/runtime-v1.json"),
+    "utf8",
+  ),
+  readFileSync(resolve(plugins, "..", "contract/runtime-v1.json"), "utf8"),
+  "vendored runtime-v1 contract differs from the canonical WorkGraph contract",
+);
 
 for (const target of targets) {
   const result = spawnSync(
@@ -48,18 +82,20 @@ for (const target of targets) {
     process.stderr.write(result.stderr);
     process.exit(result.status ?? 1);
   }
+  const output = JSON.parse(result.stdout);
+  validateExplicitWorkers(output.definition);
 
   if (process.argv.includes("--write")) {
     writeFileSync(target.fixture, result.stdout);
-    writeFileSync(target.body, JSON.parse(result.stdout).canonicalDefinitionBody);
+    writeFileSync(target.body, output.canonicalDefinitionBody);
   }
 
   assert.deepEqual(
-    JSON.parse(result.stdout),
+    output,
     JSON.parse(readFileSync(target.fixture, "utf8")),
     `${target.name} compiler fixture is stale`,
   );
 }
 console.log(
-  `PASS: sibling workgraph-compile output matches ${targets.length} Demo fixtures exactly`,
+  `PASS: canonical WorkGraph artifacts match the vendored contract and ${targets.length} Demo fixtures`,
 );

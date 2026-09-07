@@ -11,7 +11,6 @@ import {
   validateRootRuntimeTask,
 } from "../.github/mcp/workgraph-v1-definition.mjs";
 import {
-  deriveWorkGraphAdmissionId,
   deriveWorkGraphRootIssueContentDigest,
   deriveWorkGraphRootTaskId,
   deriveWorkGraphWorkflowRunId,
@@ -28,8 +27,8 @@ const COMPILED_PATH = resolve(
   "fixtures/v1/issue-lifecycle.expected.json",
 );
 const CANONICAL_GENERIC_INVENTORY_PATH = resolve(
-  REPOSITORY_ROOT,
-  "../drasi-dogfooding/git-workgraph/contract/runtime-v1.json",
+  WORKGRAPH_ROOT,
+  "contracts/runtime-v1.json",
 );
 const GENERIC_QUERY_IDS = [
   "wg-root-state",
@@ -54,7 +53,7 @@ function exact(value, keys, label) {
 }
 
 function localWorkGraphPath(configuredPath) {
-  const resolved = resolve(dirname(INPUTS_PATH), configuredPath);
+  const resolved = resolve(REPOSITORY_ROOT, configuredPath);
   const location = relative(WORKGRAPH_ROOT, resolved);
   if (location.startsWith("..") || resolve(WORKGRAPH_ROOT, location) !== resolved) {
     throw new Error(`proof body path escapes .github/workgraph: ${configuredPath}`);
@@ -160,19 +159,12 @@ export function validateGeneratedQueryInventory(queryBundle) {
   return compiledInventory;
 }
 
-export async function buildWorkGraphV1Proof() {
-  const inputs = JSON.parse(await readFile(INPUTS_PATH, "utf8"));
-  const compiled = JSON.parse(await readFile(COMPILED_PATH, "utf8"));
-  const runtimeContract = JSON.parse(
-    await readFile(CANONICAL_GENERIC_INVENTORY_PATH, "utf8"),
-  );
-  const canonicalGenericInventory = runtimeContract.factQueries;
+export function validateProofInputs(inputs) {
   exact(
     inputs,
     [
       "runtimeContract",
-      "definition",
-      "rootIssueAdmission",
+      "rootIssue",
       "expectedRootTask",
       "expectedLifecycle",
       "leaseValidation",
@@ -181,6 +173,48 @@ export async function buildWorkGraphV1Proof() {
     "proof inputs",
   );
   validateActivation(inputs.activation);
+  if (
+    !Array.isArray(inputs.rootIssue?.workflowMappings) ||
+    inputs.rootIssue.workflowMappings.length !== 1
+  ) {
+    throw new Error(
+      "proof Root Issue requires exactly one source-supplied workflow mapping",
+    );
+  }
+  const [mapping] = inputs.rootIssue.workflowMappings;
+  exact(
+    mapping,
+    [
+      "mappingId",
+      "label",
+      "admissionId",
+      "title",
+      "body",
+      "definitionRepository",
+      "definitionRef",
+      "definitionPath",
+    ],
+    "workflow mapping",
+  );
+  if (
+    mapping.mappingId !== "issue-lifecycle" ||
+    mapping.label !== `workgraph:${mapping.mappingId}` ||
+    mapping.definitionRepository !== "drasi-project/drasi-workgraph-demo" ||
+    mapping.definitionRef !== "${WORKGRAPH_DEMO_REF}"
+  ) {
+    throw new Error("proof workflow mapping identity is not canonical");
+  }
+  return mapping;
+}
+
+export async function buildWorkGraphV1Proof() {
+  const inputs = JSON.parse(await readFile(INPUTS_PATH, "utf8"));
+  const compiled = JSON.parse(await readFile(COMPILED_PATH, "utf8"));
+  const runtimeContract = JSON.parse(
+    await readFile(CANONICAL_GENERIC_INVENTORY_PATH, "utf8"),
+  );
+  const canonicalGenericInventory = runtimeContract.factQueries;
+  const mapping = validateProofInputs(inputs);
 
   exact(
     inputs.runtimeContract,
@@ -208,7 +242,7 @@ export async function buildWorkGraphV1Proof() {
     );
   }
 
-  const definitionPath = localWorkGraphPath(inputs.definition.bodyPath);
+  const definitionPath = localWorkGraphPath(mapping.definitionPath);
   const definitionBody = await readFile(definitionPath, "utf8");
   if (definitionBody !== compiled.canonicalDefinitionBody) {
     throw new Error("workflow definition differs from compiler output");
@@ -228,7 +262,7 @@ export async function buildWorkGraphV1Proof() {
   const genericInventory = queryDigestEntries(
     canonicalGenericInventory,
     GENERIC_QUERY_IDS,
-    "canonical sibling runtime query inventory",
+    "vendored WorkGraph runtime query inventory",
   );
   const contractDigest = queryContractDigest([
     ...genericInventory,
@@ -240,13 +274,11 @@ export async function buildWorkGraphV1Proof() {
     );
   }
   const definition = parseCompiledWorkflowDefinition(definitionBody);
-  for (const field of ["workflowDefinitionId", "version", "digest"]) {
-    if (definition[field] !== inputs.definition[field]) {
-      throw new Error(`workflow definition ${field} differs from proof inputs`);
-    }
+  if (definition.workflowDefinitionId !== mapping.mappingId) {
+    throw new Error("workflow mapping ID must match its definition ID");
   }
 
-  const rootIssue = inputs.rootIssueAdmission;
+  const rootIssue = inputs.rootIssue;
   exact(
     rootIssue,
     [
@@ -254,41 +286,39 @@ export async function buildWorkGraphV1Proof() {
       "repositoryName",
       "repositoryNodeId",
       "issueNumber",
-      "issueNodeId",
-      "label",
-      "deliveryId",
-      "admissionId",
-      "title",
-      "body",
-      "contentDigest",
+      "rootIssueId",
+      "isOpen",
+      "workgraphLabels",
+      "workgraphInclude",
+      "workflowMappings",
     ],
     "Root Issue admission",
   );
   if (
     rootIssue.repositoryOwner !== "drasi-project" ||
     rootIssue.repositoryName !== "drasi-workgraph-demo" ||
-    rootIssue.label !== "workgraph"
+    rootIssue.isOpen !== true ||
+    rootIssue.workgraphInclude !== true ||
+    JSON.stringify(rootIssue.workgraphLabels) !== JSON.stringify([mapping.label])
   ) {
     throw new Error("Root Issue admission repository or label is not canonical");
   }
-  const admissionId = deriveWorkGraphAdmissionId(
-    rootIssue.issueNodeId,
-    rootIssue.deliveryId,
-  );
-  const contentDigest = deriveWorkGraphRootIssueContentDigest(
-    rootIssue.title,
-    rootIssue.body,
-  );
+  const admissionId = mapping.admissionId;
   if (
-    admissionId !== rootIssue.admissionId ||
-    contentDigest !== rootIssue.contentDigest
+    !/^urn:drasi:workgraph:id:v1:admission:sha256:[0-9a-f]{64}$/.test(
+      admissionId,
+    )
   ) {
-    throw new Error("Root Issue admission identities are not canonical");
+    throw new Error("workflow mapping admissionId is not canonical");
   }
+  const contentDigest = deriveWorkGraphRootIssueContentDigest(
+    mapping.title,
+    mapping.body,
+  );
 
   const workflowRunId = deriveWorkGraphWorkflowRunId(
     rootIssue.repositoryNodeId,
-    rootIssue.issueNodeId,
+    rootIssue.rootIssueId,
     admissionId,
     definition.workflowDefinitionId,
     definition.version,
@@ -300,7 +330,7 @@ export async function buildWorkGraphV1Proof() {
   );
   const rootTask = {
     taskId,
-    rootIssueId: rootIssue.issueNodeId,
+    rootIssueId: rootIssue.rootIssueId,
     workflowRunId,
     workflowDefinitionId: definition.workflowDefinitionId,
     workflowDefinitionVersion: definition.version,
@@ -315,7 +345,7 @@ export async function buildWorkGraphV1Proof() {
         repositoryName: rootIssue.repositoryName,
         repositoryNodeId: rootIssue.repositoryNodeId,
         issueNumber: rootIssue.issueNumber,
-        issueNodeId: rootIssue.issueNodeId,
+        issueNodeId: rootIssue.rootIssueId,
         admissionId,
         contentDigest,
       },
@@ -382,17 +412,11 @@ export async function buildWorkGraphV1Proof() {
   }
 
   return {
-    rootIssueAdmission: rootIssue,
-    workflowDefinition: definition,
+    rootIssue,
     expectedRootTask: {
       value: rootTask,
       body: formatRuntimeTask(rootTask),
       firstLifecycleState: "ASSIGN",
-    },
-    expectedAdmissionQuery: {
-      queryId: "wg-issues-waiting-for-admission",
-      rootIssueId: rootIssue.issueNodeId,
-      admissionId,
     },
     activation: inputs.activation,
   };

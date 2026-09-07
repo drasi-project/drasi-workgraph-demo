@@ -4,8 +4,7 @@ WorkGraphWorkflowDefinition/v1
 {
   "workflowDefinitionId": "assigner-parity",
   "version": "v1",
-  "digest": "sha256:82b954c015aaa71bf6b69e36422816862db931d0b82072085da428af85b1842d",
-  "trigger": "workgraph",
+  "digest": "sha256:f2f84b9d92b35bdfc613bc9a8a6ce6067319a4d5f7d3fee6efc431dc60cb746e",
   "defaults": {
     "evaluator": "result-evaluator",
     "orchestrator": "workflow-coordinator",
@@ -31,7 +30,8 @@ WorkGraphWorkflowDefinition/v1
         "The result does not invent facts."
       ]
     },
-    "children": []
+    "children": [],
+    "flowEntries": []
   },
   "steps": {
     "agent-triage": {
@@ -55,11 +55,11 @@ WorkGraphWorkflowDefinition/v1
             "The proposal includes an acceptance check."
           ]
         },
-        "children": []
+        "children": [],
+        "flowEntries": []
       },
       "executionPolicies": {
         "urn:drasi:workgraph:id:v1:task-definition:sha256:e029db5930323f0c8fe3e9c7d325112e716b3a6dd1c67a894c400a5c4ff25eff": {
-          "workerId": "human-agentofreality",
           "evaluatorId": "result-evaluator",
           "orchestratorId": "workflow-coordinator",
           "assignerId": "assignment-coordinator",
@@ -96,11 +96,11 @@ WorkGraphWorkflowDefinition/v1
             "The result does not invent facts."
           ]
         },
-        "children": []
+        "children": [],
+        "flowEntries": []
       },
       "executionPolicies": {
         "urn:drasi:workgraph:id:v1:task-definition:sha256:89af6ea4cff38a4afeb46250678ab06e4c3bc653d1bee50f210edde522592efd": {
-          "workerId": "issue-validator",
           "evaluatorId": "result-evaluator",
           "orchestratorId": "workflow-coordinator",
           "assignerId": "human-agentofreality",

@@ -1,41 +1,131 @@
-version: 2
+version: 1
 actors:
   - actorId: issue-validator
     kind: agent
+    customAgent: issue-validator
+    createPullRequest: false
     slots: 1
     leaseDuration: PT30M
   - actorId: issue-coordinator
     kind: agent
+    customAgent: issue-coordinator
+    createPullRequest: false
     slots: 1
     leaseDuration: PT15M
   - actorId: issue-worker
     kind: agent
+    customAgent: issue-worker
+    createPullRequest: false
     slots: 2
     leaseDuration: PT30M
   - actorId: result-evaluator
     kind: agent
+    customAgent: result-evaluator
+    createPullRequest: false
     slots: 1
     leaseDuration: PT15M
   - actorId: issue-validation-evaluator
     kind: agent
+    customAgent: issue-validation-evaluator
+    createPullRequest: false
     slots: 1
     leaseDuration: PT15M
   - actorId: workflow-coordinator
     kind: agent
+    customAgent: workflow-coordinator
+    createPullRequest: false
     slots: 1
     leaseDuration: PT15M
   - actorId: validation-stage-coordinator
     kind: agent
+    customAgent: validation-stage-coordinator
+    createPullRequest: false
     slots: 1
     leaseDuration: PT15M
   - actorId: issue-info-requester
     kind: agent
+    customAgent: issue-info-requester
+    createPullRequest: false
     slots: 1
     leaseDuration: PT30M
   - actorId: assignment-coordinator
     kind: agent
+    customAgent: assignment-coordinator
+    createPullRequest: false
     slots: 1
     leaseDuration: PT15M
+  - actorId: issue-duplicate-checker
+    kind: agent
+    customAgent: issue-duplicate-checker
+    createPullRequest: false
+    slots: 1
+    leaseDuration: PT30M
+  - actorId: similar-issue-finder
+    kind: agent
+    customAgent: similar-issue-finder
+    createPullRequest: false
+    slots: 1
+    leaseDuration: PT30M
+  - actorId: issue-template-checker
+    kind: agent
+    customAgent: issue-template-checker
+    createPullRequest: false
+    slots: 1
+    leaseDuration: PT30M
+  - actorId: code-area-analyzer
+    kind: agent
+    customAgent: code-area-analyzer
+    createPullRequest: false
+    slots: 1
+    leaseDuration: PT30M
+  - actorId: issue-resolution-planner
+    kind: agent
+    customAgent: issue-resolution-planner
+    createPullRequest: true
+    slots: 1
+    leaseDuration: PT2H
+  - actorId: issue-implementer
+    kind: agent
+    customAgent: issue-implementer
+    createPullRequest: true
+    slots: 1
+    leaseDuration: PT2H
+  - actorId: pr-correctness-reviewer
+    kind: agent
+    customAgent: pr-correctness-reviewer
+    createPullRequest: false
+    slots: 1
+    leaseDuration: PT45M
+  - actorId: pr-design-reviewer
+    kind: agent
+    customAgent: pr-design-reviewer
+    createPullRequest: false
+    slots: 1
+    leaseDuration: PT45M
+  - actorId: pr-docs-reviewer
+    kind: agent
+    customAgent: pr-docs-reviewer
+    createPullRequest: false
+    slots: 1
+    leaseDuration: PT45M
+  - actorId: pr-prior-art-reviewer
+    kind: agent
+    customAgent: pr-prior-art-reviewer
+    createPullRequest: false
+    slots: 1
+    leaseDuration: PT45M
+  - actorId: pr-security-reviewer
+    kind: agent
+    customAgent: pr-security-reviewer
+    createPullRequest: false
+    slots: 1
+    leaseDuration: PT45M
+  - actorId: pr-testing-reviewer
+    kind: agent
+    customAgent: pr-testing-reviewer
+    createPullRequest: false
+    slots: 1
+    leaseDuration: PT45M
   - actorId: human-agentofreality
     kind: human
     slots: 1

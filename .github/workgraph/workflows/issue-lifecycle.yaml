@@ -4,7 +4,6 @@ metadata:
   id: issue-lifecycle
 
 spec:
-  trigger: workgraph
   initial: a
   defaults:
     evaluator: result-evaluator
@@ -14,25 +13,25 @@ spec:
     a:
       type: task
       operation: intake-issue
-      worker: issue-worker
+      worker: {"candidates": ["issue-worker"], "selection": "first-available"}
       inputs: {}
       next: b
     b:
       type: task
       operation: normalize-issue
-      worker: issue-worker
+      worker: {"candidates": ["issue-worker"], "selection": "first-available"}
       inputs: {}
       next: c
     c:
       type: task
       operation: inspect-issue
-      worker: issue-worker
+      worker: {"candidates": ["issue-worker"], "selection": "first-available"}
       inputs: {}
       next: d
     d:
       type: task
       operation: finalize-issue
-      worker: issue-worker
+      worker: {"candidates": ["issue-worker"], "selection": "first-available"}
       inputs: {}
       next: completed
     completed:

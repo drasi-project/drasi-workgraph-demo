@@ -47,6 +47,10 @@ close, or route a task.
 
 A task may pin actor-neutral `instructions`. Grade the Result against the pinned
 `acceptanceCriteria`, not against your own view of the Issue.
+For an agent-authored Result, accept only when `data.output.rootIssueComment`
+is non-empty, comment-ready Markdown that accurately reflects the Result and
+contains no fenced code block. The runtime publishes that exact candidate to
+the ordinary Root Issue only after acceptance.
 
 When a human authored the judgement you are recording, the runtime normalizes
 their reply into a canonical `WorkGraphTaskResponse/v1` on this task; that

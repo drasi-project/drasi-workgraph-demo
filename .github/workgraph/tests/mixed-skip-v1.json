@@ -10,7 +10,7 @@
       "title": "Mixed WorkGraph skip proof",
       "body": "Exercise the alternate branch that skips parallel work.",
       "labels": [
-        "workgraph"
+        "workgraph:mixed-control-flow"
       ]
     },
     "steps": {
@@ -65,7 +65,8 @@
         "c": null,
         "h": null
       },
-      "terminalOutcome": "completed"
+      "terminalOutcome": "completed",
+      "flowEntries": []
     }
   }
 }

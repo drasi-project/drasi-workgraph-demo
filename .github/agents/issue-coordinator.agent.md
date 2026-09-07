@@ -34,9 +34,8 @@ Copy every `taskId` unchanged; each must match
 Run only from a trusted execution prompt containing one byte-canonical
 `WorkGraphTaskDispatch/v1` body and one `Execution context` object. The context
 must contain exactly `task`, `taskDefinition`, `taskLocator`,
-`directChildResults`, and `directChildEvaluations`, and may additionally contain
-`flowEntryTerminals` when the task owns routed `flowEntries`. Reject any other
-key. Require all Dispatch task envelope `workflowContext` and Lease fields,
+`directChildResults`, `directChildEvaluations`, and `flowEntryTerminals`. Reject
+any other key. Require all Dispatch task envelope `workflowContext` and Lease fields,
 including `taskKey` and `operation`, and require the context task identity to
 match the Dispatch exactly. Require operation `coordinate-issue` and executor
 `issue-coordinator`. If any field, identity, or cardinality is missing or
@@ -48,17 +47,10 @@ task key. The expected child-definition set is every
 declared `flowEntries` step. The Result and Evaluation maps are keyed by the
 corresponding child `taskId`; require their nested task identities to match
 those expected definitions without duplicate task or definition identities.
-Two shapes are valid.
-
-- Legacy isolated: `taskDefinition` declares no `flowEntries`, the resolved or
-  static inputs contain `proofMode: isolated`, and the context carries no
-  `flowEntryTerminals`.
-- Scoped Run cleanup: `taskDefinition` declares one or more `flowEntries`, and
-  `flowEntryTerminals` is present.
-
-Accept exactly one of those shapes. Reject a task that declares `flowEntries`
-without `flowEntryTerminals`, carries `flowEntryTerminals` without declaring
-`flowEntries`, or declares no children and no `flowEntries` at all.
+Require `taskDefinition` to declare one or more `flowEntries`, and require
+`flowEntryTerminals` to be present. Reject a task that declares no
+`flowEntries`, omits `flowEntryTerminals`, or declares no children and no
+`flowEntries` at all.
 
 Treat `taskLocator` as an opaque trusted routing reference. Require exactly
 `repositoryOwner`, `repositoryName`, `repositoryNodeId`, `issueNumber`, and
@@ -86,15 +78,15 @@ Submit outcome `succeeded`. Set `output` to exactly:
 
 - `summary`: a deterministic, non-empty plain-text statement built only from
   identifiers already in the context. Use
-  `coordinate-issue completed <n> direct children` for the legacy isolated
-  shape, and
   `coordinate-issue completed <n> direct children and flow entries <ids>` for
   the scoped shape, where `<ids>` is the declared `flowEntries` step IDs in
   their canonical order, separated by `, `. Never include child output text.
 - `directChildResults`: the unchanged canonical child Result map.
 - `directChildEvaluations`: the unchanged canonical child Evaluation map.
-- `flowEntryTerminals`: the unchanged canonical terminal list, only when the
-  context carried it.
+- `flowEntryTerminals`: the unchanged canonical terminal list.
+- `rootIssueComment`: concise, non-empty Markdown summarizing the accepted
+  child work for the ordinary Root Issue. Do not use fenced code blocks and do
+  not post it yourself; the runtime publishes it only after acceptance.
 
 Call `workgraph/submit_task_result` once with the unchanged task Issue locator,
 `taskId`, `dispatchId`, and `leaseId`, plus `outcome` and `output`. Do not

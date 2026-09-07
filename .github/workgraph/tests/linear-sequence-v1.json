@@ -10,7 +10,7 @@
       "title": "Linear WorkGraph proof",
       "body": "Exercise the four-stage issue lifecycle.",
       "labels": [
-        "workgraph"
+        "workgraph:issue-lifecycle"
       ]
     },
     "steps": {
@@ -64,7 +64,8 @@
         "c": null,
         "d": null
       },
-      "terminalOutcome": "completed"
+      "terminalOutcome": "completed",
+      "flowEntries": []
     }
   }
 }

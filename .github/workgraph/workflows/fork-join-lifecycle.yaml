@@ -4,7 +4,6 @@ metadata:
   id: fork-join-lifecycle
 
 spec:
-  trigger: workgraph
   initial: a
   defaults:
     evaluator: result-evaluator
@@ -14,40 +13,39 @@ spec:
     a:
       type: task
       operation: prepare-parallel-work
-      worker: issue-worker
+      worker: {"candidates": ["issue-worker"], "selection": "first-available"}
       inputs: {}
       next: b
     b:
       type: task
       operation: aggregate-child-results
-      worker: issue-worker
+      worker: {"candidates": ["issue-worker"], "selection": "first-available"}
       inputs: {}
       children:
-        join: all
         tasks:
           c:
             operation: inspect-title
-            worker: issue-worker
+            worker: {"candidates": ["issue-worker"], "selection": "first-available"}
             inputs: {}
           d:
             operation: inspect-body
-            worker: issue-worker
+            worker: {"candidates": ["issue-worker"], "selection": "first-available"}
             inputs: {}
           e:
             operation: inspect-risk
-            worker: issue-worker
+            worker: {"candidates": ["issue-worker"], "selection": "first-available"}
             inputs: {}
       next: f
     f:
       type: task
       operation: synthesize-results
-      worker: issue-worker
+      worker: {"candidates": ["issue-worker"], "selection": "first-available"}
       inputs: {}
       next: g
     g:
       type: task
       operation: finalize-parallel-work
-      worker: issue-worker
+      worker: {"candidates": ["issue-worker"], "selection": "first-available"}
       inputs: {}
       next: completed
     completed:

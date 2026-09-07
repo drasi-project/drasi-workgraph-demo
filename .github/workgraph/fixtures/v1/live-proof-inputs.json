@@ -11,31 +11,36 @@
       "wg-lease-state",
       "wg-root-comments"
     ],
-    "queryContractDigest": "sha256:83fdd2110faa47c711903b5268b6c6c412b25e44f78e3ff0caf7ca1a716fef18"
+    "queryContractDigest": "sha256:e8e40e33c6639213f9cef8a1f25b38c646896a7ebea14596f6089ee3f70f18d3"
   },
-  "definition": {
-    "bodyPath": "../../workflows/issue-lifecycle-v1.body",
-    "workflowDefinitionId": "issue-lifecycle",
-    "version": "v1",
-    "digest": "sha256:8f5876b5bd61dd63a957db5adf61277ee852d4752790c95fa3b78056aad34754"
-  },
-  "rootIssueAdmission": {
+  "rootIssue": {
     "repositoryOwner": "drasi-project",
     "repositoryName": "drasi-workgraph-demo",
     "repositoryNodeId": "R_workgraph_testbed",
     "issueNumber": 9000,
-    "issueNodeId": "I_workgraph_root_issue",
-    "label": "workgraph",
-    "deliveryId": "workgraph-delivery-1",
-    "admissionId": "urn:drasi:workgraph:id:v1:admission:sha256:077e3315d4fcc9cbd8eb0377863c0bac07f859bbb0143b5661e3101ca1276198",
-    "title": "WorkGraph Root Issue",
-    "body": "Validate this issue.",
-    "contentDigest": "sha256:1b079c1efdfac32900286e0b20216dac4c17115ddf6c9cf526d4cc0a3f1c68bb"
+    "rootIssueId": "I_workgraph_root_issue",
+    "isOpen": true,
+    "workgraphLabels": [
+      "workgraph:issue-lifecycle"
+    ],
+    "workgraphInclude": true,
+    "workflowMappings": [
+      {
+        "mappingId": "issue-lifecycle",
+        "label": "workgraph:issue-lifecycle",
+        "admissionId": "urn:drasi:workgraph:id:v1:admission:sha256:6677ef838d74e3196286c124681bbc5a1eb1dc9b884bc380dd30dcee785b239f",
+        "title": "WorkGraph Root Issue",
+        "body": "Validate this issue.",
+        "definitionRepository": "drasi-project/drasi-workgraph-demo",
+        "definitionRef": "${WORKGRAPH_DEMO_REF}",
+        "definitionPath": ".github/workgraph/workflows/issue-lifecycle-v1.body"
+      }
+    ]
   },
   "expectedRootTask": {
-    "taskId": "urn:drasi:workgraph:id:v1:task:sha256:f000b1854ea3b9b009c43bdbf68e7786298016514e52a81d46f5461116b4ee4b",
+    "taskId": "urn:drasi:workgraph:id:v1:task:sha256:0f0233b648875f8b0b722d1aca8b7cd445843417aa231454713423d8af6e1369",
     "rootIssueId": "I_workgraph_root_issue",
-    "workflowRunId": "urn:drasi:workgraph:id:v1:workflow-run:sha256:086749d7bbfd8c7b6f665a099f7344d71314674c9f89f1a2021f0c9ac2ff1691",
+    "workflowRunId": "urn:drasi:workgraph:id:v1:workflow-run:sha256:a813797e7fab4b9a7b415d15fed2b49a88e9604ece4c34277146216bdbabcded",
     "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:1e33ac3e56d691d86845bccf2c2c9c42c0487d55d9b6ac1fd359a33582ab7261",
     "taskKey": "a",
     "operation": "intake-issue",

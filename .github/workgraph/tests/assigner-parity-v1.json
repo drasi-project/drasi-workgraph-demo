@@ -10,7 +10,7 @@
       "title": "Assigner parity WorkGraph proof",
       "body": "Exercise a human assigner selecting an agent worker, then an agent assigner selecting a human worker.",
       "labels": [
-        "workgraph"
+        "workgraph:assigner-parity"
       ]
     },
     "steps": {
@@ -44,7 +44,8 @@
         "human-triage": null,
         "agent-triage": null
       },
-      "terminalOutcome": "completed"
+      "terminalOutcome": "completed",
+      "flowEntries": []
     }
   }
 }

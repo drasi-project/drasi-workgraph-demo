@@ -4,7 +4,6 @@ metadata:
   id: mixed-control-flow
 
 spec:
-  trigger: workgraph
   initial: a
   defaults:
     evaluator: result-evaluator
@@ -14,19 +13,19 @@ spec:
     a:
       type: task
       operation: intake-issue
-      worker: issue-worker
+      worker: {"candidates": ["issue-worker"], "selection": "first-available"}
       inputs: {}
       next: b
     b:
       type: task
       operation: normalize-issue
-      worker: issue-worker
+      worker: {"candidates": ["issue-worker"], "selection": "first-available"}
       inputs: {}
       next: c
     c:
       type: task
       operation: triage-issue
-      worker: issue-worker
+      worker: {"candidates": ["issue-worker"], "selection": "first-available"}
       inputs: {}
       outcomes:
         parallel: g
@@ -35,31 +34,30 @@ spec:
     g:
       type: task
       operation: coordinate-validation
-      worker: issue-worker
+      worker: {"candidates": ["issue-worker"], "selection": "first-available"}
       inputs: {}
       children:
-        join: all
         tasks:
           d:
             operation: validate-title
-            worker: issue-validator
+            worker: {"candidates": ["issue-validator"], "selection": "first-available"}
             inputs:
               field: title
           e:
             operation: validate-body
-            worker: issue-validator
+            worker: {"candidates": ["issue-validator"], "selection": "first-available"}
             inputs:
               field: body
           f:
             operation: validate-reproduction
-            worker: issue-validator
+            worker: {"candidates": ["issue-validator"], "selection": "first-available"}
             inputs:
               section: reproduction
       next: h
     h:
       type: task
       operation: finalize-issue
-      worker: issue-worker
+      worker: {"candidates": ["issue-worker"], "selection": "first-available"}
       inputs: {}
       next: completed
     completed:

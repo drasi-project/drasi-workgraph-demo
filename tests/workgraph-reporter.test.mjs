@@ -78,6 +78,8 @@ const RECURSIVE_TASK_NODE_ID = "I_recursive_task";
 const ADMISSION_ID = deriveWorkGraphProtocolId("admission", [
   ROOT_ISSUE_ID,
   "delivery-1",
+  "issue-lifecycle",
+  "workgraph:issue-lifecycle",
 ]);
 const DEFINITION_DIGEST = `sha256:${"a".repeat(64)}`;
 const ROOT_TITLE = "Validate this Issue";
@@ -149,7 +151,6 @@ function fixture() {
     taskKey: "root",
     operation: "coordinate-issue",
     resolvedInputs: {
-      proofMode: "isolated",
       rootIssue: {
         repositoryOwner: OWNER,
         repositoryName: REPO,
@@ -175,7 +176,7 @@ function fixture() {
     taskDefinitionId: CHILD_TASK_DEFINITION_ID,
     taskKey: "validate",
     operation: "validate-issue",
-    resolvedInputs: { validationProfile: "new-issue-default" },
+    resolvedInputs: {},
   };
   const identity = (task) => ({
     taskId: task.taskId,
@@ -280,7 +281,7 @@ function taskIssue(number, nodeId, task) {
   };
 }
 
-function rootIssue({ stale = false, labels = ["workgraph"] } = {}) {
+function rootIssue({ stale = false, labels = ["workgraph:issue-lifecycle"] } = {}) {
   return {
     number: ROOT_ISSUE_NUMBER,
     node_id: ROOT_ISSUE_ID,
@@ -301,278 +302,38 @@ async function requestBody(request) {
 }
 
 async function withFakeRuntime(options, callback) {
-  const data = fixture();
-  const root = rootIssue({
-    stale: options.staleRootIssue === true,
-    labels: options.rootLabels,
-  });
-  if (options.rootAdmitted === false) root.labels = [];
-  const rootTask = taskIssue(
-    ROOT_TASK_NUMBER,
-    ROOT_TASK_NODE_ID,
-    data.rootTask,
-  );
-  if (options.rootTaskClosed === true) rootTask.state = "closed";
-  const childTask = taskIssue(
-    CHILD_TASK_NUMBER,
-    CHILD_TASK_NODE_ID,
-    data.childTask,
-  );
-  if (options.childTaskClosed === true) childTask.state = "closed";
-  const issues = new Map([
-    [ROOT_ISSUE_NUMBER, root],
-    [ROOT_TASK_NUMBER, rootTask],
-    [CHILD_TASK_NUMBER, childTask],
-  ]);
-  const comments = new Map([
-    [
-      ROOT_TASK_NUMBER,
-      [
-        {
-          id: 180,
-          node_id: "IC_root_fork",
-          body: formatTaskFork(data.rootFork),
-          user: { id: ASSIGNMENT_ID, login: "assigner" },
-          created_at: "2026-08-29T19:40:00Z",
-          updated_at: "2026-08-29T19:40:00Z",
+  await withFakeLifecycle(
+    {
+      role: "worker",
+      stepId: "c",
+      omitResult: true,
+      omitAssignment: options.omitAssignment,
+      staleRootIssue: options.staleRootIssue,
+      rootLabels: options.rootLabels,
+      rootAdmitted: options.rootAdmitted,
+      taskClosed: options.childTaskClosed,
+      rootTaskClosed: options.rootTaskClosed,
+      editedDispatch: options.editedDispatch,
+      dispatchCount: options.staleDispatch ? 2 : 1,
+      attempt: options.staleDispatch ? 2 : 1,
+      authoritativeLeaseAttempt: options.leaseAttempt,
+      historicalResult: options.historicalResult,
+      leaseResponse: options.leaseResponse,
+      omitLeaseAttempt: options.omitLeaseAttempt,
+      dispatchExecutorId: options.executorId,
+    },
+    async ({ data, writes, leaseRequests }) =>
+      callback({
+        data: {
+          ...data,
+          contentDigest: data.rootTask.resolvedInputs.rootIssue.contentDigest,
+          workflowRunId: data.task.workflowRunId,
+          childTask: data.task,
+          childDispatch: data.dispatch,
         },
-        {
-          id: 185,
-          node_id: "IC_root_join",
-          body: formatTaskJoin(data.rootJoin),
-          user: { id: ASSIGNMENT_ID, login: "assigner" },
-          created_at: "2026-08-29T19:50:00Z",
-          updated_at: "2026-08-29T19:50:00Z",
-        },
-        {
-          id: 190,
-          node_id: "IC_root_assignment",
-          body: formatTaskAssignment(data.rootAssignment),
-          user: { id: ASSIGNMENT_ID, login: "assigner" },
-          created_at: "2026-08-29T19:59:00Z",
-          updated_at: "2026-08-29T19:59:00Z",
-        },
-        {
-          id: 200,
-          node_id: "IC_root_dispatch",
-          body: formatTaskDispatch(data.rootDispatch),
-          user: { id: ASSIGNMENT_ID, login: "assigner" },
-          created_at: "2026-08-29T20:00:00Z",
-          updated_at: "2026-08-29T20:00:00Z",
-        },
-      ],
-    ],
-    [
-      CHILD_TASK_NUMBER,
-      [
-        {
-          id: 191,
-          node_id: "IC_child_assignment",
-          body: formatTaskAssignment(data.childAssignment),
-          user: { id: ASSIGNMENT_ID, login: "assigner" },
-          created_at: "2026-08-29T19:59:00Z",
-          updated_at: "2026-08-29T19:59:00Z",
-        },
-        ...(options.staleDispatch === true
-          ? [
-              {
-                id: 199,
-                node_id: "IC_stale_child_dispatch",
-                body: formatTaskDispatch({
-                  ...data.childDispatch,
-                  dispatchId: protocolId("dispatch", "stale"),
-                  launchId: protocolId("dispatch-launch", "stale"),
-                  lease: {
-                    ...data.childDispatch.lease,
-                    leaseId: protocolId("lease", "stale"),
-                  },
-                }),
-                user: { id: ASSIGNMENT_ID, login: "assigner" },
-                created_at: "2026-08-29T20:00:00Z",
-                updated_at: "2026-08-29T20:00:00Z",
-              },
-            ]
-          : []),
-        {
-          id: 201,
-          node_id: "IC_child_dispatch",
-          body: formatTaskDispatch(data.childDispatch),
-          user: { id: ASSIGNMENT_ID, login: "assigner" },
-          created_at: "2026-08-29T20:00:00Z",
-          updated_at:
-            options.editedDispatch === true
-              ? "2026-08-29T20:01:00Z"
-              : "2026-08-29T20:00:00Z",
-        },
-      ],
-    ],
-  ]);
-  if (options.omitAssignment === true) {
-    comments.set(
-      CHILD_TASK_NUMBER,
-      comments
-        .get(CHILD_TASK_NUMBER)
-        .filter(
-          ({ body }) => !body.startsWith("WorkGraphTaskAssignment/v1\n"),
-        ),
-    );
-  }
-  if (options.historicalResult === true) {
-    const historicalDispatch = {
-      ...data.childDispatch,
-      dispatchId: protocolId("dispatch", "stale"),
-      launchId: protocolId("dispatch-launch", "stale"),
-      lease: {
-        ...data.childDispatch.lease,
-        leaseId: protocolId("lease", "stale"),
-      },
-    };
-    comments.get(CHILD_TASK_NUMBER).push({
-      id: 198,
-      node_id: "IC_stale_child_result",
-      body: formatTaskResult({
-        resultId: deriveWorkGraphTaskResultId(
-          data.childTask.taskId,
-          historicalDispatch.dispatchId,
-          historicalDispatch.lease.leaseId,
-        ),
-        rootIssueId: data.childTask.rootIssueId,
-        workflowRunId: data.childTask.workflowRunId,
-        taskId: data.childTask.taskId,
-        task: {
-          taskId: data.childTask.taskId,
-          workflowRunId: data.childTask.workflowRunId,
-          workflowDefinitionId: data.childTask.workflowDefinitionId,
-          workflowDefinitionVersion: data.childTask.workflowDefinitionVersion,
-          workflowDefinitionDigest: data.childTask.workflowDefinitionDigest,
-          taskDefinitionId: data.childTask.taskDefinitionId,
-          taskKey: data.childTask.taskKey,
-          operation: data.childTask.operation,
-        },
-        dispatchId: historicalDispatch.dispatchId,
-        leaseId: historicalDispatch.lease.leaseId,
-        attempt: 1,
-        outcome: "cancelled",
-        output: { summary: "expired attempt" },
+        state: { writes, leaseRequests },
       }),
-      user: { id: RESULT_ID, login: "result-reporter" },
-      created_at: "2026-08-29T20:30:00Z",
-      updated_at: "2026-08-29T20:30:00Z",
-    });
-  }
-  const state = { claims: new Map(), leaseRequests: [], writes: [] };
-  const server = createServer(async (request, response) => {
-    const url = new URL(request.url, "http://127.0.0.1");
-    const send = (status, value) => {
-      response.writeHead(status, { "Content-Type": "application/json" });
-      response.end(JSON.stringify(value));
-    };
-    if (request.method === "GET" && url.pathname === "/user") {
-      return send(200, { id: RESULT_ID, login: "result-reporter" });
-    }
-    if (
-      request.method === "GET" &&
-      url.pathname === `/repos/${OWNER}/${REPO}`
-    ) {
-      return send(200, {
-        name: REPO,
-        owner: { login: OWNER },
-        node_id: REPOSITORY_NODE_ID,
-      });
-    }
-    const issueMatch = url.pathname.match(
-      new RegExp(`^/repos/${OWNER}/${REPO}/issues/(\\d+)$`),
-    );
-    if (request.method === "GET" && issueMatch) {
-      return send(200, issues.get(Number(issueMatch[1])));
-    }
-    const parentMatch = url.pathname.match(
-      new RegExp(`^/repos/${OWNER}/${REPO}/issues/(\\d+)/parent$`),
-    );
-    if (request.method === "GET" && parentMatch) {
-      const number = Number(parentMatch[1]);
-      const parent =
-        number === CHILD_TASK_NUMBER
-          ? issues.get(ROOT_TASK_NUMBER)
-          : number === ROOT_TASK_NUMBER
-            ? issues.get(ROOT_ISSUE_NUMBER)
-            : null;
-      return parent ? send(200, parent) : send(404, { message: "Not Found" });
-    }
-    const commentsMatch = url.pathname.match(
-      new RegExp(`^/repos/${OWNER}/${REPO}/issues/(\\d+)/comments$`),
-    );
-    if (request.method === "GET" && commentsMatch) {
-      return send(200, comments.get(Number(commentsMatch[1])) ?? []);
-    }
-    if (request.method === "POST" && commentsMatch) {
-      const number = Number(commentsMatch[1]);
-      const { body } = await requestBody(request);
-      const comment = {
-        id: 300 + state.writes.length,
-        node_id: `IC_result_${state.writes.length + 1}`,
-        body,
-        user: { id: RESULT_ID, login: "result-reporter" },
-        created_at: "2026-08-29T21:00:00Z",
-        updated_at: "2026-08-29T21:00:00Z",
-      };
-      comments.get(number).push(comment);
-      state.writes.push({ number, body });
-      return send(201, comment);
-    }
-    if (
-      request.method === "POST" &&
-      url.pathname === "/github/workgraph-v1/lease/validate"
-    ) {
-      const value = await requestBody(request);
-      state.leaseRequests.push({
-        authorization: request.headers.authorization,
-        value,
-      });
-      const existingClaim = state.claims.get(value.leaseId);
-      if (existingClaim && existingClaim !== value.claimId) {
-        return send(409, { error: "lease already claimed" });
-      }
-      state.claims.set(value.leaseId, value.claimId);
-      const snapshot = {
-        ...value,
-        attempt:
-          options.leaseAttempt ?? (options.staleDispatch === true ? 2 : 1),
-        ...(options.leaseResponse ?? {}),
-        acquiredAt: "2026-08-29T20:00:00Z",
-        expiresAt: "2026-08-29T22:00:00Z",
-      };
-      if (options.omitLeaseAttempt === true) delete snapshot.attempt;
-      return send(200, snapshot);
-    }
-    return send(404, { message: `Unhandled ${request.method} ${url.pathname}` });
-  });
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const origin = `http://127.0.0.1:${server.address().port}`;
-  const previous = { ...process.env };
-  Object.assign(process.env, {
-    NODE_ENV: "test",
-    WORKGRAPH_TEST_NOW: "2026-08-29T21:00:00Z",
-    WORKGRAPH_TEST_GITHUB_API_URL: origin,
-    COPILOT_MCP_WORKGRAPH_TOKEN: "github-token",
-    COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID: TYPE_ID,
-    COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID: String(LAUNCHER_ID),
-    COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID: String(ASSIGNMENT_ID),
-    COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID: String(RESULT_ID),
-    COPILOT_MCP_WORKGRAPH_EXECUTOR_ID:
-      options.executorId ?? "issue-validator",
-    COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL:
-      `${origin}/github/workgraph-v1/lease/validate`,
-    COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN: "lease-token",
-  });
-  try {
-    await callback({ data, state });
-  } finally {
-    process.env = previous;
-    server.close();
-    await once(server, "close");
-  }
+  );
 }
 
 function childLocator() {
@@ -582,8 +343,8 @@ function childLocator() {
     repositoryNodeId: REPOSITORY_NODE_ID,
     issueNumber: CHILD_TASK_NUMBER,
     issueNodeId: CHILD_TASK_NODE_ID,
-    parentIssueNumber: ROOT_TASK_NUMBER,
-    parentIssueNodeId: ROOT_TASK_NODE_ID,
+    parentIssueNumber: ROOT_ISSUE_NUMBER,
+    parentIssueNodeId: ROOT_ISSUE_ID,
   };
 }
 
@@ -606,7 +367,11 @@ function resultInput(task, dispatch, locator) {
     dispatchId: dispatch.dispatchId,
     leaseId: dispatch.lease.leaseId,
     outcome: "succeeded",
-    output: { summary: "done", details: { ok: true } },
+    output: {
+      rootIssueComment: "The assigned WorkGraph task completed successfully.",
+      summary: "done",
+      details: { ok: true },
+    },
   };
 }
 
@@ -722,8 +487,9 @@ function lifecycleFixture({
     lease: {
       leaseId: protocolId("lease", `${stepId}-${index}`),
       assignmentId: protocolId("assignment", stepId),
-      executorId: dispatchExecutorId ?? policy.workerId,
-      slotId: `${policy.workerId}-slot-1`,
+      executorId:
+        dispatchExecutorId ?? effectiveDefinition.routing.permittedExecutors[0],
+      slotId: `${effectiveDefinition.routing.permittedExecutors[0]}-slot-1`,
     },
   }));
   const dispatch = dispatches.at(-1);
@@ -949,6 +715,9 @@ async function withFakeLifecycle(options, callback) {
   if (options.taskMetadataDrift === true) {
     data.task.operation = "different-operation";
   }
+  if (options.workflowDigestDrift === true) {
+    data.task.workflowDefinitionDigest = `sha256:${"f".repeat(64)}`;
+  }
   if (options.rootTaskMetadataDrift === true) {
     data.rootTask.operation = "different-operation";
   }
@@ -961,6 +730,46 @@ async function withFakeLifecycle(options, callback) {
     data.comments = data.comments.filter(
       ({ body }) => !body.startsWith("WorkGraphTaskAssignment/v1\n"),
     );
+  }
+  if (options.editedDispatch === true) {
+    const entry = data.comments.find(({ body }) =>
+      body.startsWith("WorkGraphTaskDispatch/v1\n"),
+    );
+    entry.updated_at = "2026-08-29T20:01:00Z";
+  }
+  if (options.historicalResult === true) {
+    const historicalDispatch = data.comments
+      .map(({ body }) => {
+        try {
+          return parseTaskDispatch(body);
+        } catch {
+          return null;
+        }
+      })
+      .find(
+        (dispatch) =>
+          dispatch && dispatch.dispatchId !== data.dispatch.dispatchId,
+      );
+    data.comments.push({
+      id: 198,
+      node_id: "IC_historical_result",
+      body: formatTaskResult({
+        ...data.result,
+        resultId: deriveWorkGraphTaskResultId(
+          data.task.taskId,
+          historicalDispatch.dispatchId,
+          historicalDispatch.lease.leaseId,
+        ),
+        dispatchId: historicalDispatch.dispatchId,
+        leaseId: historicalDispatch.lease.leaseId,
+        attempt: 1,
+        outcome: "cancelled",
+        output: { summary: "expired attempt" },
+      }),
+      user: { id: RESULT_ID, login: "result-reporter" },
+      created_at: "2026-08-29T20:30:00Z",
+      updated_at: "2026-08-29T20:30:00Z",
+    });
   }
   if (options.topLevelParentIsInitial === true && !data.parentTask) {
     data.input.taskLocator.parentIssueNumber = ROOT_TASK_NUMBER;
@@ -978,7 +787,9 @@ async function withFakeLifecycle(options, callback) {
   }
   const root = rootIssue({
     stale: options.staleRootIssue === true,
-    labels: options.rootLabels,
+    labels:
+      options.rootLabels ??
+      [`workgraph:${data.task.workflowDefinitionId}`],
   });
   if (options.rootAdmitted === false) root.labels = [];
   const rootTask = taskIssue(ROOT_TASK_NUMBER, ROOT_TASK_NODE_ID, data.rootTask);
@@ -1000,6 +811,7 @@ async function withFakeLifecycle(options, callback) {
     : CHILD_TASK_NUMBER;
   const comments = new Map([[taskNumber, data.comments]]);
   const writes = [];
+  const leaseRequests = [];
   const role = options.role ?? "evaluator";
   const actorId =
     role === "worker"
@@ -1129,12 +941,19 @@ async function withFakeLifecycle(options, callback) {
       url.pathname === "/github/workgraph-v1/lease/validate"
     ) {
       const value = await requestBody(request);
-      return send(200, {
+      leaseRequests.push({
+        authorization: request.headers.authorization,
+        value,
+      });
+      const snapshot = {
         ...value,
-        attempt: data.result.attempt,
+        attempt: options.authoritativeLeaseAttempt ?? data.result.attempt,
+        ...(options.leaseResponse ?? {}),
         acquiredAt: "2026-08-29T20:00:00Z",
         expiresAt: "2026-08-29T22:00:00Z",
-      });
+      };
+      if (options.omitLeaseAttempt === true) delete snapshot.attempt;
+      return send(200, snapshot);
     }
     return send(404, { message: `Unhandled ${request.method} ${url.pathname}` });
   });
@@ -1182,7 +1001,7 @@ async function withFakeLifecycle(options, callback) {
     delete process.env.COPILOT_MCP_WORKGRAPH_ASSIGNER_ID;
   }
   try {
-    await callback({ data, writes, comments });
+    await callback({ data, writes, leaseRequests, comments });
   } finally {
     process.env = previous;
     server.close();
@@ -1544,6 +1363,11 @@ test("MCP exposes only narrow WorkGraph readers and lifecycle writers", async ()
     resultSchema.leaseId.pattern,
     "^urn:drasi:workgraph:id:v1:lease:sha256:[0-9a-f]{64}$",
   );
+  assert.deepEqual(resultSchema.output.required, ["rootIssueComment"]);
+  assert.equal(
+    resultSchema.output.properties.rootIssueComment.maxLength,
+    16 * 1024,
+  );
   const snapshotSchema = tools.find(
     ({ name }) => name === "get_task_snapshot",
   ).inputSchema.oneOf[1].properties;
@@ -1748,7 +1572,7 @@ test("Root Issue admission label is required on every read and Result", async ()
   );
 });
 
-test("a configured selector label admits Root reads and Results", async () => {
+test("a configured workflow selector label admits Root reads and Results", async () => {
   await withFakeRuntime(
     { rootLabels: ["workgraph:foo"] },
     async ({ data, state }) => {
@@ -1769,8 +1593,9 @@ test("a configured selector label admits Root reads and Results", async () => {
   );
 });
 
-test("reserved exclusion labels never admit a Root Issue", async () => {
+test("plain and reserved labels never admit a Root Issue", async () => {
   for (const rootLabels of [
+    ["workgraph"],
     ["workgraph:ignore"],
     ["workgraph:error"],
     ["workgraph:foo", "workgraph:ignore"],
@@ -1789,33 +1614,29 @@ test("reserved exclusion labels never admit a Root Issue", async () => {
   }
 });
 
-test("get_root_issue requires open validator and Root Task Issues", async () => {
-  for (const options of [{ childTaskClosed: true }, { rootTaskClosed: true }]) {
-    await withFakeRuntime(options, async ({ data }) => {
-      await assert.rejects(
-        callTool("get_root_issue", {
-          taskLocator: childLocator(),
-          taskId: data.childTask.taskId,
-        }),
-        /requires open validator and Root Task Issues/,
-      );
-    });
-  }
+test("get_root_issue requires an open worker Task", async () => {
+  await withFakeRuntime({ childTaskClosed: true }, async ({ data }) => {
+    await assert.rejects(
+      callTool("get_root_issue", {
+        taskLocator: childLocator(),
+        taskId: data.childTask.taskId,
+      }),
+      /requires an open worker task/,
+    );
+  });
 });
 
-test("a new Result requires an open Root Task", async () => {
+test("a new Result remains valid after the initial Task closes", async () => {
   await withFakeRuntime(
     { rootTaskClosed: true },
     async ({ data, state }) => {
-      await assert.rejects(
-        callTool(
-          "submit_task_result",
-          resultInput(data.childTask, data.childDispatch, childLocator()),
-        ),
-        /requires open task and Root Task Issues/,
+      const result = await callTool(
+        "submit_task_result",
+        resultInput(data.childTask, data.childDispatch, childLocator()),
       );
-      assert.equal(state.writes.length, 0);
-      assert.equal(state.leaseRequests.length, 0);
+      assert.equal(result.reconciled, false);
+      assert.equal(state.writes.length, 1);
+      assert.equal(state.leaseRequests.length, 1);
     },
   );
 });
@@ -1846,8 +1667,8 @@ test("submit_task_result validates the exact active lease and reconciles", async
           taskId: data.childTask.taskId,
           leaseId: data.childDispatch.lease.leaseId,
           assignmentId: data.childDispatch.lease.assignmentId,
-          executorId: "issue-validator",
-          slotId: "issue-validator-slot-1",
+          executorId: "issue-worker",
+          slotId: "issue-worker-slot-1",
         },
       },
     ]);
@@ -1856,25 +1677,6 @@ test("submit_task_result validates the exact active lease and reconciles", async
     assert.equal(retried.commentNodeId, created.commentNodeId);
     assert.equal(state.writes.length, 1);
     assert.equal(state.leaseRequests.length, 1);
-  });
-});
-
-test("concurrent Result submissions create at most one comment", async () => {
-  await withFakeRuntime({}, async ({ data, state }) => {
-    const input = resultInput(
-      data.childTask,
-      data.childDispatch,
-      childLocator(),
-    );
-    const attempts = await Promise.allSettled([
-      callTool("submit_task_result", input),
-      callTool("submit_task_result", input),
-    ]);
-    assert.equal(state.writes.length, 1);
-    assert.equal(
-      attempts.filter(({ status }) => status === "fulfilled").length >= 1,
-      true,
-    );
   });
 });
 
@@ -1939,17 +1741,20 @@ test("submit_task_result ignores a valid historical Result from an expired attem
 });
 
 test("Result submission is bound to the configured executor profile", async () => {
-  await withFakeRuntime({}, async ({ data, state }) => {
+  await withFakeLifecycle(
+    { role: "worker", omitResult: true, executorId: "issue-validator" },
+    async ({ data, writes, leaseRequests }) => {
     await assert.rejects(
       callTool(
         "submit_task_result",
-        resultInput(data.rootTask, data.rootDispatch, rootLocator()),
+        resultInput(data.task, data.dispatch, data.input.taskLocator),
       ),
       /executor profile is not authorized/,
     );
-    assert.equal(state.writes.length, 0);
-    assert.equal(state.leaseRequests.length, 0);
-  });
+    assert.equal(writes.length, 0);
+    assert.equal(leaseRequests.length, 0);
+    },
+  );
 });
 
 test("edited Dispatch comments are rejected before lease validation", async () => {
@@ -1966,19 +1771,16 @@ test("edited Dispatch comments are rejected before lease validation", async () =
   });
 });
 
-test("the Root Task reports through the same v1 Result contract", async () => {
-  await withFakeRuntime(
-    { executorId: "issue-coordinator" },
-    async ({ data, state }) => {
+test("a top-level Task reports through the same v1 Result contract", async () => {
+  await withFakeRuntime({}, async ({ data, state }) => {
     const result = await callTool(
       "submit_task_result",
-      resultInput(data.rootTask, data.rootDispatch, rootLocator()),
+      resultInput(data.childTask, data.childDispatch, childLocator()),
     );
     assert.equal(result.reconciled, false);
-    assert.equal(state.writes[0].number, ROOT_TASK_NUMBER);
-    assert.equal(state.leaseRequests[0].value.executorId, "issue-coordinator");
-    },
-  );
+    assert.equal(state.writes[0].number, CHILD_TASK_NUMBER);
+    assert.equal(state.leaseRequests[0].value.executorId, "issue-worker");
+  });
 });
 
 test("a changed Root Issue is rejected before any write", async () => {
@@ -2118,6 +1920,30 @@ test("Result output rejects graph-lossy JSON numbers", async () => {
       }),
       /JavaScript-safe integers/,
     );
+    assert.equal(state.writes.length, 0);
+    assert.equal(state.leaseRequests.length, 0);
+  });
+});
+
+test("submit_task_result requires bounded Root Issue comment content", async () => {
+  await withFakeRuntime({}, async ({ data, state }) => {
+    const input = resultInput(
+      data.childTask,
+      data.childDispatch,
+      childLocator(),
+    );
+    for (const output of [
+      {},
+      { rootIssueComment: "" },
+      { rootIssueComment: "   " },
+      { rootIssueComment: 7 },
+      { rootIssueComment: "x".repeat(16 * 1024 + 1) },
+    ]) {
+      await assert.rejects(
+        callTool("submit_task_result", { ...input, output }),
+        /rootIssueComment/,
+      );
+    }
     assert.equal(state.writes.length, 0);
     assert.equal(state.leaseRequests.length, 0);
   });
@@ -2358,6 +2184,19 @@ test("lifecycle reads reject task metadata that drifts from the definition", asy
       assert.equal(writes.length, 0);
     });
   }
+});
+
+test("reporter rejects tasks outside the pinned compiled workflow catalog", async () => {
+  await withFakeLifecycle(
+    { workflowDigestDrift: true },
+    async ({ data, writes }) => {
+      await assert.rejects(
+        callTool("get_task_snapshot", data.input),
+        /does not belong to the pinned compiled workflow/,
+      );
+      assert.equal(writes.length, 0);
+    },
+  );
 });
 
 test("later top-level tasks are direct Root Issue children", async () => {
@@ -2971,8 +2810,8 @@ function scopedFlowFixture(mutate = () => {}) {
       lease: {
         leaseId: protocolId("lease", `scoped-${stepId}`),
         assignmentId: protocolId("assignment", `scoped-${stepId}`),
-        executorId: policyOf(stepId).workerId,
-        slotId: `${policyOf(stepId).workerId}-slot-1`,
+        executorId: definitionOf(stepId).routing.permittedExecutors[0],
+        slotId: `${definitionOf(stepId).routing.permittedExecutors[0]}-slot-1`,
       },
     };
     const result = {
@@ -3051,7 +2890,7 @@ function scopedFlowFixture(mutate = () => {}) {
       taskId: tasks[stepId].taskId,
       task: identity(stepId),
       joinId: artifacts[stepId].join?.joinId ?? null,
-      permittedExecutors: [policyOf(stepId).workerId],
+      permittedExecutors: [...definitionOf(stepId).routing.permittedExecutors],
     };
   }
 
@@ -3150,7 +2989,7 @@ function scopedTaskInput(fixture, stepId) {
 async function withScopedFlow(options, callback) {
   const fixture = scopedFlowFixture(options.mutate ?? (() => {}));
   const routeAuthorId = options.routeAuthorId ?? ROUTE_ID;
-  const root = rootIssue();
+  const root = rootIssue({ labels: ["workgraph:scoped-control-flow"] });
   const issues = new Map([[ROOT_ISSUE_NUMBER, root]]);
   const comments = new Map();
   const subIssues = new Map([
@@ -3344,7 +3183,6 @@ async function withScopedFlow(options, callback) {
     COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN: "lease-token",
   });
   delete process.env.COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_ID;
-  // A worker profile on default main injects no Route reporter identity.
   if (options.routeEnv === "absent") {
     delete process.env.COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID;
   }
@@ -3755,39 +3593,21 @@ test("a fixed child with a malformed inherited scope is rejected", async () => {
   }
 });
 
-test("worker tools validate a scoped predecessor Route without a Route reporter identity", async () => {
-  // A worker profile on default main injects no
-  // COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID. Under the single-token
-  // deployment every lifecycle comment authenticates as the Result reporter,
-  // so the Route author defaults to that identity.
+test("worker tools require the explicit Route reporter identity", async () => {
   await withScopedFlow(
     { role: "worker", routeEnv: "absent", routeAuthorId: RESULT_ID },
-    async ({ fixture }) => {
-      const root = await callTool("get_root_issue", {
-        taskLocator: scopedTaskInput(fixture, "fix-cleanup").taskLocator,
-        taskId: fixture.tasks["fix-cleanup"].taskId,
-      });
-      assert.equal(root.taskId, fixture.tasks["fix-cleanup"].taskId);
-      assert.equal(root.rootIssue.issueNumber, ROOT_ISSUE_NUMBER);
-    },
-  );
-
-  // The same default still rejects a Route written by any other actor.
-  await withScopedFlow(
-    { role: "worker", routeEnv: "absent", routeAuthorId: ROUTE_ID },
     async ({ fixture, writes }) => {
       await assert.rejects(
         callTool("get_root_issue", {
           taskLocator: scopedTaskInput(fixture, "fix-cleanup").taskLocator,
           taskId: fixture.tasks["fix-cleanup"].taskId,
         }),
-        /malformed or foreign WorkGraphTaskRoute\/v1/,
+        /COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID is required/,
       );
       assert.equal(writes.length, 0);
     },
   );
 
-  // A profile that does inject a separated Route identity keeps using it.
   await withScopedFlow(
     { role: "worker", routeAuthorId: ROUTE_ID },
     async ({ fixture }) => {
@@ -3799,8 +3619,6 @@ test("worker tools validate a scoped predecessor Route without a Route reporter 
     },
   );
 
-  // ... and that separated identity is still authoritative: a Route written by
-  // the Result reporter is foreign when the profile names a different actor.
   await withScopedFlow(
     { role: "worker", routeAuthorId: RESULT_ID },
     async ({ fixture, writes }) => {
@@ -3816,7 +3634,7 @@ test("worker tools validate a scoped predecessor Route without a Route reporter 
   );
 });
 
-test("submit_task_result reports on a routed scope member without a Route identity", async () => {
+test("submit_task_result rejects a missing Route reporter identity", async () => {
   await withScopedFlow(
     {
       role: "worker",
@@ -3826,24 +3644,21 @@ test("submit_task_result reports on a routed scope member without a Route identi
     },
     async ({ fixture, writes }) => {
       const input = scopedTaskInput(fixture, "fix-cleanup");
-      const created = await callTool("submit_task_result", {
-        taskLocator: input.taskLocator,
-        taskId: input.taskId,
-        dispatchId: input.dispatchId,
-        leaseId: input.leaseId,
-        outcome: "succeeded",
-        output: { step: "fix-cleanup" },
-      });
-      assert.equal(
-        created.resultId,
-        fixture.artifacts["fix-cleanup"].result.resultId,
+      await assert.rejects(
+        callTool("submit_task_result", {
+          taskLocator: input.taskLocator,
+          taskId: input.taskId,
+          dispatchId: input.dispatchId,
+          leaseId: input.leaseId,
+          outcome: "succeeded",
+          output: {
+            rootIssueComment: "Scoped cleanup completed.",
+            step: "fix-cleanup",
+          },
+        }),
+        /COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID is required/,
       );
-      assert.equal(created.reconciled, false);
-      assert.equal(writes.length, 1);
-      assert.equal(
-        writes[0].body.startsWith(`${TASK_RESULT_MARKER}\n`),
-        true,
-      );
+      assert.equal(writes.length, 0);
     },
   );
 });
@@ -3999,10 +3814,6 @@ test("the scoped Run container reports through the generic worker executor", asy
   // single `validate` child, so the scoped Run cleanup uses the generic
   // issue-worker executor instead.
   assert.deepEqual(SCOPED.root.routing.permittedExecutors, ["issue-worker"]);
-  assert.equal(
-    SCOPED.steps.run.executionPolicies[SCOPED.root.taskDefinitionId].workerId,
-    "issue-worker",
-  );
   assert.deepEqual(SCOPED.root.flowEntries, ["fix", "notify"]);
 
   await withScopedFlow(
@@ -4015,7 +3826,11 @@ test("the scoped Run container reports through the generic worker executor", asy
         dispatchId: input.dispatchId,
         leaseId: input.leaseId,
         outcome: "succeeded",
-        output: { childCount: 2, step: "run" },
+        output: {
+          rootIssueComment: "Scoped run coordination completed.",
+          childCount: 2,
+          step: "run",
+        },
       });
       assert.equal(
         created.resultId,
@@ -4038,7 +3853,11 @@ test("the scoped Run container reports through the generic worker executor", asy
           dispatchId: input.dispatchId,
           leaseId: input.leaseId,
           outcome: "succeeded",
-          output: { childCount: 2, step: "run" },
+          output: {
+            rootIssueComment: "Scoped run coordination completed.",
+            childCount: 2,
+            step: "run",
+          },
         }),
         /reporter executor profile is not authorized for this task/,
       );
@@ -4065,10 +3884,6 @@ test("the reporter pins the human parity workflow and its actor-neutral instruct
   assert.deepEqual(draft.taskDefinition.routing.permittedExecutors, [
     "human-agentofreality",
   ]);
-  assert.equal(
-    draft.executionPolicies[draft.taskDefinition.taskDefinitionId].workerId,
-    "human-agentofreality",
-  );
   assert.equal(
     review.executionPolicies[review.taskDefinition.taskDefinitionId]
       .evaluatorId,
@@ -4196,17 +4011,14 @@ test("a lifecycle artifact may cite the Response it was reported from", async ()
 
 test("the selected Dispatch authorizes the reporting profile by set membership", async () => {
   // Every pinned fixture names one permitted executor, so the live workflows
-  // stay performable by their default-main profiles. Membership, not equality
-  // to `policy.workerId`, is still what authorizes: candidate-set ordering,
-  // preference, membership, and separation of duties are covered against the
-  // compiler in the definition suite.
+  // stay performable by their configured profiles. Membership is what
+  // authorizes execution.
   const review = HUMAN.steps.review;
   const policy =
     review.executionPolicies[review.taskDefinition.taskDefinitionId];
   assert.deepEqual(review.taskDefinition.routing.permittedExecutors, [
     "issue-worker",
   ]);
-  assert.equal(policy.workerId, "issue-worker");
 
   const onReview = { compiled: HUMAN, stepId: "review" };
 
@@ -4221,7 +4033,10 @@ test("the selected Dispatch authorizes the reporting profile by set membership",
         dispatchId: data.input.dispatchId,
         leaseId: data.input.leaseId,
         outcome: "succeeded",
-        output: { step: "review" },
+        output: {
+          rootIssueComment: "Review completed.",
+          step: "review",
+        },
       });
       assert.equal(created.resultId, data.result.resultId);
       assert.equal(writes.length, 1);
@@ -4245,7 +4060,10 @@ test("the selected Dispatch authorizes the reporting profile by set membership",
           dispatchId: data.input.dispatchId,
           leaseId: data.input.leaseId,
           outcome: "succeeded",
-          output: { step: "review" },
+          output: {
+            rootIssueComment: "Review completed.",
+            step: "review",
+          },
         }),
         /reporter executor profile is not authorized for this task/,
       );
@@ -4264,16 +4082,14 @@ test("the selected Dispatch authorizes the reporting profile by set membership",
     },
   );
 
-  // The human worker step is pinned the same way: one permitted actor, which
-  // is also the policy default, and an agent evaluator that may not execute
-  // the task it grades.
+  // The human worker step is pinned the same way: one permitted actor and an
+  // agent evaluator that may not execute the task it grades.
   const draft = HUMAN.steps.draft;
   const draftPolicy =
     draft.executionPolicies[draft.taskDefinition.taskDefinitionId];
   assert.deepEqual(draft.taskDefinition.routing.permittedExecutors, [
     "human-agentofreality",
   ]);
-  assert.equal(draftPolicy.workerId, "human-agentofreality");
   assert.equal(draftPolicy.evaluatorId, "result-evaluator");
   for (const step of [draft, review]) {
     const stepPolicy =

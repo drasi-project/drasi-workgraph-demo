@@ -3,7 +3,6 @@ kind: IssueWorkflow
 metadata:
   id: assigner-parity
 spec:
-  trigger: workgraph
   defaults:
     evaluator: result-evaluator
     orchestrator: workflow-coordinator

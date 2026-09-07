@@ -4,8 +4,7 @@ WorkGraphWorkflowDefinition/v1
 {
   "workflowDefinitionId": "human-assigner-live",
   "version": "v1",
-  "digest": "sha256:86a5b2971bcd1187b42c31dbce37a1a068ffc72179c09b951cc51d23e4da58f6",
-  "trigger": "workgraph",
+  "digest": "sha256:f673c8ac873548c0bb7a8ff8ca30b16cac368e39c73910bcd6f457a863651a3a",
   "defaults": {
     "evaluator": "result-evaluator",
     "orchestrator": "workflow-coordinator",
@@ -31,7 +30,8 @@ WorkGraphWorkflowDefinition/v1
         "The Issue body is present."
       ]
     },
-    "children": []
+    "children": [],
+    "flowEntries": []
   },
   "steps": {
     "completed": {
@@ -59,11 +59,11 @@ WorkGraphWorkflowDefinition/v1
             "The Issue body is present."
           ]
         },
-        "children": []
+        "children": [],
+        "flowEntries": []
       },
       "executionPolicies": {
         "urn:drasi:workgraph:id:v1:task-definition:sha256:c924170a30bef1a5f2fa71da8c6d82a4ddf7932b98a9dc09319eea680af9d657": {
-          "workerId": "issue-validator",
           "evaluatorId": "result-evaluator",
           "orchestratorId": "workflow-coordinator",
           "assignerId": "human-agentofreality",

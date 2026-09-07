@@ -52,12 +52,11 @@ unchanged to both narrow tools.
 
 Call `workgraph/get_root_issue` once with exactly the unchanged
 `taskLocator` and `taskId`. The reader independently verifies that this task's
-immediate native parent is the launcher-authored, open, canonical
-`root-v1` WorkGraph task in the same run and definition; that the root is
-itself a native child of the ordinary Root Issue; and that its resolved inputs
-contain only `proofMode: isolated` and one exact `rootIssue` object. That object
-carries repository owner/name/node ID, Issue number/node ID, `admissionId`, and
-the immutable admission-time `contentDigest`.
+native ancestry matches the pinned compiled workflow and reaches its unique
+initial Task under the ordinary Root Issue. The initial Task's resolved inputs
+contain exactly its compiled static inputs and one `rootIssue` object carrying
+repository owner/name/node ID, Issue number/node ID, `admissionId`, and the
+immutable admission-time `contentDigest`.
 The reader then fetches the open ordinary Root Issue and verifies its
 repository, number, node ID, non-WorkGraphTask type, and current title/body
 digest. A changed title or body is stale under the snapshot policy and fails
@@ -76,7 +75,11 @@ For `validate-issue`, evaluate exactly, in order:
 Whitespace-only is empty. Each criterion object has exactly `criterion`,
 boolean `passed`, and non-empty plain-text `evidence`. A completed check has
 outcome `succeeded` even when a criterion fails. Set `output` to exactly
-`criteria`, a business `outcome`, and a non-empty plain-text `summary`.
+`criteria`, a business `outcome`, a non-empty plain-text `summary`, and
+`rootIssueComment`. The latter is non-empty, comment-ready Markdown that states
+whether the Root Issue passed and, if not, what is missing. Do not post it
+yourself; the runtime publishes it only after the evaluator accepts the Result.
+Do not use fenced code blocks in it.
 Use `continue` when the title, body, and a `## Reproduction` section are
 present; use `needs-info` when required information is missing; reserve
 `reject` for content that cannot be made actionable through additional
@@ -84,7 +87,8 @@ information.
 
 For `validate-title`, `validate-body`, and `validate-reproduction`, evaluate
 only the named field/section from the compiled task inputs. Return a bounded
-plain-text `summary` plus boolean `passed` and plain-text `evidence`.
+plain-text `summary` plus boolean `passed`, plain-text `evidence`, and a
+non-empty `rootIssueComment` that states the specific check and its result.
 
 Call `workgraph/submit_task_result` once with the unchanged task Issue locator,
 `taskId`, `dispatchId`, and `leaseId`, plus `outcome` and `output`. Do not

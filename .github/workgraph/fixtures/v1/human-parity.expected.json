@@ -1,5 +1,5 @@
 {
-  "definitionDigest": "sha256:eb2bc431310d28a7edec861dcffd65b0252c7109038bb94c871e69f835a0ea45",
+  "definitionDigest": "sha256:4c0942d3b455f3ddb06d12d7acfb667dd2bec538d8b447b1070e214e17ef82b7",
   "definition": {
     "apiVersion": "workgraph.drasi.io/v1",
     "kind": "IssueWorkflow",
@@ -7,7 +7,6 @@
       "id": "human-parity"
     },
     "spec": {
-      "trigger": "workgraph",
       "defaults": {
         "evaluator": "result-evaluator",
         "orchestrator": "workflow-coordinator",
@@ -22,7 +21,12 @@
         "draft": {
           "type": "task",
           "operation": "draft-proposal",
-          "worker": "human-agentofreality",
+          "worker": {
+            "candidates": [
+              "human-agentofreality"
+            ],
+            "selection": "first-available"
+          },
           "inputs": {},
           "instructions": {
             "summary": "Draft the remediation proposal for this Issue.",
@@ -47,7 +51,12 @@
         "review": {
           "type": "task",
           "operation": "normalize-issue",
-          "worker": "issue-worker",
+          "worker": {
+            "candidates": [
+              "issue-worker"
+            ],
+            "selection": "first-available"
+          },
           "inputs": {},
           "instructions": {
             "summary": "Normalize the verified Root Issue into a structured summary.",
@@ -71,8 +80,7 @@
   "workgraphDefinition": {
     "workflowDefinitionId": "human-parity",
     "version": "v1",
-    "digest": "sha256:eb2bc431310d28a7edec861dcffd65b0252c7109038bb94c871e69f835a0ea45",
-    "trigger": "workgraph",
+    "digest": "sha256:4c0942d3b455f3ddb06d12d7acfb667dd2bec538d8b447b1070e214e17ef82b7",
     "defaults": {
       "evaluator": "result-evaluator",
       "orchestrator": "workflow-coordinator",
@@ -102,7 +110,8 @@
           "rationale": "string"
         }
       },
-      "children": []
+      "children": [],
+      "flowEntries": []
     },
     "steps": {
       "completed": {
@@ -134,11 +143,11 @@
               "rationale": "string"
             }
           },
-          "children": []
+          "children": [],
+          "flowEntries": []
         },
         "executionPolicies": {
           "urn:drasi:workgraph:id:v1:task-definition:sha256:a861658d75ce4144fbb36a0216c2a8fd592b1f281c9b2b38dbe9003482d82699": {
-            "workerId": "human-agentofreality",
             "evaluatorId": "result-evaluator",
             "orchestratorId": "workflow-coordinator",
             "maxReworkAttempts": 3
@@ -170,11 +179,11 @@
               "The summary adds no claim the Root Issue does not make."
             ]
           },
-          "children": []
+          "children": [],
+          "flowEntries": []
         },
         "executionPolicies": {
           "urn:drasi:workgraph:id:v1:task-definition:sha256:be759edffb7f7b6570a341a8911397434ed2d6719aad1e90a0d10e82939ae65d": {
-            "workerId": "issue-worker",
             "evaluatorId": "human-agentofreality",
             "orchestratorId": "workflow-coordinator",
             "maxReworkAttempts": 3
@@ -187,11 +196,11 @@
       }
     }
   },
-  "canonicalDefinitionBody": "WorkGraphWorkflowDefinition/v1\n\n```json\n{\n  \"workflowDefinitionId\": \"human-parity\",\n  \"version\": \"v1\",\n  \"digest\": \"sha256:eb2bc431310d28a7edec861dcffd65b0252c7109038bb94c871e69f835a0ea45\",\n  \"trigger\": \"workgraph\",\n  \"defaults\": {\n    \"evaluator\": \"result-evaluator\",\n    \"orchestrator\": \"workflow-coordinator\",\n    \"maxReworkAttempts\": 3\n  },\n  \"initialStepId\": \"draft\",\n  \"root\": {\n    \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:a861658d75ce4144fbb36a0216c2a8fd592b1f281c9b2b38dbe9003482d82699\",\n    \"taskKey\": \"draft\",\n    \"operation\": \"draft-proposal\",\n    \"routing\": {\n      \"permittedExecutors\": [\n        \"human-agentofreality\"\n      ]\n    },\n    \"staticInputs\": {},\n    \"instructions\": {\n      \"summary\": \"Draft the remediation proposal for this Issue.\",\n      \"details\": \"Read the Root Issue and write the proposal you would hand to an implementer, then reply on this task with a comment that opens with the WorkGraph mention and states the proposal in your own words.\",\n      \"acceptanceCriteria\": [\n        \"The proposal names the change being proposed.\",\n        \"The proposal states why the change is needed.\",\n        \"The proposal lists the checks that would prove it worked.\"\n      ],\n      \"resultSchema\": {\n        \"proposal\": \"string\",\n        \"rationale\": \"string\"\n      }\n    },\n    \"children\": []\n  },\n  \"steps\": {\n    \"completed\": {\n      \"type\": \"terminal\",\n      \"outcome\": \"completed\"\n    },\n    \"draft\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:a861658d75ce4144fbb36a0216c2a8fd592b1f281c9b2b38dbe9003482d82699\",\n        \"taskKey\": \"draft\",\n        \"operation\": \"draft-proposal\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"human-agentofreality\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"instructions\": {\n          \"summary\": \"Draft the remediation proposal for this Issue.\",\n          \"details\": \"Read the Root Issue and write the proposal you would hand to an implementer, then reply on this task with a comment that opens with the WorkGraph mention and states the proposal in your own words.\",\n          \"acceptanceCriteria\": [\n            \"The proposal names the change being proposed.\",\n            \"The proposal states why the change is needed.\",\n            \"The proposal lists the checks that would prove it worked.\"\n          ],\n          \"resultSchema\": {\n            \"proposal\": \"string\",\n            \"rationale\": \"string\"\n          }\n        },\n        \"children\": []\n      },\n      \"executionPolicies\": {\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:a861658d75ce4144fbb36a0216c2a8fd592b1f281c9b2b38dbe9003482d82699\": {\n          \"workerId\": \"human-agentofreality\",\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        }\n      },\n      \"transition\": {\n        \"type\": \"next\",\n        \"targetStepId\": \"review\"\n      }\n    },\n    \"review\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:be759edffb7f7b6570a341a8911397434ed2d6719aad1e90a0d10e82939ae65d\",\n        \"taskKey\": \"review\",\n        \"operation\": \"normalize-issue\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"issue-worker\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"instructions\": {\n          \"summary\": \"Normalize the verified Root Issue into a structured summary.\",\n          \"details\": \"Read the Root Issue title and body returned by the reporter and restate them as a normalized summary. Use only what the Root Issue says; do not infer, judge, or add anything it does not state.\",\n          \"acceptanceCriteria\": [\n            \"The summary restates the Root Issue title.\",\n            \"The summary restates what the Root Issue body asks for.\",\n            \"The summary adds no claim the Root Issue does not make.\"\n          ]\n        },\n        \"children\": []\n      },\n      \"executionPolicies\": {\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:be759edffb7f7b6570a341a8911397434ed2d6719aad1e90a0d10e82939ae65d\": {\n          \"workerId\": \"issue-worker\",\n          \"evaluatorId\": \"human-agentofreality\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        }\n      },\n      \"transition\": {\n        \"type\": \"next\",\n        \"targetStepId\": \"completed\"\n      }\n    }\n  }\n}\n```\n",
+  "canonicalDefinitionBody": "WorkGraphWorkflowDefinition/v1\n\n```json\n{\n  \"workflowDefinitionId\": \"human-parity\",\n  \"version\": \"v1\",\n  \"digest\": \"sha256:4c0942d3b455f3ddb06d12d7acfb667dd2bec538d8b447b1070e214e17ef82b7\",\n  \"defaults\": {\n    \"evaluator\": \"result-evaluator\",\n    \"orchestrator\": \"workflow-coordinator\",\n    \"maxReworkAttempts\": 3\n  },\n  \"initialStepId\": \"draft\",\n  \"root\": {\n    \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:a861658d75ce4144fbb36a0216c2a8fd592b1f281c9b2b38dbe9003482d82699\",\n    \"taskKey\": \"draft\",\n    \"operation\": \"draft-proposal\",\n    \"routing\": {\n      \"permittedExecutors\": [\n        \"human-agentofreality\"\n      ]\n    },\n    \"staticInputs\": {},\n    \"instructions\": {\n      \"summary\": \"Draft the remediation proposal for this Issue.\",\n      \"details\": \"Read the Root Issue and write the proposal you would hand to an implementer, then reply on this task with a comment that opens with the WorkGraph mention and states the proposal in your own words.\",\n      \"acceptanceCriteria\": [\n        \"The proposal names the change being proposed.\",\n        \"The proposal states why the change is needed.\",\n        \"The proposal lists the checks that would prove it worked.\"\n      ],\n      \"resultSchema\": {\n        \"proposal\": \"string\",\n        \"rationale\": \"string\"\n      }\n    },\n    \"children\": [],\n    \"flowEntries\": []\n  },\n  \"steps\": {\n    \"completed\": {\n      \"type\": \"terminal\",\n      \"outcome\": \"completed\"\n    },\n    \"draft\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:a861658d75ce4144fbb36a0216c2a8fd592b1f281c9b2b38dbe9003482d82699\",\n        \"taskKey\": \"draft\",\n        \"operation\": \"draft-proposal\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"human-agentofreality\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"instructions\": {\n          \"summary\": \"Draft the remediation proposal for this Issue.\",\n          \"details\": \"Read the Root Issue and write the proposal you would hand to an implementer, then reply on this task with a comment that opens with the WorkGraph mention and states the proposal in your own words.\",\n          \"acceptanceCriteria\": [\n            \"The proposal names the change being proposed.\",\n            \"The proposal states why the change is needed.\",\n            \"The proposal lists the checks that would prove it worked.\"\n          ],\n          \"resultSchema\": {\n            \"proposal\": \"string\",\n            \"rationale\": \"string\"\n          }\n        },\n        \"children\": [],\n        \"flowEntries\": []\n      },\n      \"executionPolicies\": {\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:a861658d75ce4144fbb36a0216c2a8fd592b1f281c9b2b38dbe9003482d82699\": {\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        }\n      },\n      \"transition\": {\n        \"type\": \"next\",\n        \"targetStepId\": \"review\"\n      }\n    },\n    \"review\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:be759edffb7f7b6570a341a8911397434ed2d6719aad1e90a0d10e82939ae65d\",\n        \"taskKey\": \"review\",\n        \"operation\": \"normalize-issue\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"issue-worker\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"instructions\": {\n          \"summary\": \"Normalize the verified Root Issue into a structured summary.\",\n          \"details\": \"Read the Root Issue title and body returned by the reporter and restate them as a normalized summary. Use only what the Root Issue says; do not infer, judge, or add anything it does not state.\",\n          \"acceptanceCriteria\": [\n            \"The summary restates the Root Issue title.\",\n            \"The summary restates what the Root Issue body asks for.\",\n            \"The summary adds no claim the Root Issue does not make.\"\n          ]\n        },\n        \"children\": [],\n        \"flowEntries\": []\n      },\n      \"executionPolicies\": {\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:be759edffb7f7b6570a341a8911397434ed2d6719aad1e90a0d10e82939ae65d\": {\n          \"evaluatorId\": \"human-agentofreality\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        }\n      },\n      \"transition\": {\n        \"type\": \"next\",\n        \"targetStepId\": \"completed\"\n      }\n    }\n  }\n}\n```\n",
   "queryPlan": {
     "version": "v1",
     "workflowDefinitionId": "human-parity",
-    "definitionDigest": "sha256:eb2bc431310d28a7edec861dcffd65b0252c7109038bb94c871e69f835a0ea45",
+    "definitionDigest": "sha256:4c0942d3b455f3ddb06d12d7acfb667dd2bec538d8b447b1070e214e17ef82b7",
     "lifecycleTemplates": [
       {
         "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:a861658d75ce4144fbb36a0216c2a8fd592b1f281c9b2b38dbe9003482d82699",
@@ -218,9 +227,9 @@
               "rationale": "string"
             }
           },
-          "children": []
+          "children": [],
+          "flowEntries": []
         },
-        "workerId": "human-agentofreality",
         "evaluatorId": "result-evaluator",
         "orchestratorId": "workflow-coordinator",
         "maxReworkAttempts": 3,
@@ -247,9 +256,9 @@
               "The summary adds no claim the Root Issue does not make."
             ]
           },
-          "children": []
+          "children": [],
+          "flowEntries": []
         },
-        "workerId": "issue-worker",
         "evaluatorId": "human-agentofreality",
         "orchestratorId": "workflow-coordinator",
         "maxReworkAttempts": 3,
@@ -285,7 +294,7 @@
   "queryBundle": {
     "version": "v1",
     "workflowDefinitionId": "human-parity",
-    "definitionDigest": "sha256:eb2bc431310d28a7edec861dcffd65b0252c7109038bb94c871e69f835a0ea45",
+    "definitionDigest": "sha256:4c0942d3b455f3ddb06d12d7acfb667dd2bec538d8b447b1070e214e17ef82b7",
     "queries": [],
     "workgraphReactionQueries": [],
     "sseQueries": [],

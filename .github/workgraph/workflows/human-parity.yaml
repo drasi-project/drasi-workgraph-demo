@@ -4,7 +4,6 @@ metadata:
   id: human-parity
 
 spec:
-  trigger: workgraph
   initial: draft
   defaults:
     evaluator: result-evaluator
@@ -14,7 +13,7 @@ spec:
     draft:
       type: task
       operation: draft-proposal
-      worker: human-agentofreality
+      worker: {"candidates": ["human-agentofreality"], "selection": "first-available"}
       inputs: {}
       instructions:
         summary: Draft the remediation proposal for this Issue.
@@ -30,7 +29,7 @@ spec:
     review:
       type: task
       operation: normalize-issue
-      worker: issue-worker
+      worker: {"candidates": ["issue-worker"], "selection": "first-available"}
       evaluator: human-agentofreality
       inputs: {}
       instructions:

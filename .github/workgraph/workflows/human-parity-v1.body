@@ -4,8 +4,7 @@ WorkGraphWorkflowDefinition/v1
 {
   "workflowDefinitionId": "human-parity",
   "version": "v1",
-  "digest": "sha256:eb2bc431310d28a7edec861dcffd65b0252c7109038bb94c871e69f835a0ea45",
-  "trigger": "workgraph",
+  "digest": "sha256:4c0942d3b455f3ddb06d12d7acfb667dd2bec538d8b447b1070e214e17ef82b7",
   "defaults": {
     "evaluator": "result-evaluator",
     "orchestrator": "workflow-coordinator",
@@ -35,7 +34,8 @@ WorkGraphWorkflowDefinition/v1
         "rationale": "string"
       }
     },
-    "children": []
+    "children": [],
+    "flowEntries": []
   },
   "steps": {
     "completed": {
@@ -67,11 +67,11 @@ WorkGraphWorkflowDefinition/v1
             "rationale": "string"
           }
         },
-        "children": []
+        "children": [],
+        "flowEntries": []
       },
       "executionPolicies": {
         "urn:drasi:workgraph:id:v1:task-definition:sha256:a861658d75ce4144fbb36a0216c2a8fd592b1f281c9b2b38dbe9003482d82699": {
-          "workerId": "human-agentofreality",
           "evaluatorId": "result-evaluator",
           "orchestratorId": "workflow-coordinator",
           "maxReworkAttempts": 3
@@ -103,11 +103,11 @@ WorkGraphWorkflowDefinition/v1
             "The summary adds no claim the Root Issue does not make."
           ]
         },
-        "children": []
+        "children": [],
+        "flowEntries": []
       },
       "executionPolicies": {
         "urn:drasi:workgraph:id:v1:task-definition:sha256:be759edffb7f7b6570a341a8911397434ed2d6719aad1e90a0d10e82939ae65d": {
-          "workerId": "issue-worker",
           "evaluatorId": "human-agentofreality",
           "orchestratorId": "workflow-coordinator",
           "maxReworkAttempts": 3

@@ -1,5 +1,5 @@
 {
-  "definitionDigest": "sha256:82b954c015aaa71bf6b69e36422816862db931d0b82072085da428af85b1842d",
+  "definitionDigest": "sha256:f2f84b9d92b35bdfc613bc9a8a6ce6067319a4d5f7d3fee6efc431dc60cb746e",
   "definition": {
     "apiVersion": "workgraph.drasi.io/v1",
     "kind": "IssueWorkflow",
@@ -7,7 +7,6 @@
       "id": "assigner-parity"
     },
     "spec": {
-      "trigger": "workgraph",
       "defaults": {
         "evaluator": "result-evaluator",
         "orchestrator": "workflow-coordinator",
@@ -79,8 +78,7 @@
   "workgraphDefinition": {
     "workflowDefinitionId": "assigner-parity",
     "version": "v1",
-    "digest": "sha256:82b954c015aaa71bf6b69e36422816862db931d0b82072085da428af85b1842d",
-    "trigger": "workgraph",
+    "digest": "sha256:f2f84b9d92b35bdfc613bc9a8a6ce6067319a4d5f7d3fee6efc431dc60cb746e",
     "defaults": {
       "evaluator": "result-evaluator",
       "orchestrator": "workflow-coordinator",
@@ -106,7 +104,8 @@
           "The result does not invent facts."
         ]
       },
-      "children": []
+      "children": [],
+      "flowEntries": []
     },
     "steps": {
       "agent-triage": {
@@ -130,11 +129,11 @@
               "The proposal includes an acceptance check."
             ]
           },
-          "children": []
+          "children": [],
+          "flowEntries": []
         },
         "executionPolicies": {
           "urn:drasi:workgraph:id:v1:task-definition:sha256:e029db5930323f0c8fe3e9c7d325112e716b3a6dd1c67a894c400a5c4ff25eff": {
-            "workerId": "human-agentofreality",
             "evaluatorId": "result-evaluator",
             "orchestratorId": "workflow-coordinator",
             "assignerId": "assignment-coordinator",
@@ -171,11 +170,11 @@
               "The result does not invent facts."
             ]
           },
-          "children": []
+          "children": [],
+          "flowEntries": []
         },
         "executionPolicies": {
           "urn:drasi:workgraph:id:v1:task-definition:sha256:89af6ea4cff38a4afeb46250678ab06e4c3bc653d1bee50f210edde522592efd": {
-            "workerId": "issue-validator",
             "evaluatorId": "result-evaluator",
             "orchestratorId": "workflow-coordinator",
             "assignerId": "human-agentofreality",
@@ -189,11 +188,11 @@
       }
     }
   },
-  "canonicalDefinitionBody": "WorkGraphWorkflowDefinition/v1\n\n```json\n{\n  \"workflowDefinitionId\": \"assigner-parity\",\n  \"version\": \"v1\",\n  \"digest\": \"sha256:82b954c015aaa71bf6b69e36422816862db931d0b82072085da428af85b1842d\",\n  \"trigger\": \"workgraph\",\n  \"defaults\": {\n    \"evaluator\": \"result-evaluator\",\n    \"orchestrator\": \"workflow-coordinator\",\n    \"maxReworkAttempts\": 2\n  },\n  \"initialStepId\": \"human-triage\",\n  \"root\": {\n    \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:89af6ea4cff38a4afeb46250678ab06e4c3bc653d1bee50f210edde522592efd\",\n    \"taskKey\": \"human-triage\",\n    \"operation\": \"normalize-issue\",\n    \"routing\": {\n      \"permittedExecutors\": [\n        \"issue-validator\",\n        \"issue-worker\"\n      ]\n    },\n    \"staticInputs\": {},\n    \"instructions\": {\n      \"summary\": \"Normalize the Root Issue after the human chooses the best agent.\",\n      \"details\": \"The assigner should choose the agent whose profile best matches the Root Issue.\",\n      \"acceptanceCriteria\": [\n        \"The result restates the Root Issue request.\",\n        \"The result does not invent facts.\"\n      ]\n    },\n    \"children\": []\n  },\n  \"steps\": {\n    \"agent-triage\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:e029db5930323f0c8fe3e9c7d325112e716b3a6dd1c67a894c400a5c4ff25eff\",\n        \"taskKey\": \"agent-triage\",\n        \"operation\": \"draft-proposal\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"human-agentofreality\",\n            \"issue-worker\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"instructions\": {\n          \"summary\": \"Draft a short implementation proposal.\",\n          \"details\": \"The assignment coordinator must choose one permitted executor before work starts.\",\n          \"acceptanceCriteria\": [\n            \"The proposal names the requested change.\",\n            \"The proposal includes an acceptance check.\"\n          ]\n        },\n        \"children\": []\n      },\n      \"executionPolicies\": {\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:e029db5930323f0c8fe3e9c7d325112e716b3a6dd1c67a894c400a5c4ff25eff\": {\n          \"workerId\": \"human-agentofreality\",\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"assignerId\": \"assignment-coordinator\",\n          \"maxReworkAttempts\": 2\n        }\n      },\n      \"transition\": {\n        \"type\": \"next\",\n        \"targetStepId\": \"completed\"\n      }\n    },\n    \"completed\": {\n      \"type\": \"terminal\",\n      \"outcome\": \"completed\"\n    },\n    \"human-triage\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:89af6ea4cff38a4afeb46250678ab06e4c3bc653d1bee50f210edde522592efd\",\n        \"taskKey\": \"human-triage\",\n        \"operation\": \"normalize-issue\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"issue-validator\",\n            \"issue-worker\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"instructions\": {\n          \"summary\": \"Normalize the Root Issue after the human chooses the best agent.\",\n          \"details\": \"The assigner should choose the agent whose profile best matches the Root Issue.\",\n          \"acceptanceCriteria\": [\n            \"The result restates the Root Issue request.\",\n            \"The result does not invent facts.\"\n          ]\n        },\n        \"children\": []\n      },\n      \"executionPolicies\": {\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:89af6ea4cff38a4afeb46250678ab06e4c3bc653d1bee50f210edde522592efd\": {\n          \"workerId\": \"issue-validator\",\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"assignerId\": \"human-agentofreality\",\n          \"maxReworkAttempts\": 2\n        }\n      },\n      \"transition\": {\n        \"type\": \"next\",\n        \"targetStepId\": \"agent-triage\"\n      }\n    }\n  }\n}\n```\n",
+  "canonicalDefinitionBody": "WorkGraphWorkflowDefinition/v1\n\n```json\n{\n  \"workflowDefinitionId\": \"assigner-parity\",\n  \"version\": \"v1\",\n  \"digest\": \"sha256:f2f84b9d92b35bdfc613bc9a8a6ce6067319a4d5f7d3fee6efc431dc60cb746e\",\n  \"defaults\": {\n    \"evaluator\": \"result-evaluator\",\n    \"orchestrator\": \"workflow-coordinator\",\n    \"maxReworkAttempts\": 2\n  },\n  \"initialStepId\": \"human-triage\",\n  \"root\": {\n    \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:89af6ea4cff38a4afeb46250678ab06e4c3bc653d1bee50f210edde522592efd\",\n    \"taskKey\": \"human-triage\",\n    \"operation\": \"normalize-issue\",\n    \"routing\": {\n      \"permittedExecutors\": [\n        \"issue-validator\",\n        \"issue-worker\"\n      ]\n    },\n    \"staticInputs\": {},\n    \"instructions\": {\n      \"summary\": \"Normalize the Root Issue after the human chooses the best agent.\",\n      \"details\": \"The assigner should choose the agent whose profile best matches the Root Issue.\",\n      \"acceptanceCriteria\": [\n        \"The result restates the Root Issue request.\",\n        \"The result does not invent facts.\"\n      ]\n    },\n    \"children\": [],\n    \"flowEntries\": []\n  },\n  \"steps\": {\n    \"agent-triage\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:e029db5930323f0c8fe3e9c7d325112e716b3a6dd1c67a894c400a5c4ff25eff\",\n        \"taskKey\": \"agent-triage\",\n        \"operation\": \"draft-proposal\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"human-agentofreality\",\n            \"issue-worker\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"instructions\": {\n          \"summary\": \"Draft a short implementation proposal.\",\n          \"details\": \"The assignment coordinator must choose one permitted executor before work starts.\",\n          \"acceptanceCriteria\": [\n            \"The proposal names the requested change.\",\n            \"The proposal includes an acceptance check.\"\n          ]\n        },\n        \"children\": [],\n        \"flowEntries\": []\n      },\n      \"executionPolicies\": {\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:e029db5930323f0c8fe3e9c7d325112e716b3a6dd1c67a894c400a5c4ff25eff\": {\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"assignerId\": \"assignment-coordinator\",\n          \"maxReworkAttempts\": 2\n        }\n      },\n      \"transition\": {\n        \"type\": \"next\",\n        \"targetStepId\": \"completed\"\n      }\n    },\n    \"completed\": {\n      \"type\": \"terminal\",\n      \"outcome\": \"completed\"\n    },\n    \"human-triage\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:89af6ea4cff38a4afeb46250678ab06e4c3bc653d1bee50f210edde522592efd\",\n        \"taskKey\": \"human-triage\",\n        \"operation\": \"normalize-issue\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"issue-validator\",\n            \"issue-worker\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"instructions\": {\n          \"summary\": \"Normalize the Root Issue after the human chooses the best agent.\",\n          \"details\": \"The assigner should choose the agent whose profile best matches the Root Issue.\",\n          \"acceptanceCriteria\": [\n            \"The result restates the Root Issue request.\",\n            \"The result does not invent facts.\"\n          ]\n        },\n        \"children\": [],\n        \"flowEntries\": []\n      },\n      \"executionPolicies\": {\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:89af6ea4cff38a4afeb46250678ab06e4c3bc653d1bee50f210edde522592efd\": {\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"assignerId\": \"human-agentofreality\",\n          \"maxReworkAttempts\": 2\n        }\n      },\n      \"transition\": {\n        \"type\": \"next\",\n        \"targetStepId\": \"agent-triage\"\n      }\n    }\n  }\n}\n```\n",
   "queryPlan": {
     "version": "v1",
     "workflowDefinitionId": "assigner-parity",
-    "definitionDigest": "sha256:82b954c015aaa71bf6b69e36422816862db931d0b82072085da428af85b1842d",
+    "definitionDigest": "sha256:f2f84b9d92b35bdfc613bc9a8a6ce6067319a4d5f7d3fee6efc431dc60cb746e",
     "lifecycleTemplates": [
       {
         "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:e029db5930323f0c8fe3e9c7d325112e716b3a6dd1c67a894c400a5c4ff25eff",
@@ -216,9 +215,9 @@
               "The proposal includes an acceptance check."
             ]
           },
-          "children": []
+          "children": [],
+          "flowEntries": []
         },
-        "workerId": "human-agentofreality",
         "evaluatorId": "result-evaluator",
         "orchestratorId": "workflow-coordinator",
         "maxReworkAttempts": 2,
@@ -245,9 +244,9 @@
               "The result does not invent facts."
             ]
           },
-          "children": []
+          "children": [],
+          "flowEntries": []
         },
-        "workerId": "issue-validator",
         "evaluatorId": "result-evaluator",
         "orchestratorId": "workflow-coordinator",
         "maxReworkAttempts": 2,
@@ -283,7 +282,7 @@
   "queryBundle": {
     "version": "v1",
     "workflowDefinitionId": "assigner-parity",
-    "definitionDigest": "sha256:82b954c015aaa71bf6b69e36422816862db931d0b82072085da428af85b1842d",
+    "definitionDigest": "sha256:f2f84b9d92b35bdfc613bc9a8a6ce6067319a4d5f7d3fee6efc431dc60cb746e",
     "queries": [],
     "workgraphReactionQueries": [],
     "sseQueries": [],

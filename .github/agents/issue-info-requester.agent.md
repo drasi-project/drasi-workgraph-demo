@@ -39,6 +39,10 @@ task. The workflow owns the wait. It resumes at C only after a qualifying
 non-agent-human comment on the ordinary Root Issue.
 The reporter emits the strict TaskResult envelope with required task context,
 Dispatch/Lease references, and the information request under `data.output`.
+The output must be an object containing `rootIssueComment`: the exact,
+non-empty Markdown request that should be added to the ordinary Root Issue if
+the Result is accepted. Do not post it yourself. The runtime publishes it only
+after acceptance. Do not use fenced code blocks in the candidate comment.
 
 Never create a nested task, post directly to GitHub, or treat an agent-authored
 comment as a resume event.

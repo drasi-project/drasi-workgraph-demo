@@ -1,9 +1,8 @@
 # WorkGraph v1 definition
 
 `.github/workgraph/workflows/issue-lifecycle.yaml` is the strict generic
-authoring source. It uses `workgraph.drasi.io/v1`, `IssueWorkflow`, and the
-exact `workgraph` trigger. The four task keys are lowercase `a`-`d`. The logical
-graph is:
+authoring source. It uses `workgraph.drasi.io/v1` and `IssueWorkflow`. The four
+task keys are lowercase `a`-`d`. The logical graph is:
 
 ```text
 A intake → B normalize → C inspect → D finalize → completed
@@ -23,6 +22,26 @@ complete compiler output; `.github/workgraph/workflows/issue-lifecycle-v1.body`
 is its `canonicalDefinitionBody`. JavaScript parses and validates the complete
 graph but does not independently compile the YAML.
 
+No compiled field is retained solely to preserve bytes or digests from an
+earlier schema. The canonical required and optional fields represent current
+semantic choices:
+
+- `instructions` is absent when operation and inputs are sufficient;
+  `instructions.details` and `instructions.resultSchema` are independently
+  optional content.
+- compiled task definitions always include object-valued `staticInputs` and
+  array-valued `flowEntries`, using `{}` and `[]` when empty. Missing or null
+  values are rejected.
+- `executionPolicies.*.assignerId` is absent for automatic selection and
+  present for `selection: assigned`.
+
+Other authored omissions are current shorthand that the compiler resolves:
+task `inputs` and `children` become explicit `{}` and `[]`; evaluator,
+orchestrator, and rework overrides become explicit effective policy values.
+Conditional transition fields encode distinct current step kinds rather than
+old wire shapes. None of these omissions is a compatibility parser or a promise
+to retain a pre-v1 digest.
+
 `.github/workgraph/tests/linear-sequence-v1.json` supplies one accepted,
 deterministic Result for each of `a`, `b`, `c`, and `d`. The Node definition
 test binds its exact task-key set and expected terminal outcome to the compiled
@@ -30,11 +49,11 @@ definition and rejects children, outcome transitions, or waits.
 
 ## Scoped flow entries
 
-A task definition may declare `flowEntries`: an ordered, unique list of task
-step IDs it owns as routed child subgraphs. The field is additive and is omitted
-whenever it is empty, so every pre-flow canonical body and digest stays
-byte-identical. `flowEntries` and `children` share one direct-child bound of
-16 tasks, because both become children of the same Fork. A scope's fork depth
+A task definition may author `flowEntries`: an ordered, unique list of task
+step IDs it owns as routed child subgraphs. The compiler always emits the field,
+using `[]` when there are no routed scopes.
+`flowEntries` and `children` share one direct-child bound of 16 tasks, because
+both become children of the same Fork. A scope's fork depth
 also bounds the child trees beneath it: a task authored at fork depth *d* may
 nest at most `MAX_TASK_DEFINITION_DEPTH - d` further child levels, and the
 authoring validator rejects an over-nested tree exactly where the compiled
@@ -73,8 +92,8 @@ A fixed child inherits its parent's routed scope but has no step of its own, so
 native sub-issue of `fix` rather than of `run`.
 `.github/workgraph/tests/scoped-control-flow-v1.json` pins the task parents each
 scope produces: `run` is the sole top-level task and scope members are direct
-sub-issues of their owning container. Its `expected.flowEntries` is the additive
-`WorkGraphTestCase` shape the standalone mock derives, in canonical
+sub-issues of their owning container. Its required `expected.flowEntries` is
+the data the standalone mock derives, in canonical
 `(ownerTaskKey, entryStepId)` order:
 
 | ownerTaskKey | entryStepId | taskKeys | terminalStepId |
@@ -85,9 +104,10 @@ sub-issues of their owning container. Its `expected.flowEntries` is the additive
 
 `taskKeys` is the selected chain from the entry step to that scope's own
 terminal; only its first task is named by the owner's Fork, and the rest are
-authorized by their predecessor's Route. The field is omitted when a definition
-declares no `flowEntries`, so every existing test case stays exactly as valid as
-it was.
+authorized by their predecessor's Route. `expected.flowEntries` is required in
+every `WorkGraphTestCase`; it is `[]` when the selected definition declares no
+routed scopes. Missing or null fields are rejected rather than interpreted as a
+pre-flow test case.
 
 The runtime writes four reserved strings into the tasks it generates:
 `workgraphPredecessorTaskId` for a routed successor, and
@@ -96,23 +116,31 @@ The runtime writes four reserved strings into the tasks it generates:
 not author them where they would be generated, so a step that some transition
 targets may not declare `workgraphPredecessorTaskId`, and no task of a routed
 scope — including the nested children that inherit the scope — may declare any
-of the four. A trunk step that no transition targets is unaffected, which keeps
-every existing definition byte-identical.
+of the four. A trunk step that no transition targets is unaffected.
 
 The Rust compiler stays authoritative;
 `.github/workgraph/fixtures/v1/scoped-control-flow.expected.json` is the exact
 compiler output and
 `.github/workgraph/workflows/scoped-control-flow-v1.body` is its
-`canonicalDefinitionBody`. `node scripts/check-workgraph-compiler.mjs` compares
-all seven Demo workflows against the sibling compiler byte-for-byte.
+`canonicalDefinitionBody`. `scripts/check-workgraph-compiler.mjs` compares all
+seven Demo workflows against the explicitly configured WorkGraph compiler
+workspace byte-for-byte.
 
 ## Human and agent parity
 
 A workflow references an actor ID identically whoever executes it. Only the
-`version: 2` actor catalog in `.github/workgraph/agents.yaml` decides whether an
-actor is an `agent` (which names a custom-agent profile, defaulting to its own
-ID) or a `human` (which binds the exact GitHub `databaseId`, `nodeId`, and
-`login` that person speaks as). A human worker takes a normal Assignment,
+strict `version: 1` actor catalog in `.github/workgraph/agents.yaml` decides
+whether an actor is an `agent` (which names a custom-agent profile) or a `human`
+(which binds the exact GitHub `databaseId`, `nodeId`, and `login` that person
+speaks as). The numeric version, root shape, and actor shapes reject unknown
+fields. The catalog requires 1–64 actors; every actor has 1–16 slots and a
+whole-second ISO-8601 lease duration from one second through 24 hours. Agent
+actors require non-null `customAgent` and `createPullRequest` fields and forbid
+`github`. Human actors require `github.databaseId`, `github.nodeId`, and
+`github.login`, and forbid the two agent-only fields, including null values.
+Catalog `version: 2` and the old `agents`/`agentId` shape are invalid rather than
+normalized, and no derived flat `agents` view exists.
+A human worker takes a normal Assignment,
 Lease, and Dispatch; a human evaluator takes none, exactly like an agent
 evaluator.
 
@@ -140,19 +168,18 @@ are content at a position, never identity: they do not change the path-derived
 `taskDefinitionId`, and are pinned by the workflow digest like operation,
 inputs, and routing already are.
 
-`worker` accepts either the original scalar form or a candidate set:
+`worker` is an explicit candidate set, including for one automatic executor:
 
 ```yaml
       worker:
-        candidates: [human-agentofreality, issue-worker]
+        candidates: [issue-worker]
         selection: first-available
 ```
 
 Authored order carries no priority. Candidates are canonicalized into sorted
-order as `routing.permittedExecutors`, and the canonical first candidate becomes
-`policy.workerId` as the default. Membership is what authorizes execution, so a
-single-candidate set compiles byte-identically to the equivalent scalar. No
-permitted executor may also be the task's evaluator or orchestrator.
+order as `routing.permittedExecutors`, and membership is what authorizes
+execution. Scalar `worker` values are rejected. No permitted executor may also
+be the task's evaluator or orchestrator.
 
 `.github/workgraph/workflows/human-parity.yaml` exercises both directions in
 sequence: a human worker graded by the `result-evaluator` agent, then the
@@ -198,8 +225,7 @@ Result or Evaluation it backs: `responseId` does not change, so a repeated
 `responseId` on one task is rejected.
 
 Result and Evaluation may carry an optional `references.response` naming that
-evidence. It never participates in ID derivation and is omitted when absent, so
-every pre-Response body and digest stays byte-identical.
+evidence. It never participates in ID derivation and is omitted when absent.
 
 ## Runtime message envelope
 
@@ -209,7 +235,7 @@ Every task and lifecycle body contains exactly `apiVersion`, `kind`, `id`,
 definition ID, version, digest, task-definition ID, `taskKey`, and `operation`.
 The markers and kinds are Task, TaskFork, TaskJoin, TaskAssignmentRequest,
 TaskAssignment, TaskDispatch, TaskResult, TaskEvaluation, TaskRoute, and TaskError using their matching
-`WorkGraph<kind>/v1` marker. Flat legacy bodies and old marker spellings are not
+`WorkGraph<kind>/v1` marker. No alternate flat body or marker spelling is
 accepted.
 
 The ten task-comment message kinds are the `WorkGraphTaskAction` log.
@@ -219,21 +245,21 @@ Result/Evaluation pairs.
 
 Every runtime `taskId` must match the canonical form
 `urn:drasi:workgraph:id:v1:task:sha256:<64 lowercase hex>`. Root Task IDs hash
-the same
-length-framed `(workflowRunId, rootTaskDefinitionId)` inputs as before. Forked
-children and routed successors retain their existing length-framed
-`(workflowRunId, parentTaskId, taskDefinitionId)` inputs. Only the namespace and
-full 64-hex representation changed. Legacy `wgt-*`, pre-URN IDs, arbitrary
-names, uppercase hex, and malformed digests are
-rejected by Task and lifecycle formatters, parsers, and ID derivation helpers.
+length-framed `(workflowRunId, rootTaskDefinitionId)` inputs. Forked children
+and routed successors hash
+`(workflowRunId, parentTaskId, taskDefinitionId)`. Arbitrary names, uppercase
+hex, and malformed digests are rejected by Task and lifecycle formatters,
+parsers, and ID derivation helpers.
 
-References/data are strict: Task uses `{}`/`{resolvedInputs}`; Fork records
+References/data are strict: Task uses `{}`/`{resolvedInputs}`, where
+`resolvedInputs` is a required object even when empty; missing or null values
+are rejected. Fork records
 ordered child TaskDefinition/Task references; Join records its Fork and ordered
 child Task/Result/Evaluation references. AssignmentRequest carries an assigner,
-canonical candidates, and optional decision instructions. Legacy Assignment
+canonical candidates, and optional decision instructions. Automatic Assignment
 uses `{join:{kind,id}|null}`/`{permittedExecutors}`; decision-bound Assignment
-also references its request and optional human Response and carries the
-assigner and rationale. Dispatch uses `{assignment:{kind,id}}` with
+also references its request and optional human Response and carries the assigner
+and rationale. Dispatch uses `{assignment:{kind,id}}` with
 `{launchId, lease:{id,executorId,slotId}}`; Result uses
 typed `dispatch` and `lease` roles with `{attempt,outcome,output}`; Evaluation
 uses a typed `result` role; and Route uses typed `result` and `evaluation`
@@ -268,41 +294,60 @@ and rejected feedback is non-empty.
 ## Admission-first proof
 
 `.github/workgraph/fixtures/v1/live-proof-inputs.json` starts with an ordinary
-Root Issue carrying the exact `workgraph` label and a GitHub delivery ID. The
-proof derives:
+Root Issue carrying its exact `workgraph:issue-lifecycle` selector label and
+source-supplied `workflowMappings`. Each mapping carries its own immutable
+admission-generation ID. The proof consumes that ID without recomputing it, then
+derives:
 
-1. the admission-generation ID;
-2. the Root Issue content digest;
-3. the workflow run ID;
-4. the Root Task ID and canonical body;
-5. the first lifecycle state, `ASSIGN`, because the Root Task is a leaf.
+1. the Root Issue content digest;
+2. the workflow run ID from the selected mapping admission;
+3. the Root Task ID and canonical body;
+4. the first lifecycle state, `ASSIGN`, because the Root Task is a leaf.
 
 No Root Task is pre-seeded. In live mode the `workgraph-v1` Reaction consumes
-`wg-issues-waiting-for-admission` and creates the Root Task as a native child of
-the Root Issue.
+the selected mapping admission from `wg-root-state` and creates the Root Task as
+a native child of the Root Issue.
+
+The WorkGraph Source derives a mapping admission from the Root Issue ID, activating GitHub
+delivery ID, mapping ID, and exact selector label, in that order. Therefore one
+delivery can activate several mappings without sharing an admission ID. The
+mapping's ID and frozen title/body survive later edits while it remains active;
+reactivation after removal is a new generation. There is no mapping-agnostic or
+top-level admission fallback.
 
 The proof pins the complete runtime query inventory:
 
 - 1 admission query;
-- 13 lifecycle queries;
-- 10 detail queries, including Route, Error, and terminal detail;
-- no per-edge entry, sequence, branch, fork, or terminal queries;
-- 24 total shape-independent queries in that exact category order.
+- 4 task, action, lease, and Root-comment queries;
+- no per-edge entry, sequence, branch, fork, wait, or terminal queries;
+- 5 total shape-independent queries in canonical order.
 
 `runtimeContract` names `server-config-v1-loopback.yaml` and
 `data/workgraph-v1-loopback.redb`; production runtime names are not valid proof
 inputs. Its keys are exactly the Source and Reaction IDs, those two loopback
 paths, `queryIds`, and `queryContractDigest`. The query list must be the exact
-ordered 24 IDs from the canonical sibling Dogfooding Canvas inventory.
+ordered five IDs from the vendored WorkGraph runtime contract.
 
 `queryContractDigest` is `sha256:` plus the SHA-256 of compact JSON for the
-ordered 24 entries projected to exactly `{"id","sha256"}` (with keys in that
-order). The generic entries and hashes are read only from
-`../drasi-dogfooding/.github/extensions/workgraph-v1-view/contract/query-inventory.json`;
-the compiled inventory is empty for workflows without waits. A human wait adds
-only its content-addressed resume query. This binds the offline proof to query
-content as well as query names without multiplying queries for sequential,
-branch, or parallel tasks.
+ordered five entries projected to exactly `{"id","sha256"}` (with keys in that
+order). The entries and hashes are read only from
+`.github/workgraph/contracts/runtime-v1.json`, a byte-identical generated copy
+of WorkGraph's canonical `git-workgraph/contract/runtime-v1.json`; the compiler
+inventory must be empty. This binds the offline proof to query content as well
+as query names without multiplying queries for any workflow shape.
+
+Deployment requires one or more Source `workflowMappings`, each binding an
+exact `workgraph:<workflow-id>` label to a definition location, plus the
+separate, non-null `admissionRead` object. Its token is required and non-empty;
+its resolved `apiBaseUrl` is non-empty, although the URL may use its field
+default when the object is present. `agentConfig` is only the actor-catalog
+reader and is never reused for authoritative Issue reads. `agentConfig` and
+`protocolTrust` are required non-null objects, and each of
+`protocolTrust.taskCreators`, `assigners`, and `reporters` must be non-empty.
+There is no passive Source-only mode: the Source converges the actor catalog
+before accepting delivery. The Reaction resolves only mapping locations
+projected on Root facts; it has no top-level `workflowDefinition` or admission
+fallback.
 
 Run:
 
@@ -311,12 +356,15 @@ node --check .github/mcp/workgraph-v1-definition.mjs
 node --check scripts/prepare-workgraph-v1-proof.mjs
 node --test tests/workgraph-v1-definition.test.mjs
 node scripts/prepare-workgraph-v1-proof.mjs
-node scripts/check-workgraph-compiler.mjs
+WORKGRAPH_PLUGINS_DIR=../drasi-dogfooding/git-workgraph/plugins \
+  node scripts/check-workgraph-compiler.mjs
 ```
 
-Use `node scripts/check-workgraph-compiler.mjs --write` to regenerate the
-expected output and canonical body before materializing the Dogfooding runtime
-configuration. A second `--write` run must leave the worktree unchanged.
+Use `WORKGRAPH_PLUGINS_DIR=<path> node
+scripts/check-workgraph-compiler.mjs --write` to regenerate the expected output
+and canonical body from the WorkGraph-owned compiler before materializing the
+Dogfooding runtime configuration. A second `--write` run must leave the
+worktree unchanged.
 
 The fixture keeps server, Source, Queries, and Reaction inactive. It records
 `dryRun: true`, `liveAcknowledgment: false`, and

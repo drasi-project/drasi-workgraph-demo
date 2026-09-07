@@ -68,12 +68,6 @@ const RESERVED_MARKERS = [
   TASK_ERROR_MARKER,
   TASK_RESPONSE_MARKER,
 ];
-const DEFINITION_KEYS = [
-  "workflowDefinitionId",
-  "version",
-  "digest",
-  "root",
-];
 const TASK_DEFINITION_KEYS = [
   "taskDefinitionId",
   "taskKey",
@@ -81,10 +75,9 @@ const TASK_DEFINITION_KEYS = [
   "routing",
   "staticInputs",
   "children",
+  "flowEntries",
 ];
-// `flowEntries` is additive: a definition that owns no routed scope omits it
-// entirely, so every pre-flow canonical body and digest stays byte-identical.
-const TASK_DEFINITION_OPTIONAL_KEYS = ["instructions", "flowEntries"];
+const TASK_DEFINITION_OPTIONAL_KEYS = ["instructions"];
 const ROUTING_KEYS = ["permittedExecutors"];
 const RUNTIME_TASK_KEYS = [
   "taskId",
@@ -229,7 +222,6 @@ function normalizeTaskInstructions(value, context) {
 // Declaration-local `flowEntries` invariants: ordered unique step IDs sharing
 // one direct-child bound with the fixed children of the same definition.
 function normalizeFlowEntries(value, childCount, taskDefinitionId, context) {
-  if (value === undefined) return [];
   if (!Array.isArray(value)) {
     throw new WorkGraphDefinitionError(`${context}.flowEntries must be an array`);
   }
@@ -450,135 +442,6 @@ function prettyJson(value, depth = 0, dataMode = false) {
     .join(",\n")}\n${indent}}`;
 }
 
-function normalizeTaskDefinition(task, context, depth, identities) {
-  taskDefinitionKeys(task, context);
-  if (depth > MAX_TASK_DEFINITION_DEPTH) {
-    throw new WorkGraphDefinitionError(
-      `task definition nesting exceeds maximum depth ${MAX_TASK_DEFINITION_DEPTH}`,
-    );
-  }
-  validateWorkGraphProtocolId(
-    task.taskDefinitionId,
-    "task-definition",
-    `${context}.taskDefinitionId`,
-  );
-  identifier(task.taskKey, `${context}.taskKey`);
-  identifier(task.operation, `${context}.operation`);
-  if (identities.definitionIds.has(task.taskDefinitionId)) {
-    throw new WorkGraphDefinitionError(
-      `workflow definition repeats taskDefinitionId '${task.taskDefinitionId}'`,
-    );
-  }
-  if (identities.taskKeys.has(task.taskKey)) {
-    throw new WorkGraphDefinitionError(
-      `workflow definition repeats taskKey '${task.taskKey}'`,
-    );
-  }
-  identities.definitionIds.add(task.taskDefinitionId);
-  identities.taskKeys.add(task.taskKey);
-
-  exactKeys(task.routing, ROUTING_KEYS, `${context}.routing`);
-  if (
-    !Array.isArray(task.routing.permittedExecutors) ||
-    task.routing.permittedExecutors.length < 1 ||
-    task.routing.permittedExecutors.length > MAX_TASK_DEFINITION_EXECUTORS
-  ) {
-    throw new WorkGraphDefinitionError(
-      `${context}.routing.permittedExecutors must contain 1-${MAX_TASK_DEFINITION_EXECUTORS} entries`,
-    );
-  }
-  const executors = new Set();
-  for (const executor of task.routing.permittedExecutors) {
-    identifier(executor, `${context}.routing.permittedExecutors`);
-    if (executors.has(executor)) {
-      throw new WorkGraphDefinitionError(
-        `task definition repeats permitted executor '${executor}'`,
-      );
-    }
-    executors.add(executor);
-  }
-  if (!Array.isArray(task.children)) {
-    throw new WorkGraphDefinitionError(`${context}.children must be an array`);
-  }
-  if (task.children.length > MAX_TASK_DEFINITION_CHILDREN) {
-    throw new WorkGraphDefinitionError(
-      `task definition '${task.taskDefinitionId}' exceeds ${MAX_TASK_DEFINITION_CHILDREN} direct children`,
-    );
-  }
-  for (let index = 1; index < task.children.length; index += 1) {
-    if (task.children[index - 1].taskKey >= task.children[index].taskKey) {
-      throw new WorkGraphDefinitionError(
-        `task definition '${task.taskDefinitionId}' children must be ordered by unique taskKey`,
-      );
-    }
-  }
-  const flowEntries = normalizeFlowEntries(
-    task.flowEntries,
-    task.children.length,
-    task.taskDefinitionId,
-    context,
-  );
-
-  return {
-    taskDefinitionId: task.taskDefinitionId,
-    taskKey: task.taskKey,
-    operation: task.operation,
-    routing: {
-      permittedExecutors: [...task.routing.permittedExecutors],
-    },
-    staticInputs: dataMap(task.staticInputs, `${context}.staticInputs`),
-    ...(task.instructions === undefined
-      ? {}
-      : {
-          instructions: normalizeTaskInstructions(
-            task.instructions,
-            `${context}.instructions`,
-          ),
-        }),
-    children: task.children.map((child, index) =>
-      normalizeTaskDefinition(
-        child,
-        `${context}.children[${index}]`,
-        depth + 1,
-        identities,
-      ),
-    ),
-    ...(flowEntries.length > 0 ? { flowEntries } : {}),
-  };
-}
-
-export function normalizeWorkflowDefinition(definition) {
-  exactKeys(definition, DEFINITION_KEYS, "workflow definition");
-  identifier(
-    definition.workflowDefinitionId,
-    "workflow definition workflowDefinitionId",
-  );
-  identifier(definition.version, "workflow definition version");
-  digest(definition.digest, "workflow definition digest");
-  return {
-    workflowDefinitionId: definition.workflowDefinitionId,
-    version: definition.version,
-    digest: definition.digest,
-    root: normalizeTaskDefinition(
-      definition.root,
-      "workflow definition root",
-      0,
-      { definitionIds: new Set(), taskKeys: new Set() },
-    ),
-  };
-}
-
-export function formatWorkflowDefinition(definition) {
-  const normalized = normalizeWorkflowDefinition(definition);
-  const body = `${WORKFLOW_DEFINITION_MARKER}\n\n\`\`\`json\n${prettyJson(normalized)}\n\`\`\`\n`;
-  if (new TextEncoder().encode(body).length > MAX_WORKGRAPH_BODY_BYTES) {
-    throw new WorkGraphDefinitionError(
-      `${WORKFLOW_DEFINITION_MARKER} body exceeds ${MAX_WORKGRAPH_BODY_BYTES} bytes`,
-    );
-  }
-  return body;
-}
-
 function parseCanonicalBody(body, marker, formatter) {
   if (
     typeof body !== "string" ||
@@ -602,14 +465,6 @@ function parseCanonicalBody(body, marker, formatter) {
     throw new WorkGraphDefinitionError(`${marker} body is not canonical`);
   }
   return value;
-}
-
-export function parseWorkflowDefinition(body) {
-  return parseCanonicalBody(
-    body,
-    WORKFLOW_DEFINITION_MARKER,
-    formatWorkflowDefinition,
-  );
 }
 
 export function formatCompiledWorkflowDefinition(definition) {
@@ -665,11 +520,7 @@ export function normalizeTaskIdentity(value, context = "task identity") {
 }
 
 function taskIdentity(value) {
-  return {
-    taskId: value.taskId,
-    workflowRunId: value.workflowRunId,
-    ...Object.fromEntries(CONTEXT_KEYS.map((key) => [key, value[key]])),
-  };
+  return Object.fromEntries(TASK_IDENTITY_KEYS.map((key) => [key, value[key]]));
 }
 
 function envelopeObject(kind, id, value, references, data) {
@@ -682,7 +533,7 @@ function envelopeObject(kind, id, value, references, data) {
   );
   validateWorkGraphTaskId(value.taskId, `${kind} taskId`);
   const identity = normalizeTaskIdentity(
-    value.task ?? taskIdentity(value),
+    value.task,
     `${kind} task`,
   );
   if (
@@ -835,7 +686,7 @@ export function formatRuntimeTask(task) {
     RUNTIME_TASK_MARKER,
     "Task",
     normalized.taskId,
-    normalized,
+    { ...normalized, task: taskIdentity(normalized) },
     {},
     { resolvedInputs: normalized.resolvedInputs },
   );
@@ -865,10 +716,7 @@ export function parseRuntimeTask(body) {
 }
 
 export function validateRootRuntimeTask(definition, task) {
-  const normalizedDefinition =
-    "steps" in definition
-      ? normalizeCompiledWorkflowDefinition(definition)
-      : normalizeWorkflowDefinition(definition);
+  const normalizedDefinition = normalizeCompiledWorkflowDefinition(definition);
   const normalizedTask = normalizeRuntimeTask(task);
   const expected = {
     workflowDefinitionId: normalizedDefinition.workflowDefinitionId,
@@ -890,7 +738,7 @@ export function validateRootRuntimeTask(definition, task) {
 
 const WORKFLOW_KEYS = ["apiVersion", "kind", "metadata", "spec"];
 const WORKFLOW_METADATA_KEYS = ["id"];
-const WORKFLOW_SPEC_KEYS = ["trigger", "initial", "defaults", "steps"];
+const WORKFLOW_SPEC_KEYS = ["initial", "defaults", "steps"];
 const WORKFLOW_DEFAULT_KEYS = [
   "evaluator",
   "orchestrator",
@@ -923,14 +771,13 @@ const CHILD_TASK_KEYS = [
   "flowEntries",
   "instructions",
 ];
-const CHILDREN_KEYS = ["join", "tasks"];
+const CHILDREN_KEYS = ["tasks"];
 const WAIT_STEP_KEYS = ["type", "event", "next"];
 const TERMINAL_STEP_KEYS = ["type", "outcome"];
 const COMPILED_DEFINITION_KEYS = [
   "workflowDefinitionId",
   "version",
   "digest",
-  "trigger",
   "defaults",
   "initialStepId",
   "root",
@@ -1182,9 +1029,6 @@ function normalizeChildren(value, workflowDefaults, context, depth, label) {
     );
   }
   exactKeys(value, CHILDREN_KEYS, context);
-  if (value.join !== "all") {
-    throw new WorkGraphDefinitionError(`${context}.join must be all`);
-  }
   if (!object(value.tasks) || Object.keys(value.tasks).length === 0) {
     throw new WorkGraphDefinitionError(`${context}.tasks must be a non-empty map`);
   }
@@ -1204,19 +1048,12 @@ function normalizeChildren(value, workflowDefaults, context, depth, label) {
       `${label} child task '${id}'`,
     );
   }
-  return { join: value.join, tasks };
+  return { tasks };
 }
 
-// The authored worker selector. The scalar form is the original v1 contract.
-// The object form authorizes a candidate *set* so a human actor and an agent
-// actor are interchangeable on the same task. Authored order carries no
-// priority: it is preserved in the authored definition and canonicalized by
-// sorting into the compiled `permittedExecutors`.
+// The authored worker selector is always an explicit candidate set. Authored
+// order carries no priority and is canonicalized into `permittedExecutors`.
 function normalizeWorkerSelector(value, context) {
-  if (typeof value === "string") {
-    identifier(value, context);
-    return value;
-  }
   exactKeys(value, ["candidates", "selection"], context);
   if (!["first-available", "assigned"].includes(value.selection)) {
     throw new WorkGraphDefinitionError(
@@ -1245,19 +1082,9 @@ function normalizeWorkerSelector(value, context) {
   return { candidates: [...value.candidates], selection: value.selection };
 }
 
-// Every authorized executor in canonical (sorted) order. A single-candidate
-// set therefore compiles identically to the equivalent scalar form.
+// Every authorized executor in canonical (sorted) order.
 export function workerSelectorCandidates(worker) {
-  return typeof worker === "string"
-    ? [worker]
-    : [...worker.candidates].sort(utf8Compare);
-}
-
-// The canonical default executor: first in canonical order. This is the
-// default `policy.workerId`, not a priority claim: any permitted executor may
-// end up holding the lease.
-export function workerSelectorPreferred(worker) {
-  return workerSelectorCandidates(worker)[0];
+  return [...worker.candidates].sort(utf8Compare);
 }
 
 function normalizeChildTask(value, workflowDefaults, context, depth, label) {
@@ -1309,17 +1136,17 @@ function normalizeChildTask(value, workflowDefaults, context, depth, label) {
       identifier(value[role], `${context}.${role}`);
       normalized[role] = value[role];
     }
-    const assigned = typeof worker !== "string" && worker.selection === "assigned";
-    if (assigned !== (normalized.assigner !== undefined)) {
-      throw new WorkGraphDefinitionError(
-        `${context} selection: assigned requires an assigner, and an assigner requires selection: assigned`,
-      );
-    }
-    if (assigned && worker.candidates.includes(normalized.assigner)) {
-      throw new WorkGraphDefinitionError(
-        `${context} assigner '${normalized.assigner}' must not be one of its own candidates`,
-      );
-    }
+  }
+  const assigned = worker.selection === "assigned";
+  if (assigned !== (normalized.assigner !== undefined)) {
+    throw new WorkGraphDefinitionError(
+      `${context} selection: assigned requires an assigner, and an assigner requires selection: assigned`,
+    );
+  }
+  if (assigned && worker.candidates.includes(normalized.assigner)) {
+    throw new WorkGraphDefinitionError(
+      `${context} assigner '${normalized.assigner}' must not be one of its own candidates`,
+    );
   }
   if ("maxReworkAttempts" in value) {
     boundedCount(value.maxReworkAttempts, `${context}.maxReworkAttempts`);
@@ -1427,17 +1254,17 @@ function normalizeWorkflowStep(id, value, stepIds) {
       identifier(value[role], `${context}.${role}`);
       normalized[role] = value[role];
     }
-    const assigned = typeof worker !== "string" && worker.selection === "assigned";
-    if (assigned !== (normalized.assigner !== undefined)) {
-      throw new WorkGraphDefinitionError(
-        `${context} selection: assigned requires an assigner, and an assigner requires selection: assigned`,
-      );
-    }
-    if (assigned && worker.candidates.includes(normalized.assigner)) {
-      throw new WorkGraphDefinitionError(
-        `${context} assigner '${normalized.assigner}' must not be one of its own candidates`,
-      );
-    }
+  }
+  const assigned = worker.selection === "assigned";
+  if (assigned !== (normalized.assigner !== undefined)) {
+    throw new WorkGraphDefinitionError(
+      `${context} selection: assigned requires an assigner, and an assigner requires selection: assigned`,
+    );
+  }
+  if (assigned && worker.candidates.includes(normalized.assigner)) {
+    throw new WorkGraphDefinitionError(
+      `${context} assigner '${normalized.assigner}' must not be one of its own candidates`,
+    );
   }
   if ("maxReworkAttempts" in value) {
     boundedCount(value.maxReworkAttempts, `${context}.maxReworkAttempts`);
@@ -1698,11 +1525,6 @@ export function normalizeIssueWorkflow(workflow) {
   exactKeys(workflow.metadata, WORKFLOW_METADATA_KEYS, "issue workflow metadata");
   identifier(workflow.metadata.id, "issue workflow metadata.id");
   exactKeys(workflow.spec, WORKFLOW_SPEC_KEYS, "issue workflow spec");
-  if (workflow.spec.trigger !== "workgraph") {
-    throw new WorkGraphDefinitionError(
-      "issue workflow spec.trigger must be workgraph",
-    );
-  }
   exactKeys(workflow.spec.defaults, WORKFLOW_DEFAULT_KEYS, "workflow defaults");
   identifier(workflow.spec.defaults.evaluator, "workflow defaults.evaluator");
   identifier(
@@ -1785,7 +1607,6 @@ export function normalizeIssueWorkflow(workflow) {
     kind: workflow.kind,
     metadata: { id: workflow.metadata.id },
     spec: {
-      trigger: workflow.spec.trigger,
       initial: workflow.spec.initial,
       defaults: {
         evaluator: workflow.spec.defaults.evaluator,
@@ -1859,7 +1680,7 @@ function normalizeCompiledTaskDefinition(value, context, depth = 0) {
         depth + 1,
       ),
     ),
-    ...(flowEntries.length > 0 ? { flowEntries } : {}),
+    flowEntries,
   };
 }
 
@@ -1876,9 +1697,8 @@ function normalizeExecutionPolicies(value, context) {
       );
       exactAllowedKeys(
         policy,
-        ["workerId", "evaluatorId", "orchestratorId", "maxReworkAttempts"],
+        ["evaluatorId", "orchestratorId", "maxReworkAttempts"],
         [
-          "workerId",
           "evaluatorId",
           "orchestratorId",
           "assignerId",
@@ -1886,7 +1706,7 @@ function normalizeExecutionPolicies(value, context) {
         ],
         `${context}.${taskDefinitionId}`,
       );
-      for (const role of ["workerId", "evaluatorId", "orchestratorId"]) {
+      for (const role of ["evaluatorId", "orchestratorId"]) {
         identifier(policy[role], `${context}.${taskDefinitionId}.${role}`);
       }
       if (policy.assignerId !== undefined) {
@@ -1899,7 +1719,6 @@ function normalizeExecutionPolicies(value, context) {
       return [
         taskDefinitionId,
         {
-          workerId: policy.workerId,
           evaluatorId: policy.evaluatorId,
           orchestratorId: policy.orchestratorId,
           ...(policy.assignerId === undefined
@@ -1965,13 +1784,6 @@ function validateCompiledPolicies(taskDefinition, policies, context) {
   }
   for (const [taskDefinitionId, task] of tasks) {
     const policy = policies[taskDefinitionId];
-    // Permitted executors are a set: any member may end up holding the lease,
-    // so workerId only has to be a member, not the sole entry.
-    if (!task.routing.permittedExecutors.includes(policy.workerId)) {
-      throw new WorkGraphDefinitionError(
-        `${context}.${taskDefinitionId}.workerId must be one of its permitted executors`,
-      );
-    }
     // No actor grades or routes its own work. Because any permitted executor
     // can hold the lease, separation of duties holds for the whole set.
     for (const executor of task.routing.permittedExecutors) {
@@ -2082,10 +1894,8 @@ export function normalizeCompiledWorkflowDefinition(definition) {
     definition.workflowDefinitionId,
     "compiled workflow workflowDefinitionId",
   );
-  if (definition.version !== "v1" || definition.trigger !== "workgraph") {
-    throw new WorkGraphDefinitionError(
-      "compiled workflow must use version v1 and trigger workgraph",
-    );
+  if (definition.version !== "v1") {
+    throw new WorkGraphDefinitionError("compiled workflow must use version v1");
   }
   digest(definition.digest, "compiled workflow digest");
   exactKeys(definition.defaults, WORKFLOW_DEFAULT_KEYS, "compiled defaults");
@@ -2235,7 +2045,6 @@ export function normalizeCompiledWorkflowDefinition(definition) {
     workflowDefinitionId: definition.workflowDefinitionId,
     version: definition.version,
     digest: definition.digest,
-    trigger: definition.trigger,
     defaults: { ...definition.defaults },
     initialStepId: definition.initialStepId,
     root,
@@ -3194,8 +3003,7 @@ export function normalizeTaskResult(value) {
     attempt: value.attempt,
     outcome: value.outcome,
     output: lifecycleData(value.output, "task Result output"),
-    // Provenance only: never part of Result ID derivation, and omitted so
-    // every pre-Response Result body and digest stays byte-identical.
+    // Provenance only: never part of Result ID derivation.
     ...(value.response === undefined || value.response === null
       ? {}
       : {

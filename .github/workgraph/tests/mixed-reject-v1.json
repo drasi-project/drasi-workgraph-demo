@@ -10,7 +10,7 @@
       "title": "Mixed WorkGraph reject proof",
       "body": "Exercise the alternate branch that reaches the ignored terminal.",
       "labels": [
-        "workgraph"
+        "workgraph:mixed-control-flow"
       ]
     },
     "steps": {
@@ -54,7 +54,8 @@
         "b": null,
         "c": null
       },
-      "terminalOutcome": "ignored"
+      "terminalOutcome": "ignored",
+      "flowEntries": []
     }
   }
 }

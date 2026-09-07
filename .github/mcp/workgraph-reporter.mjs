@@ -70,20 +70,11 @@ const OWNER = "drasi-project";
 const REPO = "drasi-workgraph-demo";
 const REPOSITORY_URL = `${API}/repos/${OWNER}/${REPO}`;
 const TASK_TYPE_NAME = "WorkGraphTask";
-const WORKFLOW_DEFINITION_ID = "issue-lifecycle";
-const WORKFLOW_DEFINITION_VERSION = "v1";
-const WORKFLOW_DEFINITION_DIGEST = `sha256:${"a".repeat(64)}`;
-const ROOT_TASK_DEFINITION_ID = deriveWorkGraphProtocolId("task-definition", [
-  "root-v1",
-]);
-const VALIDATOR_TASK_DEFINITION_ID = deriveWorkGraphProtocolId(
-  "task-definition",
-  ["validate-v1"],
-);
 const LEASE_VALIDATION_PATH = "/github/workgraph-v1/lease/validate";
 const MAX_ID_BYTES = 256;
 const MAX_LEASE_ATTEMPT = 64;
 const MAX_LIFECYCLE_ATTEMPT = 17;
+const MAX_ROOT_ISSUE_RESULT_COMMENT_BYTES = 16 * 1024;
 const RUNTIME_ROUTE_POLICY = Object.freeze({
   error: true,
   ignore: true,
@@ -283,6 +274,24 @@ function canonicalJsonValue(value, label = "output", depth = 0) {
   );
 }
 
+function agentResultOutput(value) {
+  const output = canonicalJsonValue(value);
+  if (!object(output)) {
+    throw new WorkGraphReporterError("arguments.output must be an object");
+  }
+  const comment = output.rootIssueComment;
+  if (
+    typeof comment !== "string" ||
+    comment.trim().length === 0 ||
+    Buffer.byteLength(comment, "utf8") > MAX_ROOT_ISSUE_RESULT_COMMENT_BYTES
+  ) {
+    throw new WorkGraphReporterError(
+      `arguments.output.rootIssueComment must be 1-${MAX_ROOT_ISSUE_RESULT_COMMENT_BYTES} bytes of comment-ready Markdown`,
+    );
+  }
+  return output;
+}
+
 function framedSha256(parts) {
   const hash = createHash("sha256");
   for (const value of parts) {
@@ -293,12 +302,6 @@ function framedSha256(parts) {
     hash.update(bytes);
   }
   return hash.digest("hex");
-}
-
-export function deriveWorkGraphAdmissionId(rootIssueId, deliveryId) {
-  opaque(rootIssueId, "rootIssueId");
-  opaque(deliveryId, "deliveryId");
-  return deriveWorkGraphProtocolId("admission", [rootIssueId, deliveryId]);
 }
 
 export function deriveWorkGraphRootIssueContentDigest(title, body) {
@@ -401,14 +404,6 @@ function envUserId(name) {
   return value;
 }
 
-// An unset variable yields `null` so a caller can fall back, but a variable
-// that is set must still be a well-formed user ID.
-function optionalEnvUserId(name) {
-  const value = process.env[name] ?? "";
-  if (value === "") return null;
-  return envUserId(name);
-}
-
 function apiBaseUrl() {
   const configured = process.env.WORKGRAPH_TEST_GITHUB_API_URL;
   if (!configured) return API;
@@ -472,7 +467,6 @@ function configuration(toolName) {
   }
   const taskTypeId = env("COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID");
   opaque(taskTypeId, "COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID");
-  const resultId = envUserId("COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID");
   const config = {
     token: env("COPILOT_MCP_WORKGRAPH_TOKEN"),
     taskTypeId,
@@ -480,16 +474,8 @@ function configuration(toolName) {
     assignmentId: envUserId(
       "COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID",
     ),
-    resultId,
-    // Worker tools read a routed predecessor's Route to validate scoped
-    // ancestry, so every tool needs the Route author identity. Under the
-    // current single-token deployment every lifecycle comment authenticates as
-    // the Result reporter user, so that is the default when a profile does not
-    // inject a separate Route reporter identity. Lifecycle orchestrator tools
-    // still require and use their own explicit value below.
-    routeId:
-      optionalEnvUserId("COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID") ??
-      resultId,
+    resultId: envUserId("COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID"),
+    routeId: envUserId("COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID"),
     api: apiBaseUrl(),
   };
   if (toolName === "submit_task_result") {
@@ -700,43 +686,6 @@ function taskIssue(issue, locator, config, label) {
   }
 }
 
-function validateTaskContract(task, label) {
-  if (
-    task.workflowDefinitionId !== WORKFLOW_DEFINITION_ID ||
-    task.workflowDefinitionVersion !== WORKFLOW_DEFINITION_VERSION ||
-    task.workflowDefinitionDigest !== WORKFLOW_DEFINITION_DIGEST ||
-    ![ROOT_TASK_DEFINITION_ID, VALIDATOR_TASK_DEFINITION_ID].includes(
-      task.taskDefinitionId,
-    )
-  ) {
-    throw new WorkGraphReporterError(
-      `${label} does not belong to the pinned v1 workflow`,
-    );
-  }
-  const expectedMetadata =
-    task.taskDefinitionId === ROOT_TASK_DEFINITION_ID
-      ? { taskKey: "root", operation: "coordinate-issue" }
-      : { taskKey: "validate", operation: "validate-issue" };
-  validateTaskMetadata(task, expectedMetadata, label);
-  if (task.taskDefinitionId === ROOT_TASK_DEFINITION_ID) {
-    exact(task.resolvedInputs, ["proofMode", "rootIssue"], `${label} resolvedInputs`);
-    if (task.resolvedInputs.proofMode !== "isolated") {
-      throw new WorkGraphReporterError(`${label} proofMode must be isolated`);
-    }
-  } else {
-    exact(
-      task.resolvedInputs,
-      ["validationProfile"],
-      `${label} resolvedInputs`,
-    );
-    if (task.resolvedInputs.validationProfile !== "new-issue-default") {
-      throw new WorkGraphReporterError(
-        `${label} validationProfile is not canonical`,
-      );
-    }
-  }
-}
-
 function linkedIssue(link, number, nodeId, label) {
   if (
     !object(link) ||
@@ -756,11 +705,7 @@ function hasAdmissionLabel(issue) {
   if (names.some((name) => ["workgraph:ignore", "workgraph:error"].includes(name))) {
     return false;
   }
-  return names.some(
-    (name) =>
-      name === "workgraph" ||
-      /^workgraph:[A-Za-z0-9._-]{1,64}$/.test(name),
-  );
+  return names.some((name) => /^workgraph:[A-Za-z0-9._-]{1,64}$/.test(name));
 }
 
 function ordinaryRootIssue(issue, number, nodeId, config) {
@@ -788,13 +733,8 @@ function validateRootAdmission(
   rootTask,
   rootIssue,
   repositoryNodeId,
-  {
-    taskDefinitionId = ROOT_TASK_DEFINITION_ID,
-    staticInputs = { proofMode: "isolated" },
-    validateContract = true,
-  } = {},
+  { taskDefinitionId, staticInputs },
 ) {
-  if (validateContract) validateTaskContract(rootTask, "Root Task");
   if (rootTask.taskDefinitionId !== taskDefinitionId) {
     throw new WorkGraphReporterError("task ancestry does not reach the v1 Root Task");
   }
@@ -883,7 +823,10 @@ function compiledStepId(value, label) {
 // definition can never author them: normalization rejects a compiled workflow
 // whose scope or successor tasks declare a reserved key as a static input.
 function scopeInputs(task, label) {
-  const inputs = task.resolvedInputs ?? {};
+  if (!object(task.resolvedInputs)) {
+    throw new WorkGraphReporterError(`${label} resolvedInputs must be an object`);
+  }
+  const inputs = task.resolvedInputs;
   const present = SCOPE_INPUT_KEYS.filter((key) => key in inputs);
   if (present.length === 0) return null;
   if (present.length !== SCOPE_INPUT_KEYS.length) {
@@ -1335,176 +1278,81 @@ async function loadTaskContext(locator, taskId, github, config, includeComments)
   );
 
   const workflow = compiledWorkflowForTask(task);
-  const generated = workflow !== null;
-  if (generated) {
-    const compiled = validateLifecycleTask(task, "Task", workflow);
-    const rootIssueCandidate = await resolveAncestryRootIssue(
-      task,
-      compiled,
-      parentLink,
-      github,
-      config,
+  if (!workflow) {
+    throw new WorkGraphReporterError(
+      "Task does not belong to a pinned compiled v1 workflow",
     );
-    if (!rootIssueCandidate) {
-      throw new WorkGraphReporterError(
-        "Task ancestry does not reach its ordinary Root Issue",
-      );
-    }
-    const rootIssue = ordinaryRootIssue(
-      rootIssueCandidate,
-      rootIssueCandidate.number,
-      task.rootIssueId,
-      config,
-    );
-    const initialTasks = [];
-    for (const child of await github.subIssues(rootIssue.number)) {
-      if (
-        child?.type?.name !== TASK_TYPE_NAME ||
-        child?.type?.node_id !== config.taskTypeId ||
-        child?.user?.id !== config.launcherId
-      ) {
-        continue;
-      }
-      const candidate = taskIssue(
-        child,
-        { issueNumber: child.number, issueNodeId: child.node_id },
-        config,
-        "Initial Task candidate",
-      );
-      if (
-        candidate.taskDefinitionId ===
-          workflow.root.taskDefinitionId &&
-        candidate.rootIssueId === task.rootIssueId &&
-        candidate.workflowRunId === task.workflowRunId
-      ) {
-        initialTasks.push({ issue: child, task: candidate });
-      }
-    }
-    if (initialTasks.length !== 1) {
-      throw new WorkGraphReporterError(
-        "Root Issue must have exactly one matching initial Task",
-      );
-    }
-    const [{ issue: rootTaskIssue, task: rootTask }] = initialTasks;
-    validateTaskMetadata(rootTask, workflow.root, "Root Task");
-    const admission = validateRootAdmission(
-      rootTask,
-      rootIssue,
-      locator.repositoryNodeId,
-      {
-        taskDefinitionId: workflow.root.taskDefinitionId,
-        staticInputs: workflow.root.staticInputs,
-        validateContract: false,
-      },
-    );
-    if (includeComments) {
-      validateTaskActionPrefix(
-        task,
-        compiled.taskDefinition,
-        comments,
-        config,
-        workflow,
-      );
-    }
-    return {
-      task,
-      compiled,
-      rootTask,
-      rootTaskIssue,
-      rootIssue,
-      admission,
-      issue,
-      comments,
-    };
   }
-
-  validateTaskContract(task, "Task");
-  let rootTask;
-  let rootTaskIssue;
-  let rootIssue;
-  if (task.taskDefinitionId === ROOT_TASK_DEFINITION_ID) {
-    rootTask = task;
-    rootTaskIssue = issue;
-    const fullRootIssue = await github.issue(locator.parentIssueNumber);
-    linkedIssue(
-      fullRootIssue,
-      locator.parentIssueNumber,
-      locator.parentIssueNodeId,
-      "Root Issue",
+  const compiled = validateLifecycleTask(task, "Task", workflow);
+  const rootIssueCandidate = await resolveAncestryRootIssue(
+    task,
+    compiled,
+    parentLink,
+    github,
+    config,
+  );
+  if (!rootIssueCandidate) {
+    throw new WorkGraphReporterError(
+      "Task ancestry does not reach its ordinary Root Issue",
     );
-    rootIssue = ordinaryRootIssue(
-      fullRootIssue,
-      locator.parentIssueNumber,
-      locator.parentIssueNodeId,
-      config,
-    );
-  } else {
-    const rootTaskLocator = {
-      issueNumber: locator.parentIssueNumber,
-      issueNodeId: locator.parentIssueNodeId,
-    };
-    const fullRootTaskIssue = await github.issue(rootTaskLocator.issueNumber);
-    rootTaskIssue = fullRootTaskIssue;
-    linkedIssue(
-      fullRootTaskIssue,
-      rootTaskLocator.issueNumber,
-      rootTaskLocator.issueNodeId,
-      "Root Task",
-    );
-    rootTask = taskIssue(
-      fullRootTaskIssue,
-      {
-        ...rootTaskLocator,
-      },
-      config,
-      "Root Task",
-    );
-    const rootIssueLink = await github.parent(rootTaskLocator.issueNumber);
-    if (!object(rootIssueLink)) {
-      throw new WorkGraphReporterError("Root Task has no Root Issue parent");
+  }
+  const rootIssue = ordinaryRootIssue(
+    rootIssueCandidate,
+    rootIssueCandidate.number,
+    task.rootIssueId,
+    config,
+  );
+  const initialTasks = [];
+  for (const child of await github.subIssues(rootIssue.number)) {
+    if (
+      child?.type?.name !== TASK_TYPE_NAME ||
+      child?.type?.node_id !== config.taskTypeId ||
+      child?.user?.id !== config.launcherId
+    ) {
+      continue;
     }
-    const fullRootIssue = await github.issue(rootIssueLink.number);
-    linkedIssue(
-      rootIssueLink,
-      fullRootIssue?.number,
-      fullRootIssue?.node_id,
-      "Root Task native parent",
-    );
-    rootIssue = ordinaryRootIssue(
-      fullRootIssue,
-      rootIssueLink.number,
-      rootIssueLink.node_id,
+    const candidate = taskIssue(
+      child,
+      { issueNumber: child.number, issueNodeId: child.node_id },
       config,
+      "Initial Task candidate",
     );
     if (
-      task.rootIssueId !== rootTask.rootIssueId ||
-      task.workflowRunId !== rootTask.workflowRunId
+      candidate.taskDefinitionId === workflow.root.taskDefinitionId &&
+      candidate.rootIssueId === task.rootIssueId &&
+      candidate.workflowRunId === task.workflowRunId
     ) {
-      throw new WorkGraphReporterError(
-        "task identity does not match its Root Task",
-      );
+      initialTasks.push({ issue: child, task: candidate });
     }
   }
+  if (initialTasks.length !== 1) {
+    throw new WorkGraphReporterError(
+      "Root Issue must have exactly one matching initial Task",
+    );
+  }
+  const [{ issue: rootTaskIssue, task: rootTask }] = initialTasks;
+  validateTaskMetadata(rootTask, workflow.root, "Root Task");
   const admission = validateRootAdmission(
     rootTask,
     rootIssue,
     locator.repositoryNodeId,
+    {
+      taskDefinitionId: workflow.root.taskDefinitionId,
+      staticInputs: workflow.root.staticInputs,
+    },
   );
   if (includeComments) {
     validateTaskActionPrefix(
       task,
-      {
-        children:
-          task.taskDefinitionId === ROOT_TASK_DEFINITION_ID
-            ? [{ taskDefinitionId: VALIDATOR_TASK_DEFINITION_ID }]
-            : [],
-      },
+      compiled.taskDefinition,
       comments,
       config,
+      workflow,
     );
   }
   return {
     task,
+    compiled,
     rootTask,
     rootTaskIssue,
     rootIssue,
@@ -1750,18 +1598,9 @@ function validateResponseProvenance(payload, responses, role, subject, label) {
   }
 }
 
-// Every actor authorized to execute this task. Membership authorizes the
-// lease; `policy.workerId` is only the canonical default, so a non-preferred
-// candidate that actually holds the Dispatch is equally authorized.
+// Every actor authorized to execute this task. Membership authorizes the lease.
 function permittedExecutors(context) {
-  if (context.compiled) {
-    return context.compiled.taskDefinition.routing.permittedExecutors;
-  }
-  return [
-    context.task.taskDefinitionId === ROOT_TASK_DEFINITION_ID
-      ? "issue-coordinator"
-      : "issue-validator",
-  ];
+  return context.compiled.taskDefinition.routing.permittedExecutors;
 }
 
 function resultContext(context, input, config, expectedBody) {
@@ -1873,13 +1712,8 @@ function resultContext(context, input, config, expectedBody) {
       existingResult: matchingResults[0].payload,
     };
   }
-  if (
-    context.issue.state !== "open" ||
-    (!context.compiled && context.rootTaskIssue.state !== "open")
-  ) {
-    throw new WorkGraphReporterError(
-      "a new Result requires open task and Root Task Issues",
-    );
+  if (context.issue.state !== "open") {
+    throw new WorkGraphReporterError("a new Result requires an open task Issue");
   }
   return { dispatch, existing: null, existingResult: null };
 }
@@ -3306,23 +3140,8 @@ async function getRootIssue(input, github, config) {
     config,
     true,
   );
-  if (
-    !context.compiled &&
-    context.task.taskDefinitionId !== VALIDATOR_TASK_DEFINITION_ID
-  ) {
-    throw new WorkGraphReporterError(
-      "get_root_issue requires the validator child task",
-    );
-  }
-  if (
-    context.issue.state !== "open" ||
-    (!context.compiled && context.rootTaskIssue.state !== "open")
-  ) {
-    throw new WorkGraphReporterError(
-      context.compiled
-        ? "get_root_issue requires an open worker task"
-        : "get_root_issue requires open validator and Root Task Issues",
-    );
+  if (context.issue.state !== "open") {
+    throw new WorkGraphReporterError("get_root_issue requires an open worker task");
   }
   return {
     taskId: context.task.taskId,
@@ -3358,7 +3177,7 @@ async function submitTaskResult(input, github, config) {
       "arguments.outcome must be succeeded or failed",
     );
   }
-  const output = canonicalJsonValue(input.output);
+  const output = agentResultOutput(input.output);
   const initialContext = await loadTaskContext(
     locator,
     input.taskId,
@@ -3530,7 +3349,18 @@ export const tools = [
       dispatchId: protocolIdSchema("dispatch"),
       leaseId: protocolIdSchema("lease"),
       outcome: { type: "string", enum: ["succeeded", "failed"] },
-      output: {},
+      output: {
+        type: "object",
+        properties: {
+          rootIssueComment: {
+            type: "string",
+            minLength: 1,
+            maxLength: MAX_ROOT_ISSUE_RESULT_COMMENT_BYTES,
+          },
+        },
+        required: ["rootIssueComment"],
+        additionalProperties: true,
+      },
     }),
   },
   {

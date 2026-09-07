@@ -10,7 +10,7 @@
       "title": "Fork Join WorkGraph proof",
       "body": "Exercise A to B, three parallel children, then F to G.",
       "labels": [
-        "workgraph"
+        "workgraph:fork-join-lifecycle"
       ]
     },
     "steps": {
@@ -95,7 +95,8 @@
         "f": null,
         "g": null
       },
-      "terminalOutcome": "completed"
+      "terminalOutcome": "completed",
+      "flowEntries": []
     }
   }
 }

@@ -10,7 +10,7 @@
       "title": "Human parity WorkGraph proof",
       "body": "Exercise a human worker graded by an agent evaluator, then an agent worker normalizing the same Root Issue graded by a human evaluator.",
       "labels": [
-        "workgraph"
+        "workgraph:human-parity"
       ]
     },
     "steps": {
@@ -45,7 +45,8 @@
         "draft": null,
         "review": null
       },
-      "terminalOutcome": "completed"
+      "terminalOutcome": "completed",
+      "flowEntries": []
     }
   }
 }

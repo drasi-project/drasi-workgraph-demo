@@ -3,7 +3,6 @@ kind: IssueWorkflow
 metadata:
   id: human-assigner-live
 spec:
-  trigger: workgraph
   defaults:
     evaluator: result-evaluator
     orchestrator: workflow-coordinator

@@ -10,7 +10,7 @@
       "title": "Mixed WorkGraph parallel proof",
       "body": "Exercise sequence, outcome selection, fork join, and completion.",
       "labels": [
-        "workgraph"
+        "workgraph:mixed-control-flow"
       ]
     },
     "steps": {
@@ -107,7 +107,8 @@
         "g": null,
         "h": null
       },
-      "terminalOutcome": "completed"
+      "terminalOutcome": "completed",
+      "flowEntries": []
     }
   }
 }

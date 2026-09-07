@@ -2,9 +2,19 @@
 
 This repository is the testbed surface for the WorkGraph v1 prototype. GitHub
 delivers Issue events through ngrok directly to the `github-workgraph-v1`
-Drasi Source. An exact, case-sensitive `workgraph` label admits an ordinary
-**Root Issue**; the `workgraph-v1` Reaction creates its **Root Task**, then any
-declared child tasks.
+Drasi Source. An explicit deployment `workflowMappings` entry binds an exact,
+case-sensitive `workgraph:<workflow-id>` label to a definition. That label
+admits an ordinary **Root Issue**; the `workgraph-v1` Reaction creates its
+**Root Task**, then any declared child tasks. Deployments require
+`workflowMappings` and a separate, non-null `admissionRead` object. Its token
+must be non-empty, and its resolved `apiBaseUrl` must be non-empty (the URL may
+use the field default). `agentConfig` reads only the actor catalog and is never
+an authoritative Issue-read fallback. Both `agentConfig` and `protocolTrust`
+are required non-null objects; `protocolTrust.taskCreators`, `assigners`, and
+`reporters` must each be non-empty. There is no passive Source-only mode: the
+Source converges the actor catalog before accepting a delivery. The Reaction
+consumes the mapping-specific admission ID supplied on the Root Issue rather
+than recomputing a top-level admission.
 
 The prototype has one protocol:
 
@@ -26,8 +36,8 @@ Every task and lifecycle body uses the strict `workgraph.drasi.io/v1` envelope:
 definition and human-readable task metadata live in `workflowContext`,
 role-keyed causal IDs live as exact `{kind,id}` objects in `references`, and
 message content lives in `data`. `taskKey` and `operation` are required
-everywhere and are validated against the pinned definition. Old flat bodies and
-old marker spellings are rejected. The hierarchy is:
+everywhere and are validated against the pinned definition. No alternate flat
+body or marker spelling is accepted. The hierarchy is:
 
 ```text
 Root Issue
@@ -72,9 +82,10 @@ Root Issue
 A fifth definition, `human-parity.yaml`, treats humans and agents as
 interchangeable executors: a human worker graded by an agent evaluator, then an
 agent worker graded by a human evaluator. The workflow names actor IDs
-identically in both directions; the `version: 2` actor catalog in
+identically in both directions; the strict `version: 1` actor catalog in
 `agents.yaml` is what marks `human-agentofreality` as a human and binds the
-GitHub account it speaks as.
+GitHub account it speaks as. The catalog accepts only `actors`/`actorId`;
+catalog `version: 2` and the former `agents`/`agentId` shape are not aliases.
 
 `assigner-parity.yaml` allocates the Assignment decision itself to an actor.
 Its first task has `human-agentofreality` choose an agent worker; its second has
@@ -102,13 +113,27 @@ match `urn:drasi:workgraph:id:v1:task:sha256:<64 lowercase hex>` exactly.
 All generated protocol identities use the corresponding lowercase type in that
 URN namespace.
 
+The actor catalog also includes separate agents for duplicate detection,
+related-Issue search, template conformance, likely code areas, resolution
+planning, implementation, and correctness/design/documentation/prior-art/
+security/testing PR reviews. Every agent-authored Result contains a
+`rootIssueComment` candidate. The agent never posts it directly; the runtime
+adds it to the ordinary Root Issue only after an accepted Evaluation.
+Every agent entry explicitly names its `customAgent` and
+`createPullRequest` policy. The planner and implementer set
+`createPullRequest: true`; protocol-only workers and all lifecycle roles
+explicitly set it to `false`. Both fields are required and non-null for agents.
+Human entries omit both and instead require their exact `github` identity.
+
 The offline proof fixture pins the loopback server/state-store identities, the
-exact ordered 24 shape-independent `wg-*` Drasi queries, and a
-SHA-256 digest of their canonical Canvas inventory entries. It derives the Root
-Task from a Root Issue admission:
+exact ordered five shape-independent `wg-*` Drasi queries, and a
+SHA-256 digest of their canonical Canvas inventory entries. It selects the
+workflow through an explicit mapping and derives the Root Task from that
+mapping's Root Issue admission:
 
 ```bash
-node scripts/check-workgraph-compiler.mjs
+WORKGRAPH_PLUGINS_DIR=../drasi-dogfooding/git-workgraph/plugins \
+  node scripts/check-workgraph-compiler.mjs
 node scripts/prepare-workgraph-v1-proof.mjs
 node --test tests/*.test.mjs
 python -m unittest tests/test_workgraph_agent_profiles.py

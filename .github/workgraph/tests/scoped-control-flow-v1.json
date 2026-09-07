@@ -10,7 +10,7 @@
       "title": "Scoped WorkGraph control flow proof",
       "body": "Exercise a run container that forks two parallel flow entries, joins them, and finalizes the run itself.",
       "labels": [
-        "workgraph"
+        "workgraph:scoped-control-flow"
       ]
     },
     "steps": {

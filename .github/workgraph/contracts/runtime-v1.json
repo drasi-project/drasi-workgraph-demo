@@ -1,0 +1,103 @@
+{
+  "version": 1,
+  "_note": "Runtime-owned WorkGraph v1 contract. The five factQueries are fixed and definition-independent: they carry workflow identity on their own rows. workflowDefinitionId, definitionDigest, and generatedWorkflow are reference fixture metadata for the committed Demo workflow only. UI consumers may read this file but must never own or gate it.",
+  "workflowDefinitionId": "issue-lifecycle",
+  "definitionDigest": "sha256:fbf1ce624ff89ef35f255f48b9944c3bf3acdb7a680b8e8b91227423e373a34d",
+  "generatedWorkflow": {
+    "sourcePath": "workflows/issue-lifecycle.yaml",
+    "configuredPath": ".github/workgraph/workflows/issue-lifecycle-v1.body",
+    "ref": "${WORKGRAPH_DEMO_REF}",
+    "workflowDefinitionId": "issue-lifecycle",
+    "definitionDigest": "sha256:fbf1ce624ff89ef35f255f48b9944c3bf3acdb7a680b8e8b91227423e373a34d"
+  },
+  "factQueries": [
+    {
+      "id": "wg-root-state",
+      "sha256": "f28390f3fc106a1727ac031844a121726c8c350d022e4e8d07e2edce3c568d92",
+      "fields": [
+        "rootIssueId",
+        "repositoryOwner",
+        "repositoryName",
+        "repositoryNodeId",
+        "issueNumber",
+        "isOpen",
+        "workflowMappings",
+        "workgraphLabels",
+        "workgraphInclude"
+      ]
+    },
+    {
+      "id": "wg-task-state",
+      "sha256": "7b3d4240e6954667f26256617dcf3114d2202771752f8824be3a877a57e9ac62",
+      "fields": [
+        "taskId",
+        "rootIssueId",
+        "workflowRunId",
+        "workflowDefinitionId",
+        "workflowDefinitionVersion",
+        "workflowDefinitionDigest",
+        "taskDefinitionId",
+        "taskKey",
+        "operation",
+        "resolvedInputs",
+        "isOpen",
+        "stateReason",
+        "repositoryOwner",
+        "repositoryName",
+        "repositoryNodeId",
+        "issueNumber",
+        "issueNodeId",
+        "parentIssueNumber",
+        "parentIssueNodeId",
+        "parentTaskId",
+        "predecessorTaskId",
+        "assignees"
+      ]
+    },
+    {
+      "id": "wg-task-actions",
+      "sha256": "d09e6f9189953440f4352a569a6551eaad3ae9cc17400d1b8dd14595111380af",
+      "fields": [
+        "taskId",
+        "actionId",
+        "actionKind",
+        "actionRevision",
+        "actionBody",
+        "resultDigest"
+      ]
+    },
+    {
+      "id": "wg-lease-state",
+      "sha256": "71a64e2dde34aa624b257eff9d0282765ce36d40319e5b888b1dc980cdbbeb99",
+      "fields": [
+        "taskId",
+        "leaseId",
+        "assignmentId",
+        "executorId",
+        "slotId",
+        "attempt",
+        "active",
+        "selected",
+        "completed",
+        "hasDispatch",
+        "expiresAt",
+        "actorKind",
+        "actorDatabaseId",
+        "actorNodeId",
+        "actorLogin"
+      ]
+    },
+    {
+      "id": "wg-root-comments",
+      "sha256": "1ae93e2c87694bd9f2f9ec84d3b90564cc466976a7928d090590960200ba89fc",
+      "fields": [
+        "rootIssueId",
+        "commentId",
+        "admissionIds",
+        "authorId",
+        "body",
+        "commentRevision"
+      ]
+    }
+  ]
+}

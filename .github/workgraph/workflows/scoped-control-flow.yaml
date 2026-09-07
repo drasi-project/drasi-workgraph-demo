@@ -4,7 +4,6 @@ metadata:
   id: scoped-control-flow
 
 spec:
-  trigger: workgraph
   initial: run
   defaults:
     evaluator: result-evaluator
@@ -14,7 +13,7 @@ spec:
     run:
       type: task
       operation: coordinate-issue
-      worker: issue-worker
+      worker: {"candidates": ["issue-worker"], "selection": "first-available"}
       inputs: {}
       flowEntries:
         - fix
@@ -26,14 +25,13 @@ spec:
     fix:
       type: task
       operation: coordinate-validation
-      worker: issue-worker
+      worker: {"candidates": ["issue-worker"], "selection": "first-available"}
       inputs: {}
       children:
-        join: all
         tasks:
           fix-evidence:
             operation: validate-reproduction
-            worker: issue-validator
+            worker: {"candidates": ["issue-validator"], "selection": "first-available"}
             inputs:
               section: reproduction
       flowEntries:
@@ -42,7 +40,7 @@ spec:
     fix-cleanup:
       type: task
       operation: normalize-issue
-      worker: issue-worker
+      worker: {"candidates": ["issue-worker"], "selection": "first-available"}
       inputs: {}
       next: fix-complete
     fix-complete:
@@ -51,14 +49,14 @@ spec:
     audit:
       type: task
       operation: validate-title
-      worker: issue-validator
+      worker: {"candidates": ["issue-validator"], "selection": "first-available"}
       inputs:
         field: title
       next: audit-verify
     audit-verify:
       type: task
       operation: validate-body
-      worker: issue-validator
+      worker: {"candidates": ["issue-validator"], "selection": "first-available"}
       inputs:
         field: body
       next: audit-complete
@@ -68,7 +66,7 @@ spec:
     notify:
       type: task
       operation: intake-issue
-      worker: issue-info-requester
+      worker: {"candidates": ["issue-info-requester"], "selection": "first-available"}
       inputs: {}
       next: notify-complete
     notify-complete:
