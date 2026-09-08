@@ -122,6 +122,15 @@ const ASSIGNER_COMPILED = JSON.parse(
     "utf8",
   ),
 ).workgraphDefinition;
+const DRASI_SERVER_COMPILED = JSON.parse(
+  readFileSync(
+    new URL(
+      "../.github/workgraph/fixtures/v1/drasi-server-issue.expected.json",
+      import.meta.url,
+    ),
+    "utf8",
+  ),
+).workgraphDefinition;
 
 function fixture() {
   const contentDigest = deriveWorkGraphRootIssueContentDigest(
@@ -399,6 +408,7 @@ function lifecycleFixture({
   staleEvaluation = false,
   persistedEvaluationId = null,
   resultAttempt = attempt,
+  resultOutput = { summary: "done" },
 } = {}) {
   const rootIssueId = ROOT_ISSUE_ID;
   const contentDigest = deriveWorkGraphRootIssueContentDigest(
@@ -516,7 +526,7 @@ function lifecycleFixture({
     leaseId: dispatch.lease.leaseId,
     attempt: resultAttempt,
     outcome: "succeeded",
-    output: { summary: "done" },
+    output: structuredClone(resultOutput),
   };
   const resultBody = formatTaskResult(result);
   const resultDigest = staleEvaluation
@@ -2370,6 +2380,7 @@ test("Route advances through linear next edges to task and terminal", async () =
           action: "advance",
           ...choice,
         });
+
         const payload = parseTaskRoute(writes[0].body);
         assert.equal(payload.targetStepKind, expectedKind);
         assert.equal("outcome" in payload, false);
@@ -2380,6 +2391,24 @@ test("Route advances through linear next edges to task and terminal", async () =
       },
     );
   }
+});
+
+test("the reporter catalog loads the Drasi Server workflow", async () => {
+  await withFakeLifecycle(
+    {
+      compiled: DRASI_SERVER_COMPILED,
+      stepId: "design-resolution",
+    },
+    async ({ data }) => {
+      const snapshot = await callTool("get_task_snapshot", data.input);
+      assert.equal(
+        snapshot.result.task.workflowDefinitionId,
+        "drasi-server-issue",
+      );
+      assert.equal(snapshot.sourceStepId, "design-resolution");
+      assert.equal(snapshot.result.task.operation, "plan-issue-resolution");
+    },
+  );
 });
 
 test("Route rejects arbitrary and legacy IDs in comments and submissions", async () => {

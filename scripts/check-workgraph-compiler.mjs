@@ -20,6 +20,7 @@ const targets = [
   "human-parity",
   "assigner-parity",
   "human-assigner-live",
+  "drasi-server-issue",
 ].map((name) => ({
   name,
   workflow: resolve(root, `.github/workgraph/workflows/${name}.yaml`),

@@ -1,0 +1,275 @@
+apiVersion: workgraph.drasi.io/v1
+kind: IssueWorkflow
+metadata:
+  id: drasi-server-issue
+
+spec:
+  initial: validate-issue
+  defaults:
+    evaluator: result-evaluator
+    orchestrator: workflow-coordinator
+    maxReworkAttempts: 3
+  steps:
+    validate-issue:
+      type: task
+      operation: review-issue-validation
+      worker: {"candidates": ["human-agentofreality"], "selection": "first-available"}
+      inputs: {}
+      instructions:
+        summary: Decide whether the Issue is ready to enter the Drasi Server workflow.
+        details: Review the completed repository, template, and contribution checks. State the routing choice exactly as Outcome: accepted only when every check passes, or Outcome: needs-information and explain what the submitter must add or change.
+        acceptanceCriteria:
+          - The decision considers every direct child check.
+          - The response states exactly one routing outcome, accepted or needs-information.
+          - An accepted Issue passes every direct child check.
+          - A needs-information Result lists every change the submitter must make.
+          - The response clearly explains the decision.
+        resultSchema:
+          actorId: string
+          responseId: string
+          summary: string
+          evidence: string
+          outcome: string
+      children:
+        tasks:
+          assess-repo-correctness:
+            operation: assess-repo-correctness
+            worker: {"candidates": ["human-agentofreality"], "selection": "first-available"}
+            inputs: {}
+            instructions:
+              summary: Check whether the Issue belongs in the Drasi Server repository.
+              details: Compare the requested change with the purpose and ownership of this repository. If another repository is a better home, identify it.
+              acceptanceCriteria:
+                - The Result states whether this is the correct repository.
+                - An incorrect-repository Result names the best known repository and explains why.
+                - The response gives the submitter a clear next step.
+              resultSchema:
+                actorId: string
+                responseId: string
+                summary: string
+                evidence: string
+          assess-template-conformance:
+            operation: assess-template-conformance
+            worker: {"candidates": ["issue-template-checker"], "selection": "first-available"}
+            inputs: {}
+            instructions:
+              summary: Check the Issue against the matching repository Issue template.
+              details: Select the template that matches the Issue type and report every required item that is missing or inadequate.
+              acceptanceCriteria:
+                - The matching template is identified when one exists.
+                - Every required template item is checked.
+                - Missing or inadequate items are listed precisely.
+                - The Root Issue comment clearly states the result.
+              resultSchema:
+                rootIssueComment: string
+                conforms: boolean
+                template: null
+                missing:
+                  - string
+                evidence: string
+          assess-contribution-compliance:
+            operation: assess-contribution-compliance
+            worker: {"candidates": ["human-agentofreality"], "selection": "first-available"}
+            inputs: {}
+            instructions:
+              summary: Check whether the Issue follows the repository contribution requirements.
+              details: Review the current contribution guidance and compare it with the Issue. Report only requirements that apply to opening this kind of Issue.
+              acceptanceCriteria:
+                - The applicable contribution guidance is identified.
+                - The Result states whether the Issue complies.
+                - Every unmet requirement is listed.
+                - The response explains how to correct any failure.
+              resultSchema:
+                actorId: string
+                responseId: string
+                summary: string
+                evidence: string
+      outcomes:
+        accepted: analyze-issue
+        needs-information: request-information
+
+    request-information:
+      type: task
+      operation: request-information
+      worker: {"candidates": ["issue-info-requester"], "selection": "first-available"}
+      inputs: {}
+      instructions:
+        summary: Ask the submitter for the information needed to validate the Issue.
+        details: Use the accepted validation Result to make one concise request containing every outstanding correction.
+        acceptanceCriteria:
+          - The request includes every outstanding correction from validation.
+          - The request is specific enough for the submitter to act on.
+          - The Root Issue comment contains the complete request.
+        resultSchema:
+          rootIssueComment: string
+          requestedChanges:
+            - string
+      next: wait-for-information
+
+    wait-for-information:
+      type: wait
+      event: root-issue-commented
+      next: validate-issue
+
+    analyze-issue:
+      type: task
+      operation: review-issue-analysis
+      worker: {"candidates": ["human-agentofreality"], "selection": "first-available"}
+      inputs: {}
+      instructions:
+        summary: Decide whether the Issue should proceed directly to design or receive human triage.
+        details: Review the similar-Issue, affected-code, complexity, and impact results. State the routing choice exactly as Outcome: resolve when the work is clear enough to design now, or Outcome: triage when a person should decide priorities, ownership, or next steps first.
+        acceptanceCriteria:
+          - The decision considers every direct child analysis.
+          - The response states exactly one routing outcome, resolve or triage.
+          - The decision explains the Issue complexity and impact.
+          - The decision explains why design can start or why triage is needed.
+          - The response summarizes the decision.
+        resultSchema:
+          actorId: string
+          responseId: string
+          summary: string
+          evidence: string
+          outcome: string
+      children:
+        tasks:
+          assess-complexity:
+            operation: assess-issue-complexity
+            worker: {"candidates": ["issue-worker"], "selection": "first-available"}
+            inputs: {}
+            instructions:
+              summary: Assess how complex the Issue is likely to be to resolve.
+              details: Use the Issue description to estimate the breadth, uncertainty, dependencies, and testing effort. Do not design or implement the solution.
+              acceptanceCriteria:
+                - The Result gives a low, medium, or high complexity rating.
+                - The rating is supported by specific evidence from the Issue.
+                - Important uncertainty is stated.
+                - The Root Issue comment concisely explains the assessment.
+              resultSchema:
+                rootIssueComment: string
+                complexity: string
+                reasons:
+                  - string
+                unknowns:
+                  - string
+          assess-impact:
+            operation: assess-issue-impact
+            worker: {"candidates": ["issue-worker"], "selection": "first-available"}
+            inputs: {}
+            instructions:
+              summary: Assess the likely impact if the Issue remains unresolved.
+              details: Consider how broadly the reported behavior may affect Drasi users and what user outcomes may be blocked or degraded.
+              acceptanceCriteria:
+                - The Result gives a low, medium, or high impact rating.
+                - The rating identifies the affected users or scenarios.
+                - The evidence distinguishes known impact from assumptions.
+                - The Root Issue comment concisely explains the assessment.
+              resultSchema:
+                rootIssueComment: string
+                impact: string
+                affectedUsers:
+                  - string
+                reasons:
+                  - string
+          identify-affected-code:
+            operation: identify-affected-code
+            worker: {"candidates": ["code-area-analyzer"], "selection": "first-available"}
+            inputs: {}
+            instructions:
+              summary: Identify the code and tests most likely to change to resolve the Issue.
+              details: Trace the reported behavior to likely implementation boundaries. Separate directly implicated areas from supporting or speculative areas.
+              acceptanceCriteria:
+                - Likely code areas are named with a reason for each.
+                - Relevant test areas are identified.
+                - Uncertain or speculative areas are clearly marked.
+                - The Root Issue comment provides useful repository paths.
+              resultSchema:
+                rootIssueComment: string
+                likelyAreas:
+                  - path: string
+                    component: string
+                    confidence: string
+                    reason: string
+                tests:
+                  - string
+                unknowns:
+                  - string
+          identify-similar-issues:
+            operation: identify-similar-issues
+            worker: {"candidates": ["similar-issue-finder"], "selection": "first-available"}
+            inputs: {}
+            instructions:
+              summary: Find open and closed Issues related to this Issue.
+              details: Search the same repository and rank substantive matches by similarity. Exclude the Root Issue, pull requests, and generated WorkGraph tasks.
+              acceptanceCriteria:
+                - Both open and closed Issues are searched.
+                - Every reported match includes a link and reason.
+                - Related Issues are not presented as confirmed duplicates.
+                - The Root Issue comment summarizes the useful matches or says none were found.
+              resultSchema:
+                rootIssueComment: string
+                similarIssues:
+                  - number: integer
+                    url: string
+                    title: string
+                    state: string
+                    relevance: string
+                    reason: string
+                searchSummary: string
+      outcomes:
+        resolve: design-resolution
+        triage: triage-issue
+
+    triage-issue:
+      type: task
+      operation: triage-issue
+      worker: {"candidates": ["human-agentofreality"], "selection": "first-available"}
+      inputs: {}
+      instructions:
+        summary: Decide what the team should do next with the Issue.
+        details: Review the Issue and its accepted validation and analysis results. Record the recommended next action, owner, and reason. This example intentionally stops after the triage decision so it can be expanded safely.
+        acceptanceCriteria:
+          - A specific next action is selected.
+          - A person, team, or agent is identified when ownership is known.
+          - The reason for the decision is recorded.
+          - The response clearly states the triage decision.
+        resultSchema:
+          actorId: string
+          responseId: string
+          summary: string
+          evidence: string
+      next: triage-completed
+
+    design-resolution:
+      type: task
+      operation: plan-issue-resolution
+      worker: {"candidates": ["issue-resolution-planner"], "selection": "first-available"}
+      inputs: {}
+      instructions:
+        summary: Create a detailed plan for resolving the Issue in a documentation pull request.
+        details: Inspect the relevant code and tests, write an ordered implementation plan, and create a documentation-only pull request linked to the Root Issue. Do not implement the change.
+        acceptanceCriteria:
+          - The plan identifies the components and files likely to change.
+          - The plan gives ordered implementation and testing steps.
+          - Risks, unknowns, and rollout concerns are included.
+          - A documentation-only pull request contains the plan.
+          - The Root Issue comment summarizes and links the plan.
+        resultSchema:
+          rootIssueComment: string
+          plan:
+            - string
+          planDocument: string
+          pullRequestUrl: string
+          risks:
+            - string
+          openQuestions:
+            - string
+      next: design-completed
+
+    design-completed:
+      type: terminal
+      outcome: completed
+
+    triage-completed:
+      type: terminal
+      outcome: completed

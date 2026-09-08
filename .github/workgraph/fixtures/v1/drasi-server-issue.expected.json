@@ -1,0 +1,2006 @@
+{
+  "definitionDigest": "sha256:0348c756f7657cfbacdfbaf88a0111950a1d0597a4540ca93fc81bd05297ab84",
+  "definition": {
+    "apiVersion": "workgraph.drasi.io/v1",
+    "kind": "IssueWorkflow",
+    "metadata": {
+      "id": "drasi-server-issue"
+    },
+    "spec": {
+      "defaults": {
+        "evaluator": "result-evaluator",
+        "orchestrator": "workflow-coordinator",
+        "maxReworkAttempts": 3
+      },
+      "initial": "validate-issue",
+      "steps": {
+        "analyze-issue": {
+          "type": "task",
+          "operation": "review-issue-analysis",
+          "worker": {
+            "candidates": [
+              "human-agentofreality"
+            ],
+            "selection": "first-available"
+          },
+          "inputs": {},
+          "instructions": {
+            "summary": "Decide whether the Issue should proceed directly to design or receive human triage.",
+            "details": "Review the similar-Issue, affected-code, complexity, and impact results. State the routing choice exactly as Outcome: resolve when the work is clear enough to design now, or Outcome: triage when a person should decide priorities, ownership, or next steps first.",
+            "acceptanceCriteria": [
+              "The decision considers every direct child analysis.",
+              "The response states exactly one routing outcome, resolve or triage.",
+              "The decision explains the Issue complexity and impact.",
+              "The decision explains why design can start or why triage is needed.",
+              "The response summarizes the decision."
+            ],
+            "resultSchema": {
+              "actorId": "string",
+              "evidence": "string",
+              "outcome": "string",
+              "responseId": "string",
+              "summary": "string"
+            }
+          },
+          "evaluator": null,
+          "orchestrator": null,
+          "maxReworkAttempts": null,
+          "children": {
+            "tasks": {
+              "assess-complexity": {
+                "operation": "assess-issue-complexity",
+                "worker": {
+                  "candidates": [
+                    "issue-worker"
+                  ],
+                  "selection": "first-available"
+                },
+                "inputs": {},
+                "instructions": {
+                  "summary": "Assess how complex the Issue is likely to be to resolve.",
+                  "details": "Use the Issue description to estimate the breadth, uncertainty, dependencies, and testing effort. Do not design or implement the solution.",
+                  "acceptanceCriteria": [
+                    "The Result gives a low, medium, or high complexity rating.",
+                    "The rating is supported by specific evidence from the Issue.",
+                    "Important uncertainty is stated.",
+                    "The Root Issue comment concisely explains the assessment."
+                  ],
+                  "resultSchema": {
+                    "complexity": "string",
+                    "reasons": [
+                      "string"
+                    ],
+                    "rootIssueComment": "string",
+                    "unknowns": [
+                      "string"
+                    ]
+                  }
+                },
+                "evaluator": null,
+                "orchestrator": null,
+                "maxReworkAttempts": null,
+                "children": null
+              },
+              "assess-impact": {
+                "operation": "assess-issue-impact",
+                "worker": {
+                  "candidates": [
+                    "issue-worker"
+                  ],
+                  "selection": "first-available"
+                },
+                "inputs": {},
+                "instructions": {
+                  "summary": "Assess the likely impact if the Issue remains unresolved.",
+                  "details": "Consider how broadly the reported behavior may affect Drasi users and what user outcomes may be blocked or degraded.",
+                  "acceptanceCriteria": [
+                    "The Result gives a low, medium, or high impact rating.",
+                    "The rating identifies the affected users or scenarios.",
+                    "The evidence distinguishes known impact from assumptions.",
+                    "The Root Issue comment concisely explains the assessment."
+                  ],
+                  "resultSchema": {
+                    "affectedUsers": [
+                      "string"
+                    ],
+                    "impact": "string",
+                    "reasons": [
+                      "string"
+                    ],
+                    "rootIssueComment": "string"
+                  }
+                },
+                "evaluator": null,
+                "orchestrator": null,
+                "maxReworkAttempts": null,
+                "children": null
+              },
+              "identify-affected-code": {
+                "operation": "identify-affected-code",
+                "worker": {
+                  "candidates": [
+                    "code-area-analyzer"
+                  ],
+                  "selection": "first-available"
+                },
+                "inputs": {},
+                "instructions": {
+                  "summary": "Identify the code and tests most likely to change to resolve the Issue.",
+                  "details": "Trace the reported behavior to likely implementation boundaries. Separate directly implicated areas from supporting or speculative areas.",
+                  "acceptanceCriteria": [
+                    "Likely code areas are named with a reason for each.",
+                    "Relevant test areas are identified.",
+                    "Uncertain or speculative areas are clearly marked.",
+                    "The Root Issue comment provides useful repository paths."
+                  ],
+                  "resultSchema": {
+                    "likelyAreas": [
+                      {
+                        "component": "string",
+                        "confidence": "string",
+                        "path": "string",
+                        "reason": "string"
+                      }
+                    ],
+                    "rootIssueComment": "string",
+                    "tests": [
+                      "string"
+                    ],
+                    "unknowns": [
+                      "string"
+                    ]
+                  }
+                },
+                "evaluator": null,
+                "orchestrator": null,
+                "maxReworkAttempts": null,
+                "children": null
+              },
+              "identify-similar-issues": {
+                "operation": "identify-similar-issues",
+                "worker": {
+                  "candidates": [
+                    "similar-issue-finder"
+                  ],
+                  "selection": "first-available"
+                },
+                "inputs": {},
+                "instructions": {
+                  "summary": "Find open and closed Issues related to this Issue.",
+                  "details": "Search the same repository and rank substantive matches by similarity. Exclude the Root Issue, pull requests, and generated WorkGraph tasks.",
+                  "acceptanceCriteria": [
+                    "Both open and closed Issues are searched.",
+                    "Every reported match includes a link and reason.",
+                    "Related Issues are not presented as confirmed duplicates.",
+                    "The Root Issue comment summarizes the useful matches or says none were found."
+                  ],
+                  "resultSchema": {
+                    "rootIssueComment": "string",
+                    "searchSummary": "string",
+                    "similarIssues": [
+                      {
+                        "number": "integer",
+                        "reason": "string",
+                        "relevance": "string",
+                        "state": "string",
+                        "title": "string",
+                        "url": "string"
+                      }
+                    ]
+                  }
+                },
+                "evaluator": null,
+                "orchestrator": null,
+                "maxReworkAttempts": null,
+                "children": null
+              }
+            }
+          },
+          "next": null,
+          "outcomes": {
+            "resolve": "design-resolution",
+            "triage": "triage-issue"
+          }
+        },
+        "design-completed": {
+          "type": "terminal",
+          "outcome": "completed"
+        },
+        "design-resolution": {
+          "type": "task",
+          "operation": "plan-issue-resolution",
+          "worker": {
+            "candidates": [
+              "issue-resolution-planner"
+            ],
+            "selection": "first-available"
+          },
+          "inputs": {},
+          "instructions": {
+            "summary": "Create a detailed plan for resolving the Issue in a documentation pull request.",
+            "details": "Inspect the relevant code and tests, write an ordered implementation plan, and create a documentation-only pull request linked to the Root Issue. Do not implement the change.",
+            "acceptanceCriteria": [
+              "The plan identifies the components and files likely to change.",
+              "The plan gives ordered implementation and testing steps.",
+              "Risks, unknowns, and rollout concerns are included.",
+              "A documentation-only pull request contains the plan.",
+              "The Root Issue comment summarizes and links the plan."
+            ],
+            "resultSchema": {
+              "openQuestions": [
+                "string"
+              ],
+              "plan": [
+                "string"
+              ],
+              "planDocument": "string",
+              "pullRequestUrl": "string",
+              "risks": [
+                "string"
+              ],
+              "rootIssueComment": "string"
+            }
+          },
+          "evaluator": null,
+          "orchestrator": null,
+          "maxReworkAttempts": null,
+          "children": null,
+          "next": "design-completed",
+          "outcomes": {}
+        },
+        "request-information": {
+          "type": "task",
+          "operation": "request-information",
+          "worker": {
+            "candidates": [
+              "issue-info-requester"
+            ],
+            "selection": "first-available"
+          },
+          "inputs": {},
+          "instructions": {
+            "summary": "Ask the submitter for the information needed to validate the Issue.",
+            "details": "Use the accepted validation Result to make one concise request containing every outstanding correction.",
+            "acceptanceCriteria": [
+              "The request includes every outstanding correction from validation.",
+              "The request is specific enough for the submitter to act on.",
+              "The Root Issue comment contains the complete request."
+            ],
+            "resultSchema": {
+              "requestedChanges": [
+                "string"
+              ],
+              "rootIssueComment": "string"
+            }
+          },
+          "evaluator": null,
+          "orchestrator": null,
+          "maxReworkAttempts": null,
+          "children": null,
+          "next": "wait-for-information",
+          "outcomes": {}
+        },
+        "triage-completed": {
+          "type": "terminal",
+          "outcome": "completed"
+        },
+        "triage-issue": {
+          "type": "task",
+          "operation": "triage-issue",
+          "worker": {
+            "candidates": [
+              "human-agentofreality"
+            ],
+            "selection": "first-available"
+          },
+          "inputs": {},
+          "instructions": {
+            "summary": "Decide what the team should do next with the Issue.",
+            "details": "Review the Issue and its accepted validation and analysis results. Record the recommended next action, owner, and reason. This example intentionally stops after the triage decision so it can be expanded safely.",
+            "acceptanceCriteria": [
+              "A specific next action is selected.",
+              "A person, team, or agent is identified when ownership is known.",
+              "The reason for the decision is recorded.",
+              "The response clearly states the triage decision."
+            ],
+            "resultSchema": {
+              "actorId": "string",
+              "evidence": "string",
+              "responseId": "string",
+              "summary": "string"
+            }
+          },
+          "evaluator": null,
+          "orchestrator": null,
+          "maxReworkAttempts": null,
+          "children": null,
+          "next": "triage-completed",
+          "outcomes": {}
+        },
+        "validate-issue": {
+          "type": "task",
+          "operation": "review-issue-validation",
+          "worker": {
+            "candidates": [
+              "human-agentofreality"
+            ],
+            "selection": "first-available"
+          },
+          "inputs": {},
+          "instructions": {
+            "summary": "Decide whether the Issue is ready to enter the Drasi Server workflow.",
+            "details": "Review the completed repository, template, and contribution checks. State the routing choice exactly as Outcome: accepted only when every check passes, or Outcome: needs-information and explain what the submitter must add or change.",
+            "acceptanceCriteria": [
+              "The decision considers every direct child check.",
+              "The response states exactly one routing outcome, accepted or needs-information.",
+              "An accepted Issue passes every direct child check.",
+              "A needs-information Result lists every change the submitter must make.",
+              "The response clearly explains the decision."
+            ],
+            "resultSchema": {
+              "actorId": "string",
+              "evidence": "string",
+              "outcome": "string",
+              "responseId": "string",
+              "summary": "string"
+            }
+          },
+          "evaluator": null,
+          "orchestrator": null,
+          "maxReworkAttempts": null,
+          "children": {
+            "tasks": {
+              "assess-contribution-compliance": {
+                "operation": "assess-contribution-compliance",
+                "worker": {
+                  "candidates": [
+                    "human-agentofreality"
+                  ],
+                  "selection": "first-available"
+                },
+                "inputs": {},
+                "instructions": {
+                  "summary": "Check whether the Issue follows the repository contribution requirements.",
+                  "details": "Review the current contribution guidance and compare it with the Issue. Report only requirements that apply to opening this kind of Issue.",
+                  "acceptanceCriteria": [
+                    "The applicable contribution guidance is identified.",
+                    "The Result states whether the Issue complies.",
+                    "Every unmet requirement is listed.",
+                    "The response explains how to correct any failure."
+                  ],
+                  "resultSchema": {
+                    "actorId": "string",
+                    "evidence": "string",
+                    "responseId": "string",
+                    "summary": "string"
+                  }
+                },
+                "evaluator": null,
+                "orchestrator": null,
+                "maxReworkAttempts": null,
+                "children": null
+              },
+              "assess-repo-correctness": {
+                "operation": "assess-repo-correctness",
+                "worker": {
+                  "candidates": [
+                    "human-agentofreality"
+                  ],
+                  "selection": "first-available"
+                },
+                "inputs": {},
+                "instructions": {
+                  "summary": "Check whether the Issue belongs in the Drasi Server repository.",
+                  "details": "Compare the requested change with the purpose and ownership of this repository. If another repository is a better home, identify it.",
+                  "acceptanceCriteria": [
+                    "The Result states whether this is the correct repository.",
+                    "An incorrect-repository Result names the best known repository and explains why.",
+                    "The response gives the submitter a clear next step."
+                  ],
+                  "resultSchema": {
+                    "actorId": "string",
+                    "evidence": "string",
+                    "responseId": "string",
+                    "summary": "string"
+                  }
+                },
+                "evaluator": null,
+                "orchestrator": null,
+                "maxReworkAttempts": null,
+                "children": null
+              },
+              "assess-template-conformance": {
+                "operation": "assess-template-conformance",
+                "worker": {
+                  "candidates": [
+                    "issue-template-checker"
+                  ],
+                  "selection": "first-available"
+                },
+                "inputs": {},
+                "instructions": {
+                  "summary": "Check the Issue against the matching repository Issue template.",
+                  "details": "Select the template that matches the Issue type and report every required item that is missing or inadequate.",
+                  "acceptanceCriteria": [
+                    "The matching template is identified when one exists.",
+                    "Every required template item is checked.",
+                    "Missing or inadequate items are listed precisely.",
+                    "The Root Issue comment clearly states the result."
+                  ],
+                  "resultSchema": {
+                    "conforms": "boolean",
+                    "evidence": "string",
+                    "missing": [
+                      "string"
+                    ],
+                    "rootIssueComment": "string",
+                    "template": null
+                  }
+                },
+                "evaluator": null,
+                "orchestrator": null,
+                "maxReworkAttempts": null,
+                "children": null
+              }
+            }
+          },
+          "next": null,
+          "outcomes": {
+            "accepted": "analyze-issue",
+            "needs-information": "request-information"
+          }
+        },
+        "wait-for-information": {
+          "type": "wait",
+          "event": "root-issue-commented",
+          "next": "validate-issue"
+        }
+      }
+    }
+  },
+  "workgraphDefinition": {
+    "workflowDefinitionId": "drasi-server-issue",
+    "version": "v1",
+    "digest": "sha256:0348c756f7657cfbacdfbaf88a0111950a1d0597a4540ca93fc81bd05297ab84",
+    "defaults": {
+      "evaluator": "result-evaluator",
+      "orchestrator": "workflow-coordinator",
+      "maxReworkAttempts": 3
+    },
+    "initialStepId": "validate-issue",
+    "root": {
+      "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:acdb5b8d35a578b629c13c9e3e3f437a26bca28a2a5acc83ea30041ea8d0d754",
+      "taskKey": "validate-issue",
+      "operation": "review-issue-validation",
+      "routing": {
+        "permittedExecutors": [
+          "human-agentofreality"
+        ]
+      },
+      "staticInputs": {},
+      "instructions": {
+        "summary": "Decide whether the Issue is ready to enter the Drasi Server workflow.",
+        "details": "Review the completed repository, template, and contribution checks. State the routing choice exactly as Outcome: accepted only when every check passes, or Outcome: needs-information and explain what the submitter must add or change.",
+        "acceptanceCriteria": [
+          "The decision considers every direct child check.",
+          "The response states exactly one routing outcome, accepted or needs-information.",
+          "An accepted Issue passes every direct child check.",
+          "A needs-information Result lists every change the submitter must make.",
+          "The response clearly explains the decision."
+        ],
+        "resultSchema": {
+          "actorId": "string",
+          "evidence": "string",
+          "outcome": "string",
+          "responseId": "string",
+          "summary": "string"
+        }
+      },
+      "children": [
+        {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:572bfab53db24f078de2641f1077dc3fa8081c173171944b7a7e36288a3086aa",
+          "taskKey": "assess-contribution-compliance",
+          "operation": "assess-contribution-compliance",
+          "routing": {
+            "permittedExecutors": [
+              "human-agentofreality"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Check whether the Issue follows the repository contribution requirements.",
+            "details": "Review the current contribution guidance and compare it with the Issue. Report only requirements that apply to opening this kind of Issue.",
+            "acceptanceCriteria": [
+              "The applicable contribution guidance is identified.",
+              "The Result states whether the Issue complies.",
+              "Every unmet requirement is listed.",
+              "The response explains how to correct any failure."
+            ],
+            "resultSchema": {
+              "actorId": "string",
+              "evidence": "string",
+              "responseId": "string",
+              "summary": "string"
+            }
+          },
+          "children": [],
+          "flowEntries": []
+        },
+        {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:09b308acd8a96b37410fe77af86e2ca9123973783f2ed2d56a1d6254fcdeed2f",
+          "taskKey": "assess-repo-correctness",
+          "operation": "assess-repo-correctness",
+          "routing": {
+            "permittedExecutors": [
+              "human-agentofreality"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Check whether the Issue belongs in the Drasi Server repository.",
+            "details": "Compare the requested change with the purpose and ownership of this repository. If another repository is a better home, identify it.",
+            "acceptanceCriteria": [
+              "The Result states whether this is the correct repository.",
+              "An incorrect-repository Result names the best known repository and explains why.",
+              "The response gives the submitter a clear next step."
+            ],
+            "resultSchema": {
+              "actorId": "string",
+              "evidence": "string",
+              "responseId": "string",
+              "summary": "string"
+            }
+          },
+          "children": [],
+          "flowEntries": []
+        },
+        {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:a0c39ce1ccb97bbfe8ab7d525e557e0c800ad9a42e31d47df3da8ace79ffe4d1",
+          "taskKey": "assess-template-conformance",
+          "operation": "assess-template-conformance",
+          "routing": {
+            "permittedExecutors": [
+              "issue-template-checker"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Check the Issue against the matching repository Issue template.",
+            "details": "Select the template that matches the Issue type and report every required item that is missing or inadequate.",
+            "acceptanceCriteria": [
+              "The matching template is identified when one exists.",
+              "Every required template item is checked.",
+              "Missing or inadequate items are listed precisely.",
+              "The Root Issue comment clearly states the result."
+            ],
+            "resultSchema": {
+              "conforms": "boolean",
+              "evidence": "string",
+              "missing": [
+                "string"
+              ],
+              "rootIssueComment": "string",
+              "template": null
+            }
+          },
+          "children": [],
+          "flowEntries": []
+        }
+      ],
+      "flowEntries": []
+    },
+    "steps": {
+      "analyze-issue": {
+        "type": "task",
+        "taskDefinition": {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:0c10b9af91c6716cbd57d8cd6d4cd7ff7d298cc78cbd5d9245ac43bd05dd449e",
+          "taskKey": "analyze-issue",
+          "operation": "review-issue-analysis",
+          "routing": {
+            "permittedExecutors": [
+              "human-agentofreality"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Decide whether the Issue should proceed directly to design or receive human triage.",
+            "details": "Review the similar-Issue, affected-code, complexity, and impact results. State the routing choice exactly as Outcome: resolve when the work is clear enough to design now, or Outcome: triage when a person should decide priorities, ownership, or next steps first.",
+            "acceptanceCriteria": [
+              "The decision considers every direct child analysis.",
+              "The response states exactly one routing outcome, resolve or triage.",
+              "The decision explains the Issue complexity and impact.",
+              "The decision explains why design can start or why triage is needed.",
+              "The response summarizes the decision."
+            ],
+            "resultSchema": {
+              "actorId": "string",
+              "evidence": "string",
+              "outcome": "string",
+              "responseId": "string",
+              "summary": "string"
+            }
+          },
+          "children": [
+            {
+              "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:63665d564a09e2eed48b5330b717a5d604488aa88c5e60427d74b12feac1ee59",
+              "taskKey": "assess-complexity",
+              "operation": "assess-issue-complexity",
+              "routing": {
+                "permittedExecutors": [
+                  "issue-worker"
+                ]
+              },
+              "staticInputs": {},
+              "instructions": {
+                "summary": "Assess how complex the Issue is likely to be to resolve.",
+                "details": "Use the Issue description to estimate the breadth, uncertainty, dependencies, and testing effort. Do not design or implement the solution.",
+                "acceptanceCriteria": [
+                  "The Result gives a low, medium, or high complexity rating.",
+                  "The rating is supported by specific evidence from the Issue.",
+                  "Important uncertainty is stated.",
+                  "The Root Issue comment concisely explains the assessment."
+                ],
+                "resultSchema": {
+                  "complexity": "string",
+                  "reasons": [
+                    "string"
+                  ],
+                  "rootIssueComment": "string",
+                  "unknowns": [
+                    "string"
+                  ]
+                }
+              },
+              "children": [],
+              "flowEntries": []
+            },
+            {
+              "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:5f05c21095675c889a0cdfb6da46a0e1d600d4936597eb44fbec5a8e286e9a9e",
+              "taskKey": "assess-impact",
+              "operation": "assess-issue-impact",
+              "routing": {
+                "permittedExecutors": [
+                  "issue-worker"
+                ]
+              },
+              "staticInputs": {},
+              "instructions": {
+                "summary": "Assess the likely impact if the Issue remains unresolved.",
+                "details": "Consider how broadly the reported behavior may affect Drasi users and what user outcomes may be blocked or degraded.",
+                "acceptanceCriteria": [
+                  "The Result gives a low, medium, or high impact rating.",
+                  "The rating identifies the affected users or scenarios.",
+                  "The evidence distinguishes known impact from assumptions.",
+                  "The Root Issue comment concisely explains the assessment."
+                ],
+                "resultSchema": {
+                  "affectedUsers": [
+                    "string"
+                  ],
+                  "impact": "string",
+                  "reasons": [
+                    "string"
+                  ],
+                  "rootIssueComment": "string"
+                }
+              },
+              "children": [],
+              "flowEntries": []
+            },
+            {
+              "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:40e2c0736b1a685162a76fbb4e77533e812001fcd826f77f521b1f3355eb9f59",
+              "taskKey": "identify-affected-code",
+              "operation": "identify-affected-code",
+              "routing": {
+                "permittedExecutors": [
+                  "code-area-analyzer"
+                ]
+              },
+              "staticInputs": {},
+              "instructions": {
+                "summary": "Identify the code and tests most likely to change to resolve the Issue.",
+                "details": "Trace the reported behavior to likely implementation boundaries. Separate directly implicated areas from supporting or speculative areas.",
+                "acceptanceCriteria": [
+                  "Likely code areas are named with a reason for each.",
+                  "Relevant test areas are identified.",
+                  "Uncertain or speculative areas are clearly marked.",
+                  "The Root Issue comment provides useful repository paths."
+                ],
+                "resultSchema": {
+                  "likelyAreas": [
+                    {
+                      "component": "string",
+                      "confidence": "string",
+                      "path": "string",
+                      "reason": "string"
+                    }
+                  ],
+                  "rootIssueComment": "string",
+                  "tests": [
+                    "string"
+                  ],
+                  "unknowns": [
+                    "string"
+                  ]
+                }
+              },
+              "children": [],
+              "flowEntries": []
+            },
+            {
+              "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:5a0657bb23a7bd16b9401ccd5b04f7398358d46f149e1642c79e54988fbf471a",
+              "taskKey": "identify-similar-issues",
+              "operation": "identify-similar-issues",
+              "routing": {
+                "permittedExecutors": [
+                  "similar-issue-finder"
+                ]
+              },
+              "staticInputs": {},
+              "instructions": {
+                "summary": "Find open and closed Issues related to this Issue.",
+                "details": "Search the same repository and rank substantive matches by similarity. Exclude the Root Issue, pull requests, and generated WorkGraph tasks.",
+                "acceptanceCriteria": [
+                  "Both open and closed Issues are searched.",
+                  "Every reported match includes a link and reason.",
+                  "Related Issues are not presented as confirmed duplicates.",
+                  "The Root Issue comment summarizes the useful matches or says none were found."
+                ],
+                "resultSchema": {
+                  "rootIssueComment": "string",
+                  "searchSummary": "string",
+                  "similarIssues": [
+                    {
+                      "number": "integer",
+                      "reason": "string",
+                      "relevance": "string",
+                      "state": "string",
+                      "title": "string",
+                      "url": "string"
+                    }
+                  ]
+                }
+              },
+              "children": [],
+              "flowEntries": []
+            }
+          ],
+          "flowEntries": []
+        },
+        "executionPolicies": {
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:0c10b9af91c6716cbd57d8cd6d4cd7ff7d298cc78cbd5d9245ac43bd05dd449e": {
+            "evaluatorId": "result-evaluator",
+            "orchestratorId": "workflow-coordinator",
+            "maxReworkAttempts": 3
+          },
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:40e2c0736b1a685162a76fbb4e77533e812001fcd826f77f521b1f3355eb9f59": {
+            "evaluatorId": "result-evaluator",
+            "orchestratorId": "workflow-coordinator",
+            "maxReworkAttempts": 3
+          },
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:5a0657bb23a7bd16b9401ccd5b04f7398358d46f149e1642c79e54988fbf471a": {
+            "evaluatorId": "result-evaluator",
+            "orchestratorId": "workflow-coordinator",
+            "maxReworkAttempts": 3
+          },
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:5f05c21095675c889a0cdfb6da46a0e1d600d4936597eb44fbec5a8e286e9a9e": {
+            "evaluatorId": "result-evaluator",
+            "orchestratorId": "workflow-coordinator",
+            "maxReworkAttempts": 3
+          },
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:63665d564a09e2eed48b5330b717a5d604488aa88c5e60427d74b12feac1ee59": {
+            "evaluatorId": "result-evaluator",
+            "orchestratorId": "workflow-coordinator",
+            "maxReworkAttempts": 3
+          }
+        },
+        "transition": {
+          "type": "outcomes",
+          "targets": {
+            "resolve": "design-resolution",
+            "triage": "triage-issue"
+          }
+        }
+      },
+      "design-completed": {
+        "type": "terminal",
+        "outcome": "completed"
+      },
+      "design-resolution": {
+        "type": "task",
+        "taskDefinition": {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:ac0c4b35e497ed9e6f781b09b7636f882a80afdac4fdc7983592abbd19f620df",
+          "taskKey": "design-resolution",
+          "operation": "plan-issue-resolution",
+          "routing": {
+            "permittedExecutors": [
+              "issue-resolution-planner"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Create a detailed plan for resolving the Issue in a documentation pull request.",
+            "details": "Inspect the relevant code and tests, write an ordered implementation plan, and create a documentation-only pull request linked to the Root Issue. Do not implement the change.",
+            "acceptanceCriteria": [
+              "The plan identifies the components and files likely to change.",
+              "The plan gives ordered implementation and testing steps.",
+              "Risks, unknowns, and rollout concerns are included.",
+              "A documentation-only pull request contains the plan.",
+              "The Root Issue comment summarizes and links the plan."
+            ],
+            "resultSchema": {
+              "openQuestions": [
+                "string"
+              ],
+              "plan": [
+                "string"
+              ],
+              "planDocument": "string",
+              "pullRequestUrl": "string",
+              "risks": [
+                "string"
+              ],
+              "rootIssueComment": "string"
+            }
+          },
+          "children": [],
+          "flowEntries": []
+        },
+        "executionPolicies": {
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:ac0c4b35e497ed9e6f781b09b7636f882a80afdac4fdc7983592abbd19f620df": {
+            "evaluatorId": "result-evaluator",
+            "orchestratorId": "workflow-coordinator",
+            "maxReworkAttempts": 3
+          }
+        },
+        "transition": {
+          "type": "next",
+          "targetStepId": "design-completed"
+        }
+      },
+      "request-information": {
+        "type": "task",
+        "taskDefinition": {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:d2986dfb0274772f23ef131cfbfb30f2a33ee6a64cacabc563b6121316f855a9",
+          "taskKey": "request-information",
+          "operation": "request-information",
+          "routing": {
+            "permittedExecutors": [
+              "issue-info-requester"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Ask the submitter for the information needed to validate the Issue.",
+            "details": "Use the accepted validation Result to make one concise request containing every outstanding correction.",
+            "acceptanceCriteria": [
+              "The request includes every outstanding correction from validation.",
+              "The request is specific enough for the submitter to act on.",
+              "The Root Issue comment contains the complete request."
+            ],
+            "resultSchema": {
+              "requestedChanges": [
+                "string"
+              ],
+              "rootIssueComment": "string"
+            }
+          },
+          "children": [],
+          "flowEntries": []
+        },
+        "executionPolicies": {
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:d2986dfb0274772f23ef131cfbfb30f2a33ee6a64cacabc563b6121316f855a9": {
+            "evaluatorId": "result-evaluator",
+            "orchestratorId": "workflow-coordinator",
+            "maxReworkAttempts": 3
+          }
+        },
+        "transition": {
+          "type": "next",
+          "targetStepId": "wait-for-information"
+        }
+      },
+      "triage-completed": {
+        "type": "terminal",
+        "outcome": "completed"
+      },
+      "triage-issue": {
+        "type": "task",
+        "taskDefinition": {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:d36727446c4408c315d96b3195be684ba2a84876ae5b662f9dcb87c290e8f183",
+          "taskKey": "triage-issue",
+          "operation": "triage-issue",
+          "routing": {
+            "permittedExecutors": [
+              "human-agentofreality"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Decide what the team should do next with the Issue.",
+            "details": "Review the Issue and its accepted validation and analysis results. Record the recommended next action, owner, and reason. This example intentionally stops after the triage decision so it can be expanded safely.",
+            "acceptanceCriteria": [
+              "A specific next action is selected.",
+              "A person, team, or agent is identified when ownership is known.",
+              "The reason for the decision is recorded.",
+              "The response clearly states the triage decision."
+            ],
+            "resultSchema": {
+              "actorId": "string",
+              "evidence": "string",
+              "responseId": "string",
+              "summary": "string"
+            }
+          },
+          "children": [],
+          "flowEntries": []
+        },
+        "executionPolicies": {
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:d36727446c4408c315d96b3195be684ba2a84876ae5b662f9dcb87c290e8f183": {
+            "evaluatorId": "result-evaluator",
+            "orchestratorId": "workflow-coordinator",
+            "maxReworkAttempts": 3
+          }
+        },
+        "transition": {
+          "type": "next",
+          "targetStepId": "triage-completed"
+        }
+      },
+      "validate-issue": {
+        "type": "task",
+        "taskDefinition": {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:acdb5b8d35a578b629c13c9e3e3f437a26bca28a2a5acc83ea30041ea8d0d754",
+          "taskKey": "validate-issue",
+          "operation": "review-issue-validation",
+          "routing": {
+            "permittedExecutors": [
+              "human-agentofreality"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Decide whether the Issue is ready to enter the Drasi Server workflow.",
+            "details": "Review the completed repository, template, and contribution checks. State the routing choice exactly as Outcome: accepted only when every check passes, or Outcome: needs-information and explain what the submitter must add or change.",
+            "acceptanceCriteria": [
+              "The decision considers every direct child check.",
+              "The response states exactly one routing outcome, accepted or needs-information.",
+              "An accepted Issue passes every direct child check.",
+              "A needs-information Result lists every change the submitter must make.",
+              "The response clearly explains the decision."
+            ],
+            "resultSchema": {
+              "actorId": "string",
+              "evidence": "string",
+              "outcome": "string",
+              "responseId": "string",
+              "summary": "string"
+            }
+          },
+          "children": [
+            {
+              "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:572bfab53db24f078de2641f1077dc3fa8081c173171944b7a7e36288a3086aa",
+              "taskKey": "assess-contribution-compliance",
+              "operation": "assess-contribution-compliance",
+              "routing": {
+                "permittedExecutors": [
+                  "human-agentofreality"
+                ]
+              },
+              "staticInputs": {},
+              "instructions": {
+                "summary": "Check whether the Issue follows the repository contribution requirements.",
+                "details": "Review the current contribution guidance and compare it with the Issue. Report only requirements that apply to opening this kind of Issue.",
+                "acceptanceCriteria": [
+                  "The applicable contribution guidance is identified.",
+                  "The Result states whether the Issue complies.",
+                  "Every unmet requirement is listed.",
+                  "The response explains how to correct any failure."
+                ],
+                "resultSchema": {
+                  "actorId": "string",
+                  "evidence": "string",
+                  "responseId": "string",
+                  "summary": "string"
+                }
+              },
+              "children": [],
+              "flowEntries": []
+            },
+            {
+              "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:09b308acd8a96b37410fe77af86e2ca9123973783f2ed2d56a1d6254fcdeed2f",
+              "taskKey": "assess-repo-correctness",
+              "operation": "assess-repo-correctness",
+              "routing": {
+                "permittedExecutors": [
+                  "human-agentofreality"
+                ]
+              },
+              "staticInputs": {},
+              "instructions": {
+                "summary": "Check whether the Issue belongs in the Drasi Server repository.",
+                "details": "Compare the requested change with the purpose and ownership of this repository. If another repository is a better home, identify it.",
+                "acceptanceCriteria": [
+                  "The Result states whether this is the correct repository.",
+                  "An incorrect-repository Result names the best known repository and explains why.",
+                  "The response gives the submitter a clear next step."
+                ],
+                "resultSchema": {
+                  "actorId": "string",
+                  "evidence": "string",
+                  "responseId": "string",
+                  "summary": "string"
+                }
+              },
+              "children": [],
+              "flowEntries": []
+            },
+            {
+              "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:a0c39ce1ccb97bbfe8ab7d525e557e0c800ad9a42e31d47df3da8ace79ffe4d1",
+              "taskKey": "assess-template-conformance",
+              "operation": "assess-template-conformance",
+              "routing": {
+                "permittedExecutors": [
+                  "issue-template-checker"
+                ]
+              },
+              "staticInputs": {},
+              "instructions": {
+                "summary": "Check the Issue against the matching repository Issue template.",
+                "details": "Select the template that matches the Issue type and report every required item that is missing or inadequate.",
+                "acceptanceCriteria": [
+                  "The matching template is identified when one exists.",
+                  "Every required template item is checked.",
+                  "Missing or inadequate items are listed precisely.",
+                  "The Root Issue comment clearly states the result."
+                ],
+                "resultSchema": {
+                  "conforms": "boolean",
+                  "evidence": "string",
+                  "missing": [
+                    "string"
+                  ],
+                  "rootIssueComment": "string",
+                  "template": null
+                }
+              },
+              "children": [],
+              "flowEntries": []
+            }
+          ],
+          "flowEntries": []
+        },
+        "executionPolicies": {
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:09b308acd8a96b37410fe77af86e2ca9123973783f2ed2d56a1d6254fcdeed2f": {
+            "evaluatorId": "result-evaluator",
+            "orchestratorId": "workflow-coordinator",
+            "maxReworkAttempts": 3
+          },
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:572bfab53db24f078de2641f1077dc3fa8081c173171944b7a7e36288a3086aa": {
+            "evaluatorId": "result-evaluator",
+            "orchestratorId": "workflow-coordinator",
+            "maxReworkAttempts": 3
+          },
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:a0c39ce1ccb97bbfe8ab7d525e557e0c800ad9a42e31d47df3da8ace79ffe4d1": {
+            "evaluatorId": "result-evaluator",
+            "orchestratorId": "workflow-coordinator",
+            "maxReworkAttempts": 3
+          },
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:acdb5b8d35a578b629c13c9e3e3f437a26bca28a2a5acc83ea30041ea8d0d754": {
+            "evaluatorId": "result-evaluator",
+            "orchestratorId": "workflow-coordinator",
+            "maxReworkAttempts": 3
+          }
+        },
+        "transition": {
+          "type": "outcomes",
+          "targets": {
+            "accepted": "analyze-issue",
+            "needs-information": "request-information"
+          }
+        }
+      },
+      "wait-for-information": {
+        "type": "wait",
+        "event": "root-issue-commented",
+        "nextStepId": "validate-issue"
+      }
+    }
+  },
+  "canonicalDefinitionBody": "WorkGraphWorkflowDefinition/v1\n\n```json\n{\n  \"workflowDefinitionId\": \"drasi-server-issue\",\n  \"version\": \"v1\",\n  \"digest\": \"sha256:0348c756f7657cfbacdfbaf88a0111950a1d0597a4540ca93fc81bd05297ab84\",\n  \"defaults\": {\n    \"evaluator\": \"result-evaluator\",\n    \"orchestrator\": \"workflow-coordinator\",\n    \"maxReworkAttempts\": 3\n  },\n  \"initialStepId\": \"validate-issue\",\n  \"root\": {\n    \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:acdb5b8d35a578b629c13c9e3e3f437a26bca28a2a5acc83ea30041ea8d0d754\",\n    \"taskKey\": \"validate-issue\",\n    \"operation\": \"review-issue-validation\",\n    \"routing\": {\n      \"permittedExecutors\": [\n        \"human-agentofreality\"\n      ]\n    },\n    \"staticInputs\": {},\n    \"instructions\": {\n      \"summary\": \"Decide whether the Issue is ready to enter the Drasi Server workflow.\",\n      \"details\": \"Review the completed repository, template, and contribution checks. State the routing choice exactly as Outcome: accepted only when every check passes, or Outcome: needs-information and explain what the submitter must add or change.\",\n      \"acceptanceCriteria\": [\n        \"The decision considers every direct child check.\",\n        \"The response states exactly one routing outcome, accepted or needs-information.\",\n        \"An accepted Issue passes every direct child check.\",\n        \"A needs-information Result lists every change the submitter must make.\",\n        \"The response clearly explains the decision.\"\n      ],\n      \"resultSchema\": {\n        \"actorId\": \"string\",\n        \"evidence\": \"string\",\n        \"outcome\": \"string\",\n        \"responseId\": \"string\",\n        \"summary\": \"string\"\n      }\n    },\n    \"children\": [\n      {\n        \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:572bfab53db24f078de2641f1077dc3fa8081c173171944b7a7e36288a3086aa\",\n        \"taskKey\": \"assess-contribution-compliance\",\n        \"operation\": \"assess-contribution-compliance\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"human-agentofreality\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"instructions\": {\n          \"summary\": \"Check whether the Issue follows the repository contribution requirements.\",\n          \"details\": \"Review the current contribution guidance and compare it with the Issue. Report only requirements that apply to opening this kind of Issue.\",\n          \"acceptanceCriteria\": [\n            \"The applicable contribution guidance is identified.\",\n            \"The Result states whether the Issue complies.\",\n            \"Every unmet requirement is listed.\",\n            \"The response explains how to correct any failure.\"\n          ],\n          \"resultSchema\": {\n            \"actorId\": \"string\",\n            \"evidence\": \"string\",\n            \"responseId\": \"string\",\n            \"summary\": \"string\"\n          }\n        },\n        \"children\": [],\n        \"flowEntries\": []\n      },\n      {\n        \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:09b308acd8a96b37410fe77af86e2ca9123973783f2ed2d56a1d6254fcdeed2f\",\n        \"taskKey\": \"assess-repo-correctness\",\n        \"operation\": \"assess-repo-correctness\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"human-agentofreality\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"instructions\": {\n          \"summary\": \"Check whether the Issue belongs in the Drasi Server repository.\",\n          \"details\": \"Compare the requested change with the purpose and ownership of this repository. If another repository is a better home, identify it.\",\n          \"acceptanceCriteria\": [\n            \"The Result states whether this is the correct repository.\",\n            \"An incorrect-repository Result names the best known repository and explains why.\",\n            \"The response gives the submitter a clear next step.\"\n          ],\n          \"resultSchema\": {\n            \"actorId\": \"string\",\n            \"evidence\": \"string\",\n            \"responseId\": \"string\",\n            \"summary\": \"string\"\n          }\n        },\n        \"children\": [],\n        \"flowEntries\": []\n      },\n      {\n        \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:a0c39ce1ccb97bbfe8ab7d525e557e0c800ad9a42e31d47df3da8ace79ffe4d1\",\n        \"taskKey\": \"assess-template-conformance\",\n        \"operation\": \"assess-template-conformance\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"issue-template-checker\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"instructions\": {\n          \"summary\": \"Check the Issue against the matching repository Issue template.\",\n          \"details\": \"Select the template that matches the Issue type and report every required item that is missing or inadequate.\",\n          \"acceptanceCriteria\": [\n            \"The matching template is identified when one exists.\",\n            \"Every required template item is checked.\",\n            \"Missing or inadequate items are listed precisely.\",\n            \"The Root Issue comment clearly states the result.\"\n          ],\n          \"resultSchema\": {\n            \"conforms\": \"boolean\",\n            \"evidence\": \"string\",\n            \"missing\": [\n              \"string\"\n            ],\n            \"rootIssueComment\": \"string\",\n            \"template\": null\n          }\n        },\n        \"children\": [],\n        \"flowEntries\": []\n      }\n    ],\n    \"flowEntries\": []\n  },\n  \"steps\": {\n    \"analyze-issue\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:0c10b9af91c6716cbd57d8cd6d4cd7ff7d298cc78cbd5d9245ac43bd05dd449e\",\n        \"taskKey\": \"analyze-issue\",\n        \"operation\": \"review-issue-analysis\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"human-agentofreality\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"instructions\": {\n          \"summary\": \"Decide whether the Issue should proceed directly to design or receive human triage.\",\n          \"details\": \"Review the similar-Issue, affected-code, complexity, and impact results. State the routing choice exactly as Outcome: resolve when the work is clear enough to design now, or Outcome: triage when a person should decide priorities, ownership, or next steps first.\",\n          \"acceptanceCriteria\": [\n            \"The decision considers every direct child analysis.\",\n            \"The response states exactly one routing outcome, resolve or triage.\",\n            \"The decision explains the Issue complexity and impact.\",\n            \"The decision explains why design can start or why triage is needed.\",\n            \"The response summarizes the decision.\"\n          ],\n          \"resultSchema\": {\n            \"actorId\": \"string\",\n            \"evidence\": \"string\",\n            \"outcome\": \"string\",\n            \"responseId\": \"string\",\n            \"summary\": \"string\"\n          }\n        },\n        \"children\": [\n          {\n            \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:63665d564a09e2eed48b5330b717a5d604488aa88c5e60427d74b12feac1ee59\",\n            \"taskKey\": \"assess-complexity\",\n            \"operation\": \"assess-issue-complexity\",\n            \"routing\": {\n              \"permittedExecutors\": [\n                \"issue-worker\"\n              ]\n            },\n            \"staticInputs\": {},\n            \"instructions\": {\n              \"summary\": \"Assess how complex the Issue is likely to be to resolve.\",\n              \"details\": \"Use the Issue description to estimate the breadth, uncertainty, dependencies, and testing effort. Do not design or implement the solution.\",\n              \"acceptanceCriteria\": [\n                \"The Result gives a low, medium, or high complexity rating.\",\n                \"The rating is supported by specific evidence from the Issue.\",\n                \"Important uncertainty is stated.\",\n                \"The Root Issue comment concisely explains the assessment.\"\n              ],\n              \"resultSchema\": {\n                \"complexity\": \"string\",\n                \"reasons\": [\n                  \"string\"\n                ],\n                \"rootIssueComment\": \"string\",\n                \"unknowns\": [\n                  \"string\"\n                ]\n              }\n            },\n            \"children\": [],\n            \"flowEntries\": []\n          },\n          {\n            \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:5f05c21095675c889a0cdfb6da46a0e1d600d4936597eb44fbec5a8e286e9a9e\",\n            \"taskKey\": \"assess-impact\",\n            \"operation\": \"assess-issue-impact\",\n            \"routing\": {\n              \"permittedExecutors\": [\n                \"issue-worker\"\n              ]\n            },\n            \"staticInputs\": {},\n            \"instructions\": {\n              \"summary\": \"Assess the likely impact if the Issue remains unresolved.\",\n              \"details\": \"Consider how broadly the reported behavior may affect Drasi users and what user outcomes may be blocked or degraded.\",\n              \"acceptanceCriteria\": [\n                \"The Result gives a low, medium, or high impact rating.\",\n                \"The rating identifies the affected users or scenarios.\",\n                \"The evidence distinguishes known impact from assumptions.\",\n                \"The Root Issue comment concisely explains the assessment.\"\n              ],\n              \"resultSchema\": {\n                \"affectedUsers\": [\n                  \"string\"\n                ],\n                \"impact\": \"string\",\n                \"reasons\": [\n                  \"string\"\n                ],\n                \"rootIssueComment\": \"string\"\n              }\n            },\n            \"children\": [],\n            \"flowEntries\": []\n          },\n          {\n            \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:40e2c0736b1a685162a76fbb4e77533e812001fcd826f77f521b1f3355eb9f59\",\n            \"taskKey\": \"identify-affected-code\",\n            \"operation\": \"identify-affected-code\",\n            \"routing\": {\n              \"permittedExecutors\": [\n                \"code-area-analyzer\"\n              ]\n            },\n            \"staticInputs\": {},\n            \"instructions\": {\n              \"summary\": \"Identify the code and tests most likely to change to resolve the Issue.\",\n              \"details\": \"Trace the reported behavior to likely implementation boundaries. Separate directly implicated areas from supporting or speculative areas.\",\n              \"acceptanceCriteria\": [\n                \"Likely code areas are named with a reason for each.\",\n                \"Relevant test areas are identified.\",\n                \"Uncertain or speculative areas are clearly marked.\",\n                \"The Root Issue comment provides useful repository paths.\"\n              ],\n              \"resultSchema\": {\n                \"likelyAreas\": [\n                  {\n                    \"component\": \"string\",\n                    \"confidence\": \"string\",\n                    \"path\": \"string\",\n                    \"reason\": \"string\"\n                  }\n                ],\n                \"rootIssueComment\": \"string\",\n                \"tests\": [\n                  \"string\"\n                ],\n                \"unknowns\": [\n                  \"string\"\n                ]\n              }\n            },\n            \"children\": [],\n            \"flowEntries\": []\n          },\n          {\n            \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:5a0657bb23a7bd16b9401ccd5b04f7398358d46f149e1642c79e54988fbf471a\",\n            \"taskKey\": \"identify-similar-issues\",\n            \"operation\": \"identify-similar-issues\",\n            \"routing\": {\n              \"permittedExecutors\": [\n                \"similar-issue-finder\"\n              ]\n            },\n            \"staticInputs\": {},\n            \"instructions\": {\n              \"summary\": \"Find open and closed Issues related to this Issue.\",\n              \"details\": \"Search the same repository and rank substantive matches by similarity. Exclude the Root Issue, pull requests, and generated WorkGraph tasks.\",\n              \"acceptanceCriteria\": [\n                \"Both open and closed Issues are searched.\",\n                \"Every reported match includes a link and reason.\",\n                \"Related Issues are not presented as confirmed duplicates.\",\n                \"The Root Issue comment summarizes the useful matches or says none were found.\"\n              ],\n              \"resultSchema\": {\n                \"rootIssueComment\": \"string\",\n                \"searchSummary\": \"string\",\n                \"similarIssues\": [\n                  {\n                    \"number\": \"integer\",\n                    \"reason\": \"string\",\n                    \"relevance\": \"string\",\n                    \"state\": \"string\",\n                    \"title\": \"string\",\n                    \"url\": \"string\"\n                  }\n                ]\n              }\n            },\n            \"children\": [],\n            \"flowEntries\": []\n          }\n        ],\n        \"flowEntries\": []\n      },\n      \"executionPolicies\": {\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:0c10b9af91c6716cbd57d8cd6d4cd7ff7d298cc78cbd5d9245ac43bd05dd449e\": {\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        },\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:40e2c0736b1a685162a76fbb4e77533e812001fcd826f77f521b1f3355eb9f59\": {\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        },\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:5a0657bb23a7bd16b9401ccd5b04f7398358d46f149e1642c79e54988fbf471a\": {\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        },\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:5f05c21095675c889a0cdfb6da46a0e1d600d4936597eb44fbec5a8e286e9a9e\": {\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        },\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:63665d564a09e2eed48b5330b717a5d604488aa88c5e60427d74b12feac1ee59\": {\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        }\n      },\n      \"transition\": {\n        \"type\": \"outcomes\",\n        \"targets\": {\n          \"resolve\": \"design-resolution\",\n          \"triage\": \"triage-issue\"\n        }\n      }\n    },\n    \"design-completed\": {\n      \"type\": \"terminal\",\n      \"outcome\": \"completed\"\n    },\n    \"design-resolution\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:ac0c4b35e497ed9e6f781b09b7636f882a80afdac4fdc7983592abbd19f620df\",\n        \"taskKey\": \"design-resolution\",\n        \"operation\": \"plan-issue-resolution\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"issue-resolution-planner\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"instructions\": {\n          \"summary\": \"Create a detailed plan for resolving the Issue in a documentation pull request.\",\n          \"details\": \"Inspect the relevant code and tests, write an ordered implementation plan, and create a documentation-only pull request linked to the Root Issue. Do not implement the change.\",\n          \"acceptanceCriteria\": [\n            \"The plan identifies the components and files likely to change.\",\n            \"The plan gives ordered implementation and testing steps.\",\n            \"Risks, unknowns, and rollout concerns are included.\",\n            \"A documentation-only pull request contains the plan.\",\n            \"The Root Issue comment summarizes and links the plan.\"\n          ],\n          \"resultSchema\": {\n            \"openQuestions\": [\n              \"string\"\n            ],\n            \"plan\": [\n              \"string\"\n            ],\n            \"planDocument\": \"string\",\n            \"pullRequestUrl\": \"string\",\n            \"risks\": [\n              \"string\"\n            ],\n            \"rootIssueComment\": \"string\"\n          }\n        },\n        \"children\": [],\n        \"flowEntries\": []\n      },\n      \"executionPolicies\": {\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:ac0c4b35e497ed9e6f781b09b7636f882a80afdac4fdc7983592abbd19f620df\": {\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        }\n      },\n      \"transition\": {\n        \"type\": \"next\",\n        \"targetStepId\": \"design-completed\"\n      }\n    },\n    \"request-information\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:d2986dfb0274772f23ef131cfbfb30f2a33ee6a64cacabc563b6121316f855a9\",\n        \"taskKey\": \"request-information\",\n        \"operation\": \"request-information\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"issue-info-requester\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"instructions\": {\n          \"summary\": \"Ask the submitter for the information needed to validate the Issue.\",\n          \"details\": \"Use the accepted validation Result to make one concise request containing every outstanding correction.\",\n          \"acceptanceCriteria\": [\n            \"The request includes every outstanding correction from validation.\",\n            \"The request is specific enough for the submitter to act on.\",\n            \"The Root Issue comment contains the complete request.\"\n          ],\n          \"resultSchema\": {\n            \"requestedChanges\": [\n              \"string\"\n            ],\n            \"rootIssueComment\": \"string\"\n          }\n        },\n        \"children\": [],\n        \"flowEntries\": []\n      },\n      \"executionPolicies\": {\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:d2986dfb0274772f23ef131cfbfb30f2a33ee6a64cacabc563b6121316f855a9\": {\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        }\n      },\n      \"transition\": {\n        \"type\": \"next\",\n        \"targetStepId\": \"wait-for-information\"\n      }\n    },\n    \"triage-completed\": {\n      \"type\": \"terminal\",\n      \"outcome\": \"completed\"\n    },\n    \"triage-issue\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:d36727446c4408c315d96b3195be684ba2a84876ae5b662f9dcb87c290e8f183\",\n        \"taskKey\": \"triage-issue\",\n        \"operation\": \"triage-issue\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"human-agentofreality\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"instructions\": {\n          \"summary\": \"Decide what the team should do next with the Issue.\",\n          \"details\": \"Review the Issue and its accepted validation and analysis results. Record the recommended next action, owner, and reason. This example intentionally stops after the triage decision so it can be expanded safely.\",\n          \"acceptanceCriteria\": [\n            \"A specific next action is selected.\",\n            \"A person, team, or agent is identified when ownership is known.\",\n            \"The reason for the decision is recorded.\",\n            \"The response clearly states the triage decision.\"\n          ],\n          \"resultSchema\": {\n            \"actorId\": \"string\",\n            \"evidence\": \"string\",\n            \"responseId\": \"string\",\n            \"summary\": \"string\"\n          }\n        },\n        \"children\": [],\n        \"flowEntries\": []\n      },\n      \"executionPolicies\": {\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:d36727446c4408c315d96b3195be684ba2a84876ae5b662f9dcb87c290e8f183\": {\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        }\n      },\n      \"transition\": {\n        \"type\": \"next\",\n        \"targetStepId\": \"triage-completed\"\n      }\n    },\n    \"validate-issue\": {\n      \"type\": \"task\",\n      \"taskDefinition\": {\n        \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:acdb5b8d35a578b629c13c9e3e3f437a26bca28a2a5acc83ea30041ea8d0d754\",\n        \"taskKey\": \"validate-issue\",\n        \"operation\": \"review-issue-validation\",\n        \"routing\": {\n          \"permittedExecutors\": [\n            \"human-agentofreality\"\n          ]\n        },\n        \"staticInputs\": {},\n        \"instructions\": {\n          \"summary\": \"Decide whether the Issue is ready to enter the Drasi Server workflow.\",\n          \"details\": \"Review the completed repository, template, and contribution checks. State the routing choice exactly as Outcome: accepted only when every check passes, or Outcome: needs-information and explain what the submitter must add or change.\",\n          \"acceptanceCriteria\": [\n            \"The decision considers every direct child check.\",\n            \"The response states exactly one routing outcome, accepted or needs-information.\",\n            \"An accepted Issue passes every direct child check.\",\n            \"A needs-information Result lists every change the submitter must make.\",\n            \"The response clearly explains the decision.\"\n          ],\n          \"resultSchema\": {\n            \"actorId\": \"string\",\n            \"evidence\": \"string\",\n            \"outcome\": \"string\",\n            \"responseId\": \"string\",\n            \"summary\": \"string\"\n          }\n        },\n        \"children\": [\n          {\n            \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:572bfab53db24f078de2641f1077dc3fa8081c173171944b7a7e36288a3086aa\",\n            \"taskKey\": \"assess-contribution-compliance\",\n            \"operation\": \"assess-contribution-compliance\",\n            \"routing\": {\n              \"permittedExecutors\": [\n                \"human-agentofreality\"\n              ]\n            },\n            \"staticInputs\": {},\n            \"instructions\": {\n              \"summary\": \"Check whether the Issue follows the repository contribution requirements.\",\n              \"details\": \"Review the current contribution guidance and compare it with the Issue. Report only requirements that apply to opening this kind of Issue.\",\n              \"acceptanceCriteria\": [\n                \"The applicable contribution guidance is identified.\",\n                \"The Result states whether the Issue complies.\",\n                \"Every unmet requirement is listed.\",\n                \"The response explains how to correct any failure.\"\n              ],\n              \"resultSchema\": {\n                \"actorId\": \"string\",\n                \"evidence\": \"string\",\n                \"responseId\": \"string\",\n                \"summary\": \"string\"\n              }\n            },\n            \"children\": [],\n            \"flowEntries\": []\n          },\n          {\n            \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:09b308acd8a96b37410fe77af86e2ca9123973783f2ed2d56a1d6254fcdeed2f\",\n            \"taskKey\": \"assess-repo-correctness\",\n            \"operation\": \"assess-repo-correctness\",\n            \"routing\": {\n              \"permittedExecutors\": [\n                \"human-agentofreality\"\n              ]\n            },\n            \"staticInputs\": {},\n            \"instructions\": {\n              \"summary\": \"Check whether the Issue belongs in the Drasi Server repository.\",\n              \"details\": \"Compare the requested change with the purpose and ownership of this repository. If another repository is a better home, identify it.\",\n              \"acceptanceCriteria\": [\n                \"The Result states whether this is the correct repository.\",\n                \"An incorrect-repository Result names the best known repository and explains why.\",\n                \"The response gives the submitter a clear next step.\"\n              ],\n              \"resultSchema\": {\n                \"actorId\": \"string\",\n                \"evidence\": \"string\",\n                \"responseId\": \"string\",\n                \"summary\": \"string\"\n              }\n            },\n            \"children\": [],\n            \"flowEntries\": []\n          },\n          {\n            \"taskDefinitionId\": \"urn:drasi:workgraph:id:v1:task-definition:sha256:a0c39ce1ccb97bbfe8ab7d525e557e0c800ad9a42e31d47df3da8ace79ffe4d1\",\n            \"taskKey\": \"assess-template-conformance\",\n            \"operation\": \"assess-template-conformance\",\n            \"routing\": {\n              \"permittedExecutors\": [\n                \"issue-template-checker\"\n              ]\n            },\n            \"staticInputs\": {},\n            \"instructions\": {\n              \"summary\": \"Check the Issue against the matching repository Issue template.\",\n              \"details\": \"Select the template that matches the Issue type and report every required item that is missing or inadequate.\",\n              \"acceptanceCriteria\": [\n                \"The matching template is identified when one exists.\",\n                \"Every required template item is checked.\",\n                \"Missing or inadequate items are listed precisely.\",\n                \"The Root Issue comment clearly states the result.\"\n              ],\n              \"resultSchema\": {\n                \"conforms\": \"boolean\",\n                \"evidence\": \"string\",\n                \"missing\": [\n                  \"string\"\n                ],\n                \"rootIssueComment\": \"string\",\n                \"template\": null\n              }\n            },\n            \"children\": [],\n            \"flowEntries\": []\n          }\n        ],\n        \"flowEntries\": []\n      },\n      \"executionPolicies\": {\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:09b308acd8a96b37410fe77af86e2ca9123973783f2ed2d56a1d6254fcdeed2f\": {\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        },\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:572bfab53db24f078de2641f1077dc3fa8081c173171944b7a7e36288a3086aa\": {\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        },\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:a0c39ce1ccb97bbfe8ab7d525e557e0c800ad9a42e31d47df3da8ace79ffe4d1\": {\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        },\n        \"urn:drasi:workgraph:id:v1:task-definition:sha256:acdb5b8d35a578b629c13c9e3e3f437a26bca28a2a5acc83ea30041ea8d0d754\": {\n          \"evaluatorId\": \"result-evaluator\",\n          \"orchestratorId\": \"workflow-coordinator\",\n          \"maxReworkAttempts\": 3\n        }\n      },\n      \"transition\": {\n        \"type\": \"outcomes\",\n        \"targets\": {\n          \"accepted\": \"analyze-issue\",\n          \"needs-information\": \"request-information\"\n        }\n      }\n    },\n    \"wait-for-information\": {\n      \"type\": \"wait\",\n      \"event\": \"root-issue-commented\",\n      \"nextStepId\": \"validate-issue\"\n    }\n  }\n}\n```\n",
+  "queryPlan": {
+    "version": "v1",
+    "workflowDefinitionId": "drasi-server-issue",
+    "definitionDigest": "sha256:0348c756f7657cfbacdfbaf88a0111950a1d0597a4540ca93fc81bd05297ab84",
+    "lifecycleTemplates": [
+      {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:0c10b9af91c6716cbd57d8cd6d4cd7ff7d298cc78cbd5d9245ac43bd05dd449e",
+        "taskDefinition": {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:0c10b9af91c6716cbd57d8cd6d4cd7ff7d298cc78cbd5d9245ac43bd05dd449e",
+          "taskKey": "analyze-issue",
+          "operation": "review-issue-analysis",
+          "routing": {
+            "permittedExecutors": [
+              "human-agentofreality"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Decide whether the Issue should proceed directly to design or receive human triage.",
+            "details": "Review the similar-Issue, affected-code, complexity, and impact results. State the routing choice exactly as Outcome: resolve when the work is clear enough to design now, or Outcome: triage when a person should decide priorities, ownership, or next steps first.",
+            "acceptanceCriteria": [
+              "The decision considers every direct child analysis.",
+              "The response states exactly one routing outcome, resolve or triage.",
+              "The decision explains the Issue complexity and impact.",
+              "The decision explains why design can start or why triage is needed.",
+              "The response summarizes the decision."
+            ],
+            "resultSchema": {
+              "actorId": "string",
+              "evidence": "string",
+              "outcome": "string",
+              "responseId": "string",
+              "summary": "string"
+            }
+          },
+          "children": [
+            {
+              "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:63665d564a09e2eed48b5330b717a5d604488aa88c5e60427d74b12feac1ee59",
+              "taskKey": "assess-complexity",
+              "operation": "assess-issue-complexity",
+              "routing": {
+                "permittedExecutors": [
+                  "issue-worker"
+                ]
+              },
+              "staticInputs": {},
+              "instructions": {
+                "summary": "Assess how complex the Issue is likely to be to resolve.",
+                "details": "Use the Issue description to estimate the breadth, uncertainty, dependencies, and testing effort. Do not design or implement the solution.",
+                "acceptanceCriteria": [
+                  "The Result gives a low, medium, or high complexity rating.",
+                  "The rating is supported by specific evidence from the Issue.",
+                  "Important uncertainty is stated.",
+                  "The Root Issue comment concisely explains the assessment."
+                ],
+                "resultSchema": {
+                  "complexity": "string",
+                  "reasons": [
+                    "string"
+                  ],
+                  "rootIssueComment": "string",
+                  "unknowns": [
+                    "string"
+                  ]
+                }
+              },
+              "children": [],
+              "flowEntries": []
+            },
+            {
+              "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:5f05c21095675c889a0cdfb6da46a0e1d600d4936597eb44fbec5a8e286e9a9e",
+              "taskKey": "assess-impact",
+              "operation": "assess-issue-impact",
+              "routing": {
+                "permittedExecutors": [
+                  "issue-worker"
+                ]
+              },
+              "staticInputs": {},
+              "instructions": {
+                "summary": "Assess the likely impact if the Issue remains unresolved.",
+                "details": "Consider how broadly the reported behavior may affect Drasi users and what user outcomes may be blocked or degraded.",
+                "acceptanceCriteria": [
+                  "The Result gives a low, medium, or high impact rating.",
+                  "The rating identifies the affected users or scenarios.",
+                  "The evidence distinguishes known impact from assumptions.",
+                  "The Root Issue comment concisely explains the assessment."
+                ],
+                "resultSchema": {
+                  "affectedUsers": [
+                    "string"
+                  ],
+                  "impact": "string",
+                  "reasons": [
+                    "string"
+                  ],
+                  "rootIssueComment": "string"
+                }
+              },
+              "children": [],
+              "flowEntries": []
+            },
+            {
+              "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:40e2c0736b1a685162a76fbb4e77533e812001fcd826f77f521b1f3355eb9f59",
+              "taskKey": "identify-affected-code",
+              "operation": "identify-affected-code",
+              "routing": {
+                "permittedExecutors": [
+                  "code-area-analyzer"
+                ]
+              },
+              "staticInputs": {},
+              "instructions": {
+                "summary": "Identify the code and tests most likely to change to resolve the Issue.",
+                "details": "Trace the reported behavior to likely implementation boundaries. Separate directly implicated areas from supporting or speculative areas.",
+                "acceptanceCriteria": [
+                  "Likely code areas are named with a reason for each.",
+                  "Relevant test areas are identified.",
+                  "Uncertain or speculative areas are clearly marked.",
+                  "The Root Issue comment provides useful repository paths."
+                ],
+                "resultSchema": {
+                  "likelyAreas": [
+                    {
+                      "component": "string",
+                      "confidence": "string",
+                      "path": "string",
+                      "reason": "string"
+                    }
+                  ],
+                  "rootIssueComment": "string",
+                  "tests": [
+                    "string"
+                  ],
+                  "unknowns": [
+                    "string"
+                  ]
+                }
+              },
+              "children": [],
+              "flowEntries": []
+            },
+            {
+              "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:5a0657bb23a7bd16b9401ccd5b04f7398358d46f149e1642c79e54988fbf471a",
+              "taskKey": "identify-similar-issues",
+              "operation": "identify-similar-issues",
+              "routing": {
+                "permittedExecutors": [
+                  "similar-issue-finder"
+                ]
+              },
+              "staticInputs": {},
+              "instructions": {
+                "summary": "Find open and closed Issues related to this Issue.",
+                "details": "Search the same repository and rank substantive matches by similarity. Exclude the Root Issue, pull requests, and generated WorkGraph tasks.",
+                "acceptanceCriteria": [
+                  "Both open and closed Issues are searched.",
+                  "Every reported match includes a link and reason.",
+                  "Related Issues are not presented as confirmed duplicates.",
+                  "The Root Issue comment summarizes the useful matches or says none were found."
+                ],
+                "resultSchema": {
+                  "rootIssueComment": "string",
+                  "searchSummary": "string",
+                  "similarIssues": [
+                    {
+                      "number": "integer",
+                      "reason": "string",
+                      "relevance": "string",
+                      "state": "string",
+                      "title": "string",
+                      "url": "string"
+                    }
+                  ]
+                }
+              },
+              "children": [],
+              "flowEntries": []
+            }
+          ],
+          "flowEntries": []
+        },
+        "evaluatorId": "result-evaluator",
+        "orchestratorId": "workflow-coordinator",
+        "maxReworkAttempts": 3,
+        "join": "all",
+        "childTaskDefinitionIds": [
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:63665d564a09e2eed48b5330b717a5d604488aa88c5e60427d74b12feac1ee59",
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:5f05c21095675c889a0cdfb6da46a0e1d600d4936597eb44fbec5a8e286e9a9e",
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:40e2c0736b1a685162a76fbb4e77533e812001fcd826f77f521b1f3355eb9f59",
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:5a0657bb23a7bd16b9401ccd5b04f7398358d46f149e1642c79e54988fbf471a"
+        ]
+      },
+      {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:63665d564a09e2eed48b5330b717a5d604488aa88c5e60427d74b12feac1ee59",
+        "taskDefinition": {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:63665d564a09e2eed48b5330b717a5d604488aa88c5e60427d74b12feac1ee59",
+          "taskKey": "assess-complexity",
+          "operation": "assess-issue-complexity",
+          "routing": {
+            "permittedExecutors": [
+              "issue-worker"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Assess how complex the Issue is likely to be to resolve.",
+            "details": "Use the Issue description to estimate the breadth, uncertainty, dependencies, and testing effort. Do not design or implement the solution.",
+            "acceptanceCriteria": [
+              "The Result gives a low, medium, or high complexity rating.",
+              "The rating is supported by specific evidence from the Issue.",
+              "Important uncertainty is stated.",
+              "The Root Issue comment concisely explains the assessment."
+            ],
+            "resultSchema": {
+              "complexity": "string",
+              "reasons": [
+                "string"
+              ],
+              "rootIssueComment": "string",
+              "unknowns": [
+                "string"
+              ]
+            }
+          },
+          "children": [],
+          "flowEntries": []
+        },
+        "evaluatorId": "result-evaluator",
+        "orchestratorId": "workflow-coordinator",
+        "maxReworkAttempts": 3,
+        "childTaskDefinitionIds": []
+      },
+      {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:5f05c21095675c889a0cdfb6da46a0e1d600d4936597eb44fbec5a8e286e9a9e",
+        "taskDefinition": {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:5f05c21095675c889a0cdfb6da46a0e1d600d4936597eb44fbec5a8e286e9a9e",
+          "taskKey": "assess-impact",
+          "operation": "assess-issue-impact",
+          "routing": {
+            "permittedExecutors": [
+              "issue-worker"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Assess the likely impact if the Issue remains unresolved.",
+            "details": "Consider how broadly the reported behavior may affect Drasi users and what user outcomes may be blocked or degraded.",
+            "acceptanceCriteria": [
+              "The Result gives a low, medium, or high impact rating.",
+              "The rating identifies the affected users or scenarios.",
+              "The evidence distinguishes known impact from assumptions.",
+              "The Root Issue comment concisely explains the assessment."
+            ],
+            "resultSchema": {
+              "affectedUsers": [
+                "string"
+              ],
+              "impact": "string",
+              "reasons": [
+                "string"
+              ],
+              "rootIssueComment": "string"
+            }
+          },
+          "children": [],
+          "flowEntries": []
+        },
+        "evaluatorId": "result-evaluator",
+        "orchestratorId": "workflow-coordinator",
+        "maxReworkAttempts": 3,
+        "childTaskDefinitionIds": []
+      },
+      {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:40e2c0736b1a685162a76fbb4e77533e812001fcd826f77f521b1f3355eb9f59",
+        "taskDefinition": {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:40e2c0736b1a685162a76fbb4e77533e812001fcd826f77f521b1f3355eb9f59",
+          "taskKey": "identify-affected-code",
+          "operation": "identify-affected-code",
+          "routing": {
+            "permittedExecutors": [
+              "code-area-analyzer"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Identify the code and tests most likely to change to resolve the Issue.",
+            "details": "Trace the reported behavior to likely implementation boundaries. Separate directly implicated areas from supporting or speculative areas.",
+            "acceptanceCriteria": [
+              "Likely code areas are named with a reason for each.",
+              "Relevant test areas are identified.",
+              "Uncertain or speculative areas are clearly marked.",
+              "The Root Issue comment provides useful repository paths."
+            ],
+            "resultSchema": {
+              "likelyAreas": [
+                {
+                  "component": "string",
+                  "confidence": "string",
+                  "path": "string",
+                  "reason": "string"
+                }
+              ],
+              "rootIssueComment": "string",
+              "tests": [
+                "string"
+              ],
+              "unknowns": [
+                "string"
+              ]
+            }
+          },
+          "children": [],
+          "flowEntries": []
+        },
+        "evaluatorId": "result-evaluator",
+        "orchestratorId": "workflow-coordinator",
+        "maxReworkAttempts": 3,
+        "childTaskDefinitionIds": []
+      },
+      {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:5a0657bb23a7bd16b9401ccd5b04f7398358d46f149e1642c79e54988fbf471a",
+        "taskDefinition": {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:5a0657bb23a7bd16b9401ccd5b04f7398358d46f149e1642c79e54988fbf471a",
+          "taskKey": "identify-similar-issues",
+          "operation": "identify-similar-issues",
+          "routing": {
+            "permittedExecutors": [
+              "similar-issue-finder"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Find open and closed Issues related to this Issue.",
+            "details": "Search the same repository and rank substantive matches by similarity. Exclude the Root Issue, pull requests, and generated WorkGraph tasks.",
+            "acceptanceCriteria": [
+              "Both open and closed Issues are searched.",
+              "Every reported match includes a link and reason.",
+              "Related Issues are not presented as confirmed duplicates.",
+              "The Root Issue comment summarizes the useful matches or says none were found."
+            ],
+            "resultSchema": {
+              "rootIssueComment": "string",
+              "searchSummary": "string",
+              "similarIssues": [
+                {
+                  "number": "integer",
+                  "reason": "string",
+                  "relevance": "string",
+                  "state": "string",
+                  "title": "string",
+                  "url": "string"
+                }
+              ]
+            }
+          },
+          "children": [],
+          "flowEntries": []
+        },
+        "evaluatorId": "result-evaluator",
+        "orchestratorId": "workflow-coordinator",
+        "maxReworkAttempts": 3,
+        "childTaskDefinitionIds": []
+      },
+      {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:ac0c4b35e497ed9e6f781b09b7636f882a80afdac4fdc7983592abbd19f620df",
+        "taskDefinition": {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:ac0c4b35e497ed9e6f781b09b7636f882a80afdac4fdc7983592abbd19f620df",
+          "taskKey": "design-resolution",
+          "operation": "plan-issue-resolution",
+          "routing": {
+            "permittedExecutors": [
+              "issue-resolution-planner"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Create a detailed plan for resolving the Issue in a documentation pull request.",
+            "details": "Inspect the relevant code and tests, write an ordered implementation plan, and create a documentation-only pull request linked to the Root Issue. Do not implement the change.",
+            "acceptanceCriteria": [
+              "The plan identifies the components and files likely to change.",
+              "The plan gives ordered implementation and testing steps.",
+              "Risks, unknowns, and rollout concerns are included.",
+              "A documentation-only pull request contains the plan.",
+              "The Root Issue comment summarizes and links the plan."
+            ],
+            "resultSchema": {
+              "openQuestions": [
+                "string"
+              ],
+              "plan": [
+                "string"
+              ],
+              "planDocument": "string",
+              "pullRequestUrl": "string",
+              "risks": [
+                "string"
+              ],
+              "rootIssueComment": "string"
+            }
+          },
+          "children": [],
+          "flowEntries": []
+        },
+        "evaluatorId": "result-evaluator",
+        "orchestratorId": "workflow-coordinator",
+        "maxReworkAttempts": 3,
+        "childTaskDefinitionIds": []
+      },
+      {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:d2986dfb0274772f23ef131cfbfb30f2a33ee6a64cacabc563b6121316f855a9",
+        "taskDefinition": {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:d2986dfb0274772f23ef131cfbfb30f2a33ee6a64cacabc563b6121316f855a9",
+          "taskKey": "request-information",
+          "operation": "request-information",
+          "routing": {
+            "permittedExecutors": [
+              "issue-info-requester"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Ask the submitter for the information needed to validate the Issue.",
+            "details": "Use the accepted validation Result to make one concise request containing every outstanding correction.",
+            "acceptanceCriteria": [
+              "The request includes every outstanding correction from validation.",
+              "The request is specific enough for the submitter to act on.",
+              "The Root Issue comment contains the complete request."
+            ],
+            "resultSchema": {
+              "requestedChanges": [
+                "string"
+              ],
+              "rootIssueComment": "string"
+            }
+          },
+          "children": [],
+          "flowEntries": []
+        },
+        "evaluatorId": "result-evaluator",
+        "orchestratorId": "workflow-coordinator",
+        "maxReworkAttempts": 3,
+        "childTaskDefinitionIds": []
+      },
+      {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:d36727446c4408c315d96b3195be684ba2a84876ae5b662f9dcb87c290e8f183",
+        "taskDefinition": {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:d36727446c4408c315d96b3195be684ba2a84876ae5b662f9dcb87c290e8f183",
+          "taskKey": "triage-issue",
+          "operation": "triage-issue",
+          "routing": {
+            "permittedExecutors": [
+              "human-agentofreality"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Decide what the team should do next with the Issue.",
+            "details": "Review the Issue and its accepted validation and analysis results. Record the recommended next action, owner, and reason. This example intentionally stops after the triage decision so it can be expanded safely.",
+            "acceptanceCriteria": [
+              "A specific next action is selected.",
+              "A person, team, or agent is identified when ownership is known.",
+              "The reason for the decision is recorded.",
+              "The response clearly states the triage decision."
+            ],
+            "resultSchema": {
+              "actorId": "string",
+              "evidence": "string",
+              "responseId": "string",
+              "summary": "string"
+            }
+          },
+          "children": [],
+          "flowEntries": []
+        },
+        "evaluatorId": "result-evaluator",
+        "orchestratorId": "workflow-coordinator",
+        "maxReworkAttempts": 3,
+        "childTaskDefinitionIds": []
+      },
+      {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:acdb5b8d35a578b629c13c9e3e3f437a26bca28a2a5acc83ea30041ea8d0d754",
+        "taskDefinition": {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:acdb5b8d35a578b629c13c9e3e3f437a26bca28a2a5acc83ea30041ea8d0d754",
+          "taskKey": "validate-issue",
+          "operation": "review-issue-validation",
+          "routing": {
+            "permittedExecutors": [
+              "human-agentofreality"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Decide whether the Issue is ready to enter the Drasi Server workflow.",
+            "details": "Review the completed repository, template, and contribution checks. State the routing choice exactly as Outcome: accepted only when every check passes, or Outcome: needs-information and explain what the submitter must add or change.",
+            "acceptanceCriteria": [
+              "The decision considers every direct child check.",
+              "The response states exactly one routing outcome, accepted or needs-information.",
+              "An accepted Issue passes every direct child check.",
+              "A needs-information Result lists every change the submitter must make.",
+              "The response clearly explains the decision."
+            ],
+            "resultSchema": {
+              "actorId": "string",
+              "evidence": "string",
+              "outcome": "string",
+              "responseId": "string",
+              "summary": "string"
+            }
+          },
+          "children": [
+            {
+              "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:572bfab53db24f078de2641f1077dc3fa8081c173171944b7a7e36288a3086aa",
+              "taskKey": "assess-contribution-compliance",
+              "operation": "assess-contribution-compliance",
+              "routing": {
+                "permittedExecutors": [
+                  "human-agentofreality"
+                ]
+              },
+              "staticInputs": {},
+              "instructions": {
+                "summary": "Check whether the Issue follows the repository contribution requirements.",
+                "details": "Review the current contribution guidance and compare it with the Issue. Report only requirements that apply to opening this kind of Issue.",
+                "acceptanceCriteria": [
+                  "The applicable contribution guidance is identified.",
+                  "The Result states whether the Issue complies.",
+                  "Every unmet requirement is listed.",
+                  "The response explains how to correct any failure."
+                ],
+                "resultSchema": {
+                  "actorId": "string",
+                  "evidence": "string",
+                  "responseId": "string",
+                  "summary": "string"
+                }
+              },
+              "children": [],
+              "flowEntries": []
+            },
+            {
+              "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:09b308acd8a96b37410fe77af86e2ca9123973783f2ed2d56a1d6254fcdeed2f",
+              "taskKey": "assess-repo-correctness",
+              "operation": "assess-repo-correctness",
+              "routing": {
+                "permittedExecutors": [
+                  "human-agentofreality"
+                ]
+              },
+              "staticInputs": {},
+              "instructions": {
+                "summary": "Check whether the Issue belongs in the Drasi Server repository.",
+                "details": "Compare the requested change with the purpose and ownership of this repository. If another repository is a better home, identify it.",
+                "acceptanceCriteria": [
+                  "The Result states whether this is the correct repository.",
+                  "An incorrect-repository Result names the best known repository and explains why.",
+                  "The response gives the submitter a clear next step."
+                ],
+                "resultSchema": {
+                  "actorId": "string",
+                  "evidence": "string",
+                  "responseId": "string",
+                  "summary": "string"
+                }
+              },
+              "children": [],
+              "flowEntries": []
+            },
+            {
+              "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:a0c39ce1ccb97bbfe8ab7d525e557e0c800ad9a42e31d47df3da8ace79ffe4d1",
+              "taskKey": "assess-template-conformance",
+              "operation": "assess-template-conformance",
+              "routing": {
+                "permittedExecutors": [
+                  "issue-template-checker"
+                ]
+              },
+              "staticInputs": {},
+              "instructions": {
+                "summary": "Check the Issue against the matching repository Issue template.",
+                "details": "Select the template that matches the Issue type and report every required item that is missing or inadequate.",
+                "acceptanceCriteria": [
+                  "The matching template is identified when one exists.",
+                  "Every required template item is checked.",
+                  "Missing or inadequate items are listed precisely.",
+                  "The Root Issue comment clearly states the result."
+                ],
+                "resultSchema": {
+                  "conforms": "boolean",
+                  "evidence": "string",
+                  "missing": [
+                    "string"
+                  ],
+                  "rootIssueComment": "string",
+                  "template": null
+                }
+              },
+              "children": [],
+              "flowEntries": []
+            }
+          ],
+          "flowEntries": []
+        },
+        "evaluatorId": "result-evaluator",
+        "orchestratorId": "workflow-coordinator",
+        "maxReworkAttempts": 3,
+        "join": "all",
+        "childTaskDefinitionIds": [
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:572bfab53db24f078de2641f1077dc3fa8081c173171944b7a7e36288a3086aa",
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:09b308acd8a96b37410fe77af86e2ca9123973783f2ed2d56a1d6254fcdeed2f",
+          "urn:drasi:workgraph:id:v1:task-definition:sha256:a0c39ce1ccb97bbfe8ab7d525e557e0c800ad9a42e31d47df3da8ace79ffe4d1"
+        ]
+      },
+      {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:572bfab53db24f078de2641f1077dc3fa8081c173171944b7a7e36288a3086aa",
+        "taskDefinition": {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:572bfab53db24f078de2641f1077dc3fa8081c173171944b7a7e36288a3086aa",
+          "taskKey": "assess-contribution-compliance",
+          "operation": "assess-contribution-compliance",
+          "routing": {
+            "permittedExecutors": [
+              "human-agentofreality"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Check whether the Issue follows the repository contribution requirements.",
+            "details": "Review the current contribution guidance and compare it with the Issue. Report only requirements that apply to opening this kind of Issue.",
+            "acceptanceCriteria": [
+              "The applicable contribution guidance is identified.",
+              "The Result states whether the Issue complies.",
+              "Every unmet requirement is listed.",
+              "The response explains how to correct any failure."
+            ],
+            "resultSchema": {
+              "actorId": "string",
+              "evidence": "string",
+              "responseId": "string",
+              "summary": "string"
+            }
+          },
+          "children": [],
+          "flowEntries": []
+        },
+        "evaluatorId": "result-evaluator",
+        "orchestratorId": "workflow-coordinator",
+        "maxReworkAttempts": 3,
+        "childTaskDefinitionIds": []
+      },
+      {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:09b308acd8a96b37410fe77af86e2ca9123973783f2ed2d56a1d6254fcdeed2f",
+        "taskDefinition": {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:09b308acd8a96b37410fe77af86e2ca9123973783f2ed2d56a1d6254fcdeed2f",
+          "taskKey": "assess-repo-correctness",
+          "operation": "assess-repo-correctness",
+          "routing": {
+            "permittedExecutors": [
+              "human-agentofreality"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Check whether the Issue belongs in the Drasi Server repository.",
+            "details": "Compare the requested change with the purpose and ownership of this repository. If another repository is a better home, identify it.",
+            "acceptanceCriteria": [
+              "The Result states whether this is the correct repository.",
+              "An incorrect-repository Result names the best known repository and explains why.",
+              "The response gives the submitter a clear next step."
+            ],
+            "resultSchema": {
+              "actorId": "string",
+              "evidence": "string",
+              "responseId": "string",
+              "summary": "string"
+            }
+          },
+          "children": [],
+          "flowEntries": []
+        },
+        "evaluatorId": "result-evaluator",
+        "orchestratorId": "workflow-coordinator",
+        "maxReworkAttempts": 3,
+        "childTaskDefinitionIds": []
+      },
+      {
+        "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:a0c39ce1ccb97bbfe8ab7d525e557e0c800ad9a42e31d47df3da8ace79ffe4d1",
+        "taskDefinition": {
+          "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:a0c39ce1ccb97bbfe8ab7d525e557e0c800ad9a42e31d47df3da8ace79ffe4d1",
+          "taskKey": "assess-template-conformance",
+          "operation": "assess-template-conformance",
+          "routing": {
+            "permittedExecutors": [
+              "issue-template-checker"
+            ]
+          },
+          "staticInputs": {},
+          "instructions": {
+            "summary": "Check the Issue against the matching repository Issue template.",
+            "details": "Select the template that matches the Issue type and report every required item that is missing or inadequate.",
+            "acceptanceCriteria": [
+              "The matching template is identified when one exists.",
+              "Every required template item is checked.",
+              "Missing or inadequate items are listed precisely.",
+              "The Root Issue comment clearly states the result."
+            ],
+            "resultSchema": {
+              "conforms": "boolean",
+              "evidence": "string",
+              "missing": [
+                "string"
+              ],
+              "rootIssueComment": "string",
+              "template": null
+            }
+          },
+          "children": [],
+          "flowEntries": []
+        },
+        "evaluatorId": "result-evaluator",
+        "orchestratorId": "workflow-coordinator",
+        "maxReworkAttempts": 3,
+        "childTaskDefinitionIds": []
+      }
+    ],
+    "instances": [
+      {
+        "type": "workflow-entry",
+        "targetStepId": "validate-issue",
+        "targetTaskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:acdb5b8d35a578b629c13c9e3e3f437a26bca28a2a5acc83ea30041ea8d0d754"
+      },
+      {
+        "type": "outcome",
+        "sourceStepId": "analyze-issue",
+        "outcome": "resolve",
+        "targetStepId": "design-resolution",
+        "targetStepKind": "task",
+        "targetTaskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:ac0c4b35e497ed9e6f781b09b7636f882a80afdac4fdc7983592abbd19f620df"
+      },
+      {
+        "type": "outcome",
+        "sourceStepId": "analyze-issue",
+        "outcome": "triage",
+        "targetStepId": "triage-issue",
+        "targetStepKind": "task",
+        "targetTaskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:d36727446c4408c315d96b3195be684ba2a84876ae5b662f9dcb87c290e8f183"
+      },
+      {
+        "type": "terminal",
+        "stepId": "design-completed",
+        "outcome": "completed"
+      },
+      {
+        "type": "next",
+        "sourceStepId": "design-resolution",
+        "targetStepId": "design-completed",
+        "targetStepKind": "terminal"
+      },
+      {
+        "type": "next",
+        "sourceStepId": "request-information",
+        "targetStepId": "wait-for-information",
+        "targetStepKind": "wait"
+      },
+      {
+        "type": "terminal",
+        "stepId": "triage-completed",
+        "outcome": "completed"
+      },
+      {
+        "type": "next",
+        "sourceStepId": "triage-issue",
+        "targetStepId": "triage-completed",
+        "targetStepKind": "terminal"
+      },
+      {
+        "type": "outcome",
+        "sourceStepId": "validate-issue",
+        "outcome": "accepted",
+        "targetStepId": "analyze-issue",
+        "targetStepKind": "task",
+        "targetTaskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:0c10b9af91c6716cbd57d8cd6d4cd7ff7d298cc78cbd5d9245ac43bd05dd449e"
+      },
+      {
+        "type": "outcome",
+        "sourceStepId": "validate-issue",
+        "outcome": "needs-information",
+        "targetStepId": "request-information",
+        "targetStepKind": "task",
+        "targetTaskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:d2986dfb0274772f23ef131cfbfb30f2a33ee6a64cacabc563b6121316f855a9"
+      },
+      {
+        "type": "wait",
+        "stepId": "wait-for-information",
+        "event": "root-issue-commented",
+        "targetStepId": "validate-issue",
+        "targetStepKind": "task",
+        "targetTaskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:acdb5b8d35a578b629c13c9e3e3f437a26bca28a2a5acc83ea30041ea8d0d754"
+      }
+    ]
+  },
+  "queryBundle": {
+    "version": "v1",
+    "workflowDefinitionId": "drasi-server-issue",
+    "definitionDigest": "sha256:0348c756f7657cfbacdfbaf88a0111950a1d0597a4540ca93fc81bd05297ab84",
+    "queries": [
+      {
+        "id": "wg-resume-264272d318373319666b",
+        "kind": "resume",
+        "query": "MATCH (run:WorkflowRun)-[:USES_DEFINITION]->(workflowDefinition:WorkflowDefinition)\nMATCH (wait:WorkGraphWait)-[:WAIT_IN_RUN]->(run)\nMATCH (comment:WorkGraphRootIssueComment)-[:RESUMES]->(wait)\nWHERE workflowDefinition.workflowDefinitionId = 'drasi-server-issue' AND workflowDefinition.digest = 'sha256:0348c756f7657cfbacdfbaf88a0111950a1d0597a4540ca93fc81bd05297ab84' AND wait.stepId = 'wait-for-information' AND wait.event = 'root-issue-commented' AND comment.authorized = true\nRETURN run.workflowRunId AS workflowRunId, wait.rootIssueId AS rootIssueId, wait.sourceTaskId AS sourceTaskId, wait.routeId AS routeId, 'wait-for-information' AS sourceStepId, 'validate-issue' AS targetStepId, 'task' AS targetStepKind, 'urn:drasi:workgraph:id:v1:task-definition:sha256:acdb5b8d35a578b629c13c9e3e3f437a26bca28a2a5acc83ea30041ea8d0d754' AS targetTaskDefinitionId, comment.commentId AS commentId, comment.authorId AS authorId, comment.body AS body",
+        "resultSchema": [
+          {
+            "name": "workflowRunId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "rootIssueId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "sourceTaskId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "routeId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "sourceStepId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "targetStepId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetStepKind",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "targetTaskDefinitionId",
+            "type": "string",
+            "nullable": true
+          },
+          {
+            "name": "commentId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "authorId",
+            "type": "string",
+            "nullable": false
+          },
+          {
+            "name": "body",
+            "type": "string",
+            "nullable": false
+          }
+        ]
+      }
+    ],
+    "workgraphReactionQueries": [
+      "wg-resume-264272d318373319666b"
+    ],
+    "sseQueries": [
+      "wg-resume-264272d318373319666b"
+    ],
+    "canvasInventory": [
+      {
+        "id": "wg-resume-264272d318373319666b",
+        "kind": "resume",
+        "sha256": "a8ea444bf64ddf36c68645d981ea7379ee170bb534b40d8e31093df2ef42c484",
+        "fields": [
+          "workflowRunId",
+          "rootIssueId",
+          "sourceTaskId",
+          "routeId",
+          "sourceStepId",
+          "targetStepId",
+          "targetStepKind",
+          "targetTaskDefinitionId",
+          "commentId",
+          "authorId",
+          "body"
+        ]
+      }
+    ]
+  }
+}

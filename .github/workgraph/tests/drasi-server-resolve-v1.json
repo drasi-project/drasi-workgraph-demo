@@ -1,0 +1,184 @@
+{
+  "apiVersion": "drasi.io/v1",
+  "kind": "WorkGraphTestCase",
+  "metadata": {
+    "id": "drasi-server-resolve"
+  },
+  "spec": {
+    "workflowDefinitionId": "drasi-server-issue",
+    "rootIssue": {
+      "title": "Document validation for Drasi Server startup configuration",
+      "body": "## Summary\n\nDocument how to validate a Drasi Server configuration before starting a live WorkGraph runtime.\n\n## Reproduction\n\nA malformed source or reaction configuration is currently discovered only when the server starts.\n\n## Expected behavior\n\nThe resolution plan identifies the relevant configuration loader, validation boundary, tests, and documentation.",
+      "labels": [
+        "workgraph:drasi-server-issue"
+      ]
+    },
+    "steps": {
+      "validate-issue": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "actorId": "human-agentofreality",
+            "responseId": "response-validate-issue",
+            "outcome": "accepted",
+            "summary": "All repository, template, and contribution checks passed.",
+            "evidence": "Outcome: accepted"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "assess-repo-correctness": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "actorId": "human-agentofreality",
+            "responseId": "response-assess-repo-correctness",
+            "summary": "The repository assessment is complete.",
+            "evidence": "The Demo repository is the correct target for this proof."
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "assess-template-conformance": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "conforms": true,
+            "template": null,
+            "missing": [],
+            "evidence": "The synthetic proof Issue contains a summary, reproduction, and expected behavior.",
+            "rootIssueComment": "### Template check\n\nThe Issue contains the information required for this proof."
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "assess-contribution-compliance": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "actorId": "human-agentofreality",
+            "responseId": "response-assess-contribution-compliance",
+            "summary": "The contribution assessment is complete.",
+            "evidence": "No applicable contribution requirement is missing."
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "analyze-issue": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "actorId": "human-agentofreality",
+            "responseId": "response-analyze-issue",
+            "outcome": "resolve",
+            "summary": "The analysis is complete.",
+            "evidence": "Outcome: resolve"
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "assess-complexity": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "complexity": "medium",
+            "reasons": [
+              "Configuration validation spans source and reaction setup."
+            ],
+            "unknowns": [],
+            "rootIssueComment": "### Complexity\n\nThe change has medium complexity."
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "assess-impact": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "impact": "medium",
+            "affectedUsers": [
+              "Operators starting Drasi Server with WorkGraph configuration"
+            ],
+            "reasons": [
+              "Earlier validation would make startup failures easier to diagnose."
+            ],
+            "rootIssueComment": "### Impact\n\nThe issue has medium operator impact."
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "identify-affected-code": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "likelyAreas": [
+              {
+                "path": "src",
+                "component": "configuration loader",
+                "confidence": "medium",
+                "reason": "Server configuration is loaded during startup."
+              }
+            ],
+            "tests": [
+              "configuration parsing and startup tests"
+            ],
+            "unknowns": [],
+            "rootIssueComment": "### Likely code areas\n\nInspect the server configuration loader and startup tests."
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "identify-similar-issues": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "similarIssues": [],
+            "searchSummary": "Searched open and closed Issues for configuration validation and startup diagnostics.",
+            "rootIssueComment": "### Related Issues\n\nNo substantive related Issue was found."
+          }
+        },
+        "evaluationVerdict": "accepted"
+      },
+      "design-resolution": {
+        "result": {
+          "outcome": "succeeded",
+          "output": {
+            "plan": [
+              "Trace configuration loading and validation.",
+              "Define pre-start validation diagnostics.",
+              "Add focused tests.",
+              "Document operator usage."
+            ],
+            "planDocument": "docs/plans/drasi-server-startup-validation.md",
+            "pullRequestUrl": "https://github.com/loopback/workgraph-proof/pull/1",
+            "risks": [],
+            "openQuestions": [],
+            "rootIssueComment": "### Resolution design\n\nThe implementation plan covers validation, tests, and operator documentation."
+          }
+        },
+        "evaluationVerdict": "accepted"
+      }
+    },
+    "expected": {
+      "topLevelTaskKeys": [
+        "validate-issue",
+        "analyze-issue",
+        "design-resolution"
+      ],
+      "taskParents": {
+        "validate-issue": null,
+        "assess-repo-correctness": "validate-issue",
+        "assess-template-conformance": "validate-issue",
+        "assess-contribution-compliance": "validate-issue",
+        "analyze-issue": null,
+        "assess-complexity": "analyze-issue",
+        "assess-impact": "analyze-issue",
+        "identify-affected-code": "analyze-issue",
+        "identify-similar-issues": "analyze-issue",
+        "design-resolution": null
+      },
+      "terminalOutcome": "completed",
+      "flowEntries": []
+    }
+  }
+}

@@ -93,6 +93,12 @@ the `assignment-coordinator` agent choose a human worker. The assigner receives
 no lease. Only the selected worker enters the ordinary
 Assignment → Lease → Dispatch lifecycle.
 
+`drasi-server-issue.yaml` packages the Drasi Server Issue process as a
+deployable workflow. It validates an Issue with three fixed child checks,
+analyzes accepted work with four fixed child checks, and routes to either human
+triage or a resolution-design task. The `drasi-server-resolve-v1.json` test case
+exercises validation → analysis → design → `completed`.
+
 Dogfooding's Rust `workgraph-compile` turns that YAML into the canonical
 `WorkGraphWorkflowDefinition/v1` body. The committed
 [`issue-lifecycle-v1.body`](.github/workgraph/workflows/issue-lifecycle-v1.body)

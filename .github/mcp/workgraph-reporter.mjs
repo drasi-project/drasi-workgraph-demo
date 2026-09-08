@@ -109,6 +109,7 @@ for (const workflowDefinitionId of [
   "human-parity",
   "assigner-parity",
   "human-assigner-live",
+  "drasi-server-issue",
 ]) {
   const fixture = JSON.parse(
     readFileSync(
