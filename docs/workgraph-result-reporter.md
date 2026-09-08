@@ -359,7 +359,11 @@ predecessor's Route. The reporter never substitutes another lifecycle identity;
 the configured Route identity must be a positive integer.
 
 Every worker profile that exposes `get_root_issue` or `submit_task_result`
-declares it so separated identities work without a reporter change.
+declares it so separated identities work without a reporter change. In the
+current single-principal deployment, profiles populate the explicit Evaluation
+and Route process variables from
+`vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID`. This is deployment wiring, not a
+reporter fallback: every role-specific process variable remains mandatory.
 
 Run the offline contract tests with:
 

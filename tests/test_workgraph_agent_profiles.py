@@ -433,14 +433,14 @@ class WorkGraphProfilesTest(unittest.TestCase):
             with self.subTest(reporter_identity=name):
                 self.assertIn(
                     "COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID: "
-                    "${{ vars.COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID }}",
+                    "${{ vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID }}",
                     self.agents[name],
                 )
         for name in lifecycle_profiles[1:3]:
             with self.subTest(name=name):
                 self.assertIn(
                     "COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID: "
-                    "${{ vars.COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID }}",
+                    "${{ vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID }}",
                     self.agents[name],
                 )
                 self.assertIn("existing", self.agents[name].lower())
@@ -461,13 +461,8 @@ class WorkGraphProfilesTest(unittest.TestCase):
                     self.agents[name], r"workgraph/(?:create|assign|dispatch)_task"
                 )
 
-    def test_reporter_identities_map_from_their_own_variables(self):
-        """Each reporter identity reads the identically named variable.
-
-        A bare `vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID` is not a declared
-        repository variable, so any profile referencing it resolves the
-        identity to the empty string and fails closed at configuration time.
-        """
+    def test_reporter_identities_map_to_the_deployed_principal(self):
+        """Explicit protocol roles share the deployment's reporter principal."""
         identity = re.compile(
             r"^\s*(COPILOT_MCP_WORKGRAPH_\w*?_?REPORTER_USER_ID): "
             r"\$\{\{ vars\.(\S+) \}\}$",
@@ -476,13 +471,18 @@ class WorkGraphProfilesTest(unittest.TestCase):
         seen = set()
         for name, content in self.agents.items():
             with self.subTest(name=name):
-                self.assertNotIn(
-                    "vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID", content
-                )
                 declared = identity.findall(content)
                 self.assertNotEqual(declared, [])
                 for key, source in declared:
-                    self.assertEqual(key, source)
+                    if key in {
+                        "COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID",
+                        "COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID",
+                    }:
+                        self.assertEqual(
+                            source, "COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID"
+                        )
+                    else:
+                        self.assertEqual(key, source)
                     seen.add(key)
         # Every profile resolves the Route author identity, because worker
         # tools authenticate a routed scope member's predecessor Route.
@@ -490,7 +490,7 @@ class WorkGraphProfilesTest(unittest.TestCase):
             with self.subTest(route_identity=name):
                 self.assertIn(
                     "COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID: "
-                    "${{ vars.COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID }}",
+                    "${{ vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID }}",
                     content,
                 )
         self.assertEqual(
