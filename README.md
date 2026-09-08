@@ -138,7 +138,7 @@ workflow through an explicit mapping and derives the Root Task from that
 mapping's Root Issue admission:
 
 ```bash
-WORKGRAPH_PLUGINS_DIR=../drasi-dogfooding/git-workgraph/plugins \
+WORKGRAPH_PLUGINS_DIR=../drasi-workgraph/plugins \
   node scripts/check-workgraph-compiler.mjs
 node scripts/prepare-workgraph-v1-proof.mjs
 node --test tests/*.test.mjs

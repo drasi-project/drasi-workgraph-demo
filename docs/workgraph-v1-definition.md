@@ -332,7 +332,7 @@ ordered five IDs from the vendored WorkGraph runtime contract.
 ordered five entries projected to exactly `{"id","sha256"}` (with keys in that
 order). The entries and hashes are read only from
 `.github/workgraph/contracts/runtime-v1.json`, a byte-identical generated copy
-of WorkGraph's canonical `git-workgraph/contract/runtime-v1.json`; the compiler
+of WorkGraph's canonical `contract/runtime-v1.json`; the compiler
 inventory must be empty. This binds the offline proof to query content as well
 as query names without multiplying queries for any workflow shape.
 
@@ -356,14 +356,14 @@ node --check .github/mcp/workgraph-v1-definition.mjs
 node --check scripts/prepare-workgraph-v1-proof.mjs
 node --test tests/workgraph-v1-definition.test.mjs
 node scripts/prepare-workgraph-v1-proof.mjs
-WORKGRAPH_PLUGINS_DIR=../drasi-dogfooding/git-workgraph/plugins \
+WORKGRAPH_PLUGINS_DIR=../drasi-workgraph/plugins \
   node scripts/check-workgraph-compiler.mjs
 ```
 
 Use `WORKGRAPH_PLUGINS_DIR=<path> node
 scripts/check-workgraph-compiler.mjs --write` to regenerate the expected output
 and canonical body from the WorkGraph-owned compiler before materializing the
-Dogfooding runtime configuration. A second `--write` run must leave the
+runtime configuration. A second `--write` run must leave the
 worktree unchanged.
 
 The fixture keeps server, Source, Queries, and Reaction inactive. It records
