@@ -1,0 +1,38 @@
+[
+  {
+    "key": "B01",
+    "kind": "bug",
+    "title": "Search should ignore letter case",
+    "body": "## Problem\n\nThe shopping list cannot find an item unless the search uses the same capitalization as its name.\n\n## Reproduce\n\nStart the baseline app and type `milk` into Search. The seeded `Milk` item disappears. Searching for `Milk` finds it.\n\n## Expected behavior\n\nSearch matches names without regard to letter case. Leading and trailing whitespace in the query is ignored. Clearing search restores all items.\n\n## Acceptance criteria\n\n- `milk`, `MILK`, and ` Milk ` find the seeded Milk item.\n- Nonmatching searches show the existing empty-search message.\n- Filtering does not modify saved data or the whole-list counts.\n- Add a passing regression for B01 and retain the other exercises."
+  },
+  {
+    "key": "B02",
+    "kind": "bug",
+    "title": "Sort quantities numerically, not alphabetically",
+    "body": "## Problem\n\nThe Quantity: low to high option puts two-digit quantities before smaller single-digit quantities.\n\n## Reproduce\n\nStart the baseline app, select Quantity: low to high, and compare Apples (10), Eggs (12), Bread (2), and Bananas (3).\n\n## Expected behavior\n\nThe quantities should be 1, 1, 2, 3, 10, 12, not 1, 1, 10, 12, 2, 3.\n\n## Acceptance criteria\n\n- Sort all allowed quantities numerically in ascending order.\n- Equal quantities keep their original relative order.\n- Changing sort does not rewrite the stored item order.\n- Add a passing regression for B02 and retain the other exercises."
+  },
+  {
+    "key": "B03",
+    "kind": "bug",
+    "title": "The left-to-pick-up count includes bought items",
+    "body": "## Problem\n\nThe large left-to-pick-up number includes items already marked as bought.\n\n## Reproduce\n\nThe baseline has six items, including two already bought. The sidebar says six left to pick up instead of four. Tick Milk and the number still does not decrease.\n\n## Expected behavior\n\nThe remaining count measures unbought items, not quantities or currently visible search results.\n\n## Acceptance criteria\n\n- The baseline shows four remaining items; buying Milk changes it to three.\n- Unchecking Milk restores four; buying every item results in zero.\n- Search does not change whole-list statistics.\n- Add a passing regression for B03 and retain the other exercises."
+  },
+  {
+    "key": "F01",
+    "kind": "enhancement",
+    "title": "Edit an item's name and quantity",
+    "body": "## User story\n\nAs a shopper, I want to correct a name or quantity without deleting and recreating an item.\n\n## Scope\n\nAdd a small, keyboard-accessible inline editor, and extend the existing item API. Keep the single-list, local JSON-file design.\n\n## Acceptance criteria\n\n- Edit the name and quantity of an existing item, with Save and Cancel controls.\n- Reuse the existing trimmed name (1-80 characters) and integer quantity (1-99) rules on the server and in the UI.\n- Cancel leaves the item unchanged.\n- Saving preserves its ID, bought status, and list position; edits survive a restart.\n- Show validation and save failures without losing the original item.\n- Add focused UI/model/API coverage and update the app guide. Do not fix unrelated baseline bugs."
+  },
+  {
+    "key": "F02",
+    "kind": "enhancement",
+    "title": "Clear all bought items in one step",
+    "body": "## User story\n\nAs a shopper starting my next trip, I want to clear items already in the bag without deleting them one at a time.\n\n## Scope\n\nAdd a Clear bought action with confirmation, backed by one server operation and one atomic file write.\n\n## Acceptance criteria\n\n- Show how many items will be removed and require confirmation.\n- Cancel removes nothing; confirm removes only bought items.\n- The action applies to the entire list, not just visible search results.\n- Disable the action when there are no bought items.\n- Repeating the API operation is safe; remaining items survive a restart.\n- Add focused tests and update the app guide. Do not fix unrelated baseline bugs."
+  },
+  {
+    "key": "F03",
+    "kind": "enhancement",
+    "title": "Download the list as a plain-text checklist",
+    "body": "## User story\n\nAs a shopper, I want a simple downloadable checklist that I can open or print without this app.\n\n## Scope\n\nAdd a Download list button and a backend endpoint returning UTF-8 plain text. No extra packages, accounts, or external services.\n\n## Acceptance criteria\n\n- Download `shopping-list.txt` containing the entire list in saved order, regardless of the current search or sort.\n- Include one line per item, for example `[ ] Milk x 1` or `[x] Bread x 2`.\n- Preserve Unicode names without treating names as HTML or executable content.\n- An empty list produces a useful plain-text message.\n- Export never changes saved data. Add endpoint tests and update the app guide."
+  }
+]

@@ -1,0 +1,19 @@
+{
+  "name": "workgraph-shopping-list",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:bugs": "node --test test/known-bugs.mjs",
+    "demo:status": "node ../scripts/shopping-demo.mjs status",
+    "demo:seed": "node ../scripts/shopping-demo.mjs seed",
+    "demo:reset": "node ../scripts/shopping-demo.mjs reset",
+    "reset:code": "node ../scripts/shopping-demo.mjs reset-code",
+    "reset:data": "node ../scripts/shopping-demo.mjs reset-data"
+  }
+}

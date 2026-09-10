@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "items": [
+    { "id": "milk", "name": "Milk", "quantity": 1, "bought": false },
+    { "id": "bread", "name": "Bread", "quantity": 2, "bought": true },
+    { "id": "apples", "name": "Apples", "quantity": 10, "bought": false },
+    { "id": "bananas", "name": "Bananas", "quantity": 3, "bought": false },
+    { "id": "coffee", "name": "Coffee", "quantity": 1, "bought": true },
+    { "id": "eggs", "name": "Eggs", "quantity": 12, "bought": false }
+  ]
+}

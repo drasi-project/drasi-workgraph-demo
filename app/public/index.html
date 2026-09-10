@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#143d30">
+    <title>Shopping List | WorkGraph playground</title>
+    <link rel="stylesheet" href="/styles.css">
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <div class="shell">
+      <header class="masthead">
+        <a class="brand" href="/" aria-label="Shopping List home">
+          <span class="brand-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
+              <path d="M5 8h14l-1 12H6L5 8Z M9 8V6a3 3 0 0 1 6 0v2"/>
+            </svg>
+          </span>
+          Shopping List
+        </a>
+        <span class="playground">WORKGRAPH PLAYGROUND</span>
+      </header>
+
+      <main>
+        <section class="hero" aria-labelledby="page-title">
+          <div>
+            <p class="eyebrow">LESS TO REMEMBER. MORE TO MAKE.</p>
+            <h1 id="page-title">Your next shop,<br>all in one little list.</h1>
+            <p class="intro">Add what you need. Tick it off as you go.</p>
+          </div>
+          <div class="hero-note"><span class="note-dot"></span> One list. Saved locally.</div>
+        </section>
+
+        <section class="workspace" aria-label="Shopping list">
+          <div class="list-panel">
+            <form id="add-form" class="add-form">
+              <div class="field name-field">
+                <label for="item-name">What do you need?</label>
+                <input id="item-name" name="name" placeholder="e.g. Strawberries" maxlength="80" required autocomplete="off">
+              </div>
+              <div class="field quantity-field">
+                <label for="item-quantity">Qty</label>
+                <input id="item-quantity" name="quantity" type="number" min="1" max="99" step="1" value="1" required>
+              </div>
+              <button class="primary" id="add-button" type="submit">+ Add item</button>
+            </form>
+
+            <div id="error" class="error" role="alert" hidden></div>
+
+            <div class="list-toolbar">
+              <div class="search-field">
+                <label class="sr-only" for="search">Search items</label>
+                <input id="search" type="search" placeholder="Search your list..." autocomplete="off">
+              </div>
+              <div class="sort-field">
+                <label for="sort">Sort by</label>
+                <select id="sort">
+                  <option value="added">Added order</option>
+                  <option value="name">Item name</option>
+                  <option value="quantity">Quantity: low to high</option>
+                </select>
+              </div>
+            </div>
+
+            <p id="list-caption" class="list-caption" aria-live="polite">Loading your list...</p>
+            <ul id="items" class="items" aria-label="Items"></ul>
+            <div id="empty" class="empty" hidden>
+              <p id="empty-title">A fresh start.</p>
+              <span id="empty-detail">Add your first item above.</span>
+            </div>
+            <p id="status" class="save-status" role="status">Connecting to your local list...</p>
+          </div>
+
+          <aside class="sidebar" aria-label="List overview">
+            <section class="overview">
+              <p class="eyebrow">AT A GLANCE</p>
+              <div class="remaining"><span id="remaining">-</span><span>left to pick up</span></div>
+              <div class="stat-row"><span>On your list</span><strong id="total">-</strong></div>
+              <div class="stat-row"><span>Already in the bag</span><strong id="bought">-</strong></div>
+              <p class="tip">A tick means it's in the bag.<br>Your list stays here when you come back.</p>
+            </section>
+
+            <details class="practice-note">
+              <summary><span class="practice-tag">Practice baseline</span></summary>
+              <p>A real little app with three deliberate bugs and three feature requests. Built for learning with WorkGraph.</p>
+              <p>The backlog and reset guide are in <code>app/README.md</code>.</p>
+            </details>
+          </aside>
+        </section>
+      </main>
+      <footer>No accounts. No setup. Just the next thing on your list.</footer>
+    </div>
+  </body>
+</html>

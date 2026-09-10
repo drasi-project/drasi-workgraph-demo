@@ -1,5 +1,21 @@
 # drasi-workgraph-demo
 
+## A tiny app to practice on
+
+[`app/`](app/) contains a shopping list: a browser UI, a Node.js backend, and a
+JSON file. It needs Node.js 22+, but no install, build, database, or containers:
+
+```bash
+cd app
+npm start
+```
+
+Open <http://127.0.0.1:3000>. The [app guide](app/README.md) explains the three
+intentional bugs, three feature requests, and the commands for starting and
+resetting a development experiment without rewriting Git history.
+
+## WorkGraph prototype
+
 This repository is the testbed surface for the WorkGraph v1 prototype. GitHub
 delivers Issue events through ngrok directly to the `github-workgraph-v1`
 Drasi Source. An explicit deployment `workflowMappings` entry binds an exact,
