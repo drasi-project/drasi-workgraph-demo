@@ -1,167 +1,117 @@
 # drasi-workgraph-demo
 
+This repository is a **consumer sandbox**, not the WorkGraph engine workspace.
+[`drasi-project/drasi-workgraph`][workgraph] owns the canonical engine, protocol,
+Rust `workgraph-compile` compiler, repository kit, reusable agent profiles, and
+app starter.
+
+**This is an older installation, not the current repository template.** It
+deliberately retains **8 workflow definitions and 21 agent profiles**; the
+canonical kit has **13 workflows and 37 profiles** at this documentation
+refresh. The Demo has not been regenerated. Do not assume newer kit features
+exist here, or install the current kit over this active sandbox as a setup or
+documentation-cleanup step.
+
+## Set up WorkGraph / Drasi Server or a new sandbox
+
+Use the canonical guides rather than copying deployment instructions from this
+Demo:
+
+| Guide | Purpose |
+|---|---|
+| [Setup overview][setup] | Understand the host/consumer split and setup order. |
+| [Host setup][host] | Set up Drasi Server and the WorkGraph runtime. |
+| [Sandbox setup][sandbox] | Create and configure a separate GitHub repository for testing. |
+
+For a **new, dedicated sandbox destination**, use the canonical installer
+**from the WorkGraph checkout**, not from this Demo:
+
+```bash
+cd /path/to/drasi-workgraph
+node scripts/setup-repository.mjs /path/to/acme-repo --repo owner/acme-repo --with-shopping
+```
+
+Omit the optional `--with-shopping` when you do not want the shopping app and
+its harness. Follow the sandbox guide for GitHub repository creation, pinned
+refs, profiles, and runtime wiring. Creating repository files, starting an app,
+and seeding Issues are separate from starting WorkGraph.
+
+Do not create a new sandbox by copying this instance's state, changing its
+origin, or resetting its app. The canonical exporter is portable; this Demo's
+older shopping helper and MCP reporter are fixed to
+`drasi-project/drasi-workgraph-demo`. In particular,
+`scripts/shopping-demo.mjs` does **not** accept `--repo`.
+
 ## A tiny app to practice on
 
 [`app/`](app/) contains a shopping list: a browser UI, a Node.js backend, and a
-JSON file. It needs Node.js 22+, but no install, build, database, or containers:
+JSON file. It needs **Node.js 22+**, but no dependency installation, build,
+database, containers, GitHub token, or WorkGraph server just to use the app:
 
 ```bash
+# From this Demo checkout
 cd app
 npm start
 ```
 
-Open <http://127.0.0.1:3000>. The [app guide](app/README.md) explains the three
-intentional bugs, three feature requests, and the commands for starting and
-resetting a development experiment without rewriting Git history.
+Open <http://127.0.0.1:3000>. This starts **only the shopping app**, not Drasi
+Server, WorkGraph, webhook delivery, or cloud agents.
+
+The [app guide](app/README.md) and
+[backlog](demo/shopping-list/backlog.json) describe the three deliberate bugs
+(B01-B03) and three unfinished features (F01-F03). They remain exercises, not
+changes to apply during setup. The app guide is part of the older reset
+baseline; use the [operator guide](demo/shopping-list/README.md) for this
+instance's helper behavior, side effects, and reset precautions.
 
 ## WorkGraph prototype
 
-This repository is the testbed surface for the WorkGraph v1 prototype. GitHub
-delivers Issue events through ngrok directly to the `github-workgraph-v1`
-Drasi Source. An explicit deployment `workflowMappings` entry binds an exact,
-case-sensitive `workgraph:<workflow-id>` label to a definition. That label
-admits an ordinary **Root Issue**; the `workgraph-v1` Reaction creates its
-**Root Task**, then any declared child tasks. Deployments require
-`workflowMappings` and a separate, non-null `admissionRead` object. Its token
-must be non-empty, and its resolved `apiBaseUrl` must be non-empty (the URL may
-use the field default). `agentConfig` reads only the actor catalog and is never
-an authoritative Issue-read fallback. Both `agentConfig` and `protocolTrust`
-are required non-null objects; `protocolTrust.taskCreators`, `assigners`, and
-`reporters` must each be non-empty. There is no passive Source-only mode: the
-Source converges the actor catalog before accepting a delivery. The Reaction
-consumes the mapping-specific admission ID supplied on the Root Issue rather
-than recomputing a top-level admission.
+The WorkGraph runtime uses Drasi Server's `github-workgraph-v1` Source and
+`workgraph-v1` Reaction. The [vendored runtime contract](.github/workgraph/contracts/runtime-v1.json)
+records the five fixed, definition-independent fact queries:
+`wg-root-state`, `wg-task-state`, `wg-task-actions`, `wg-lease-state`, and
+`wg-root-comments`. Control flow does not add per-edge, branch, fork, wait, or
+terminal queries. See the [canonical protocol reference][protocol] for the
+current contract instead of treating this Demo's installed copy as authority.
 
-The prototype has one protocol:
+An ordinary **Root Issue** describes the requested work. Shopping-demo seeding
+does not give it the `WorkGraphTask` Issue type or a `workgraph:*` selector.
+After host setup, a human can add the exact, case-sensitive
+`workgraph:<mapping-id>` label from an explicitly configured `workflowMappings`
+entry. The runtime then creates separate **WorkGraphTask Issues**: the initial
+Root Task and any workflow-defined successors or children. Do not create those
+Task Issues yourself or use their Issue type for the seeded Root Issues.
 
-- `WorkGraphWorkflowDefinition/v1`
-- `WorkGraphTask/v1`
-- `WorkGraphTaskAssignmentRequest/v1`
-- `WorkGraphTaskAssignment/v1`
-- `WorkGraphTaskFork/v1`
-- `WorkGraphTaskJoin/v1`
-- `WorkGraphTaskDispatch/v1`
-- `WorkGraphTaskResult/v1`
-- `WorkGraphTaskEvaluation/v1`
-- `WorkGraphTaskRoute/v1`
-- `WorkGraphTaskError/v1`
-- `WorkGraphTaskResponse/v1`
+Keep an admitted Root Issue open and do not rewrite its title/body or remove
+its selector while work is active. Assignment, work, and review replies go on
+the Task Issue; a workflow's explicit information wait instead resumes from
+an authorized comment on the ordinary Root Issue. Admission, task creation, and
+dispatch require a separately configured and running WorkGraph host; neither
+`npm start` nor Issue seeding provides it.
 
-Every task and lifecycle body uses the strict `workgraph.drasi.io/v1` envelope:
-`kind` identifies the message, direct identity fields remain top-level,
-definition and human-readable task metadata live in `workflowContext`,
-role-keyed causal IDs live as exact `{kind,id}` objects in `references`, and
-message content lives in `data`. `taskKey` and `operation` are required
-everywhere and are validated against the pinned definition. No alternate flat
-body or marker spelling is accepted. The hierarchy is:
+The installed [`issue-lifecycle`](.github/workgraph/workflows/issue-lifecycle.yaml)
+is a four-stage intake/protocol exercise.
+[`drasi-server-issue`](.github/workgraph/workflows/drasi-server-issue.yaml)
+validates and analyzes an Issue and produces a resolution plan; it is not an
+app-implementation workflow. A cloud development run needs a deliberately
+configured development workflow and review/approval policy. Hosted agents see
+the configured pushed ref, not uncommitted app changes in this checkout.
 
-```text
-Root Issue
-├── initial Root Task
-└── later top-level tasks
-```
+## Demo-specific maintenance notes
 
-The staged linear authoring source lives in
-[`issue-lifecycle.yaml`](.github/workgraph/workflows/issue-lifecycle.yaml).
-It defines four `issue-worker` tasks: intake, normalization, inspection, and
-finalization. Each task follows one `next` edge to the sole `completed`
-terminal; there are no branches, waits, or recursive children.
+| Document | Scope |
+|---|---|
+| [Shopping-demo operator guide](demo/shopping-list/README.md) | Fixed-repository helper, GitHub reads/writes, preparation, and destructive reset boundaries. |
+| [Definition and proof notes](docs/workgraph-v1-definition.md) | The eight installed fixtures, regression examples, and inactive offline proof. |
+| [Reporter notes](docs/workgraph-result-reporter.md) | The older installed reporter's fixed repository, fixture registry, and configuration. |
 
-Two additional local-proof definitions preserve that regression while extending
-coverage:
+These notes preserve this instance's useful proof history. They are not a
+replacement for the canonical [setup guides][setup] or
+[agent-profile documentation][profiles].
 
-- `fork-join-lifecycle.yaml` runs A → B, realizes C/D/E beneath B, joins all
-  three, then runs F → G.
-- `mixed-control-flow.yaml` combines a sequential prefix, three outcome
-  branches, an optional D/E/F fork beneath G, branch convergence at H, and
-  completed/ignored terminals.
-
-A fourth definition, `scoped-control-flow.yaml`, exercises `flowEntries`. Its
-initial `run` task is a workflow container that launches the `fix` and `notify`
-scopes in parallel, joins them, and is itself the run's finalizer, routing
-directly to the `completed` terminal. `fix` is itself a container that owns the
-nested `audit` scope before running its own cleanup, and `notify` is a plain
-routed task. `run` is the only direct Root Issue child; every task of a scope is
-a native direct sub-issue of the container that launched it:
-
-```text
-Root Issue
-└── initial run Task (container and finalizer)
-    ├── fix (flow entry, container)
-    │   ├── fix-evidence (fixed child, inherits fix's scope)
-    │   ├── audit (nested flow entry)
-    │   └── audit-verify (routed)
-    ├── fix-cleanup (routed)
-    └── notify (flow entry)
-```
-
-A fifth definition, `human-parity.yaml`, treats humans and agents as
-interchangeable executors: a human worker graded by an agent evaluator, then an
-agent worker graded by a human evaluator. The workflow names actor IDs
-identically in both directions; the strict `version: 1` actor catalog in
-`agents.yaml` is what marks `human-agentofreality` as a human and binds the
-GitHub account it speaks as. The catalog accepts only `actors`/`actorId`;
-catalog `version: 2` and the former `agents`/`agentId` shape are not aliases.
-
-`assigner-parity.yaml` allocates the Assignment decision itself to an actor.
-Its first task has `human-agentofreality` choose an agent worker; its second has
-the `assignment-coordinator` agent choose a human worker. The assigner receives
-no lease. Only the selected worker enters the ordinary
-Assignment → Lease → Dispatch lifecycle.
-
-`drasi-server-issue.yaml` packages the Drasi Server Issue process as a
-deployable workflow. It validates an Issue with three fixed child checks,
-analyzes accepted work with four fixed child checks, and routes to either human
-triage or a resolution-design task. The `drasi-server-resolve-v1.json` test case
-exercises validation → analysis → design → `completed`.
-
-Dogfooding's Rust `workgraph-compile` turns that YAML into the canonical
-`WorkGraphWorkflowDefinition/v1` body. The committed
-[`issue-lifecycle-v1.body`](.github/workgraph/workflows/issue-lifecycle-v1.body)
-is that canonical body, and
-[`issue-lifecycle.expected.json`](.github/workgraph/fixtures/v1/issue-lifecycle.expected.json)
-is the exact complete compiler output. Sequence, branch, fork/join, and
-terminal processing share the same five fixed, definition-independent `wg-*`
-fact queries. No workflow shape or human role adds generated queries.
-
-Assigner, evaluator, and orchestrator profiles are lifecycle roles. Through the
-narrow reporter they read a verified current task snapshot and write one
-canonical Assignment, Evaluation, or Route comment on that existing task. The
-snapshot exposes only the effective compiled policy and bounded choices.
-These roles cannot create or close tasks or mutate the Root Issue. The shared `issue-worker` profile handles all four stages. Lifecycle messages
-use one-based attempts and deterministic claim identities so concurrent retries
-in one reporter process reconcile one immutable comment. Runtime task IDs must
-match `urn:drasi:workgraph:id:v1:task:sha256:<64 lowercase hex>` exactly.
-All generated protocol identities use the corresponding lowercase type in that
-URN namespace.
-
-The actor catalog also includes separate agents for duplicate detection,
-related-Issue search, template conformance, likely code areas, resolution
-planning, implementation, and correctness/design/documentation/prior-art/
-security/testing PR reviews. Every agent-authored Result contains a
-`rootIssueComment` candidate. The agent never posts it directly; the runtime
-adds it to the ordinary Root Issue only after an accepted Evaluation.
-Every agent entry explicitly names its `customAgent` and
-`createPullRequest` policy. The planner and implementer set
-`createPullRequest: true`; protocol-only workers and all lifecycle roles
-explicitly set it to `false`. Both fields are required and non-null for agents.
-Human entries omit both and instead require their exact `github` identity.
-
-The offline proof fixture pins the loopback server/state-store identities, the
-exact ordered five shape-independent `wg-*` Drasi queries, and a
-SHA-256 digest of their canonical Canvas inventory entries. It selects the
-workflow through an explicit mapping and derives the Root Task from that
-mapping's Root Issue admission:
-
-```bash
-WORKGRAPH_PLUGINS_DIR=../drasi-workgraph/plugins \
-  node scripts/check-workgraph-compiler.mjs
-node scripts/prepare-workgraph-v1-proof.mjs
-node --test tests/*.test.mjs
-python -m unittest tests/test_workgraph_agent_profiles.py
-```
-
-Those commands do not start Drasi components or write to GitHub. See
-[`docs/workgraph-v1-definition.md`](docs/workgraph-v1-definition.md)
-and
-[`docs/workgraph-result-reporter.md`](docs/workgraph-result-reporter.md).
+[workgraph]: https://github.com/drasi-project/drasi-workgraph/blob/workgraph-generic-recovery/README.md
+[setup]: https://github.com/drasi-project/drasi-workgraph/blob/workgraph-generic-recovery/docs/setup/README.md
+[host]: https://github.com/drasi-project/drasi-workgraph/blob/workgraph-generic-recovery/docs/setup/host.md
+[sandbox]: https://github.com/drasi-project/drasi-workgraph/blob/workgraph-generic-recovery/docs/setup/sandbox.md
+[protocol]: https://github.com/drasi-project/drasi-workgraph/blob/workgraph-generic-recovery/repository-kit/docs/workgraph-v1-definition.md
+[profiles]: https://github.com/drasi-project/drasi-workgraph/blob/workgraph-generic-recovery/repository-kit/docs/workgraph-agent-profiles.md

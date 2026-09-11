@@ -1,104 +1,68 @@
 # WorkGraph v1 reporter
 
-`.github/mcp/workgraph-reporter.mjs` is the testbed's narrow MCP boundary for
-worker and lifecycle reporting. It exposes exactly six tools:
+These are **maintenance notes for this Demo's older installed reporter**, not
+the current portable reporter specification. Use WorkGraph's
+[canonical reporter reference][reporter], [protocol reference][protocol],
+[agent-profile guide][profiles], and [setup guides][setup] for new
+installations.
+
+The [installed MCP reporter](../.github/mcp/workgraph-reporter.mjs) is fixed to
+`drasi-project/drasi-workgraph-demo`. Unlike the canonical portable
+implementation, it hardcodes the repository and an **eight-fixture registry**,
+listed in the [installed artifact notes](workgraph-v1-definition.md#installed-artifacts).
+It does not discover or acquire the newer kit's workflows automatically.
+Copying it or the older shopping harness is not a supported new-sandbox
+installation method.
+
+This installed boundary exposes exactly six tools:
 
 | Tool | Purpose | GitHub write |
 |---|---|---|
-| `get_root_issue` | Verify a worker task, its Root Task, and the immutable Root Issue snapshot | No |
+| `get_root_issue` | Verify a worker task and its admitted Root Issue snapshot | No |
 | `submit_task_result` | Verify a task, Dispatch, and active Lease, then create or reconcile its Result | One comment when absent |
-| `get_task_snapshot` | Verify the current Dispatch, Result, direct identities, attempt, and effective compiled lifecycle policy | No |
+| `get_task_snapshot` | Read verified task evidence and bounded choices for the configured lifecycle role | No |
 | `submit_task_assignment` | Verify an AssignmentRequest and create or reconcile the selected Assignment | One comment when absent |
 | `submit_task_evaluation` | Create or reconcile the current Result's canonical Evaluation | One comment when absent |
 | `submit_task_route` | Create or reconcile an authorized Route for the current Evaluation | One comment when absent |
 
-The reporter is fixed to `drasi-project/drasi-workgraph-demo`. It rejects
-unknown arguments, unexpected Issue identities, foreign actors, noncanonical
-bodies, duplicate protocol comments, a missing exact `workgraph:<mapping-id>`
-selector label,
-closed task ancestry for new work (excluding the intentionally closed routed
-predecessor chain), changed Root Issue content, stale Leases, and
-conflicting retries.
+These are not offline tools: they re-read GitHub, and Result submission also
+contacts the Source's lease-validation endpoint. No tool creates or closes a
+Task Issue, mutates the ordinary Root Issue, starts WorkGraph, or selects a
+workflow for it. The mutating tools write only their canonical comment.
 
-A task definition may permit more than one executor. Membership in
-`routing.permittedExecutors` is what authorizes a lease: every Dispatch must
-lease a permitted member, and the currently selected Dispatch is what
-authorizes the reporting profile.
+The installed reporter rejects unexpected repository/Issue identities,
+noncanonical bodies, foreign authors, duplicate protocol comments, missing
+admission labels, changed Root Issue content, stale Leases, and conflicting
+retries. New work requires open task ancestry except for the routed-predecessor
+case below. Exact existing messages can reconcile without another write; the
+ordinary Root Issue must remain open with its admission label and content
+digest intact.
 
-Lifecycle tools pin the committed compiled fixtures in
-`.github/workgraph/fixtures/v1/` (`issue-lifecycle`, `fork-join-lifecycle`,
-`mixed-control-flow`, `scoped-control-flow`, `human-parity`,
-`assigner-parity`, and `human-assigner-live`). They resolve
-the
-task's source step and effective evaluator, orchestrator, and rework maximum
-from that compiled definition. They require the latest immutable Dispatch and
-its exact canonical Result, derive the canonical TaskResult envelope digest,
-and verify direct
-Root Issue, run, task, Result, and Evaluation identities, including required
-`taskKey` and `operation` context. Accepted Evaluations
-have empty feedback; rejected Evaluations require actionable feedback. The
-Evaluation and Route carry the same one-based attempt; `reworkCount` is
-`attempt - 1`.
-
-The Route writer accepts only actions enabled by the verdict, rework bound,
-fixed runtime exclusion policy, and exact compiled transition resolved from
-the Result. Advance carries the transition kind and target
-step/kind, outcome only for an outcome edge, and a hashed task-definition ID
-only for task targets. Rework returns the same task and assignment with the
-next bounded attempt and the Evaluation feedback. No lifecycle tool mutates the
-Root Issue, creates or closes a task, or performs any effect beyond its one
-canonical comment.
-
-Evaluation and Route writes use a deterministic lifecycle claim identity.
-Identical concurrent calls in one reporter process share the write and
-reconcile its immutable comment; conflicting claims fail closed. Exact existing
-messages reconcile before task openness checks. New comments require open task
-ancestry immediately before the write, while post-write reconciliation
-tolerates a task closure race.
-The ordinary Root Issue must always remain open and retain its admission label
-and content digest.
+**Installed limitation:** `hasAdmissionLabel` accepts any syntactically valid
+`workgraph:*` label and rejects `workgraph:ignore` or `workgraph:error`. It does
+not check that the label matches the task's workflow mapping. Operators must
+still use the exact configured `workgraph:<mapping-id>` selector for runtime
+admission; a successful read through this older reporter is not proof of that
+label match.
 
 ## Task locator
 
-All tools receive an opaque `taskLocator` from the Reaction execution context:
+All tools receive an opaque `taskLocator` from the Reaction execution context,
+not a manually invented Issue number. It includes repository, Issue, and
+native parent identities, which the reporter verifies against GitHub and the
+pinned compiled workflow.
 
-```json
-{
-  "repositoryOwner": "drasi-project",
-  "repositoryName": "drasi-workgraph-demo",
-  "repositoryNodeId": "R_workgraph_testbed",
-  "issueNumber": 101,
-  "issueNodeId": "I_child_task",
-  "parentIssueNumber": 100,
-  "parentIssueNodeId": "I_root_task"
-}
-```
-
-Every top-level compiled task is a direct child of the ordinary Root Issue.
-Recursive tasks follow their declared task-definition parent chain to that
-top-level task. A scoped task instead follows its owning container (see
-[scoped flow entries](#scoped-flow-entries)) and continues upward from there.
-The reporter separately finds the unique initial task among
-the Root Issue's direct children to verify run and admission integrity. It
-re-reads every referenced object from GitHub; caller-supplied locator values
-are never sufficient proof.
-
-`WorkGraphTask/v1` Issue bodies require `taskKey` and `operation` in envelope
-`workflowContext`, copied from the pinned task definition. These fields make task
-descriptions and titles human-readable; they are validated metadata, not
-substitutes for `taskDefinitionId`, definition version, or digest. No alternate
-flat task body is accepted.
+Top-level Tasks are direct children of the ordinary Root Issue. Recursive
+children follow their task-definition parents; scoped tasks follow their
+owning container. The reporter separately verifies the initial task among the
+Root Issue's direct children. It does not mistake the ordinary Root Issue for
+a `WorkGraphTask`, and caller-supplied locator values alone are never proof.
+See the [canonical locator/envelope documentation][reporter] for full fields.
 
 ## Scoped flow entries
 
-A task definition that declares `flowEntries` is a container: its Fork names one
-entry task per declared entry alongside its fixed children, and its Join waits
-for every scope to reach a terminal before the container's own lifecycle
-continues. Every task realized by a scope's *steps* is a native direct sub-issue
-of that container, so a scope is a flat sibling set rather than a parent chain;
-the fixed children those tasks declare nest beneath their own task as usual.
-
-Scoped tasks carry three reserved runtime inputs, all present or all absent:
+The [Demo scope fixture](workgraph-v1-definition.md#scoped-flow-entries)
+depends on these three reserved runtime inputs, all present or all absent:
 
 | Input | Meaning |
 |---|---|
@@ -106,268 +70,100 @@ Scoped tasks carry three reserved runtime inputs, all present or all absent:
 | `workgraphScopeEntryTaskId` | The direct entry task ID of the scope |
 | `workgraphScopeEntryStepId` | The compiled entry step ID of the scope |
 
-A routed successor inside a scope additionally carries the existing
-`workgraphPredecessorTaskId`. The reporter validates that:
+A scoped routed successor also has `workgraphPredecessorTaskId`. Scope members
+are native siblings under their owning container, not a parent chain. The
+reporter validates their compiled scope, shared run and definition, Fork for
+the entry, and immutable predecessor Routes for successors. Fixed children
+inherit their parent's scope strings while remaining children of that task.
 
-- the task's compiled source step belongs to `workgraphScopeEntryStepId`'s
-  compiled scope, and none of its transitions leave that scope;
-- the native parent is a task whose ID is `workgraphScopeParentTaskId` and whose
-  task definition owns the entry, sharing the same Root Issue, run, and pinned
-  definition;
-- the entry task carries no predecessor, realizes the entry step, and is named
-  by the owning container's Fork;
-- every other member declares a predecessor that is a sibling of the same
-  container, sits in the same scope, is not itself a forked child, derives the
-  member's task ID, and carries exactly one Route advancing to that member's
-  step and task definition;
-- the predecessor chain reaches the entry without repeating a task.
-
-A routed predecessor is closed as soon as its canonical Advance Route is
-persisted, so a successor is normally validated against a closed chain. The
-predecessor's authority is that immutable Route plus the shared run, scope, and
-deterministic successor identity — never its Issue state — so both a transient
-open predecessor and a normal closed one are accepted, while an Issue whose
-state is not `open` or `closed` is not a trusted task at all. Openness is still
-required for the task being reported on, its owning container, and its
-recursive container chain.
-
-Scopes nest: an entry task may own its own `flowEntries`, and ancestry climbs
-one container at a time until it reaches an ordinary top-level task. A nested
-fixed child inherits its parent's three scope strings but has no step of its
-own, so it is validated against its compiled parent chain — its scope strings
-must equal its parent's and share the same run — and scope validation happens at
-the scoped step root it climbs to. The initial run task stays the unique initial
-task directly under the ordinary Root Issue.
-Trunk and fixed-child ancestry remains distinct from routed-scope ancestry;
-Result, Evaluation, and Route submission use the same strict contract for both.
+A routed predecessor may already be closed: its immutable Advance Route,
+shared scope, and deterministic successor identity authorize the successor,
+not the predecessor's openness. New reporting work still requires the current
+task and its owning/recursive containers to be open. The installed
+[reporter regressions](../tests/workgraph-reporter.test.mjs) retain these
+distinctions; see the canonical references for the general scope contract.
 
 ## Normalized inbound evidence
 
-A `WorkGraphTaskResponse/v1` comment records that a specific GitHub account
-replied on a task. The reporter treats it as evidence, never authority: it
-verifies the comment is written by the trusted runtime actor and identifies this
-exact task, and otherwise leaves it alone.
+`WorkGraphTaskResponse/v1` is immutable evidence reported by the trusted
+runtime, not a human-authored authoritative Result or Evaluation. This
+reporter requires the sidecar's author to match the configured **Result
+reporter**, not the Assignment reporter. Repeated Response IDs are rejected.
+A cited Response must match the task, role, and lifecycle subject; evidence
+cannot be borrowed from another attempt.
 
-Evidence is broker-authored. The runtime writes the sidecar as the **Result
-reporter** identity, the same actor that writes a Result, because evidence is
-reported rather than assigned. A sidecar authored by the assignment reporter —
-the actor that writes Fork, Join, Assignment, and Dispatch — or by any other
-lifecycle identity is rejected as foreign.
-
-Exactly one immutable sidecar exists per consumed raw reply. A raw reply edited
-before it was consumed leaves one sidecar whose `updatedRevision` exceeds its
-`createdRevision`; the reporter accepts that. The sidecar comment itself is
-immutable like every other protocol comment, and a repeated `responseId` on one
-task is rejected whether or not any artifact cites it.
-
-A Result or Evaluation may cite the Response it was reported from through
-`references.response`. When it does, the reporter requires that evidence to
-exist exactly once on the same task, to carry the matching role (`worker` for a
-Result, `evaluator` for an Evaluation), and to answer the same subject: the
-Result's Dispatch and Lease, or the Evaluation's Result. Provenance cannot be
-borrowed from another attempt or another role. An artifact without a `response`
-reference is validated exactly as before.
+Full encoding, revision, and subject rules live in the
+[canonical protocol reference][protocol]. Local contract tests and protocol
+artifacts remain in place; this documentation cleanup changes none of them.
 
 ## Root Issue reader
 
-`get_root_issue` accepts exactly `taskLocator` and `taskId`. It requires the
-worker task to be a canonical `WorkGraphTask/v1` created by the configured
-launcher. It follows native GitHub parent links from the worker to the Root Task
-and from the Root Task to the Root Issue.
+`get_root_issue` accepts exactly `taskLocator` and `taskId`. It verifies the
+launcher-authored Task, native ancestry, initial task, pinned workflow, and
+admission recorded in the initial task. It returns the verified
+Root Issue title and normalized body; changes after admission fail closed.
 
-The Root Task must:
-
-- carry the same top-level `rootIssueId` and workflow run as the worker;
-- use the pinned compiled workflow's initial task definition;
-- contain exactly the compiled static inputs plus `rootIssue` in
-  `resolvedInputs`;
-- bind the Root Issue's repository, Issue identity, admission generation, and
-  content digest;
-- have the workflow run and Root Task IDs derived by the v1 algorithms.
-
-The admission generation is the source-supplied ID for the selected workflow
-mapping, propagated through the Root Task. The reporter never substitutes or
-recomputes a mapping-agnostic Root Issue admission.
-
-The returned `rootIssue` includes the verified title and normalized body. A
-title or body change after admission fails closed.
+The initial task binds the ordinary Root Issue's repository/Issue identity,
+admission generation, and content digest in `resolvedInputs.rootIssue`.
+The reporter does not substitute a mapping-agnostic admission or synthesize
+missing Root Issue evidence. A read is not permission to edit that Issue.
 
 ## Result writer
 
-`submit_task_result` accepts exactly:
+The installed `submit_task_result` takes `taskLocator`, `taskId`, `dispatchId`,
+`leaseId`, `outcome`, and object-valued `output`. It requires
+`output.rootIssueComment` to contain 1-16384 bytes of candidate Markdown.
+The worker must not post that candidate directly on the Root Issue; the
+runtime publishes it only after an accepted Evaluation.
 
-```json
-{
-  "taskLocator": {},
-  "taskId": "urn:drasi:workgraph:id:v1:task:sha256:...",
-  "dispatchId": "urn:drasi:workgraph:id:v1:dispatch:sha256:...",
-  "leaseId": "urn:drasi:workgraph:id:v1:lease:sha256:...",
-  "outcome": "succeeded",
-  "output": {
-    "rootIssueComment": "### Review result\n\nThe assigned check passed."
-  }
-}
-```
+Result submission authenticates the exact immutable Dispatch and selected
+executor, then calls `POST /github/workgraph-v1/lease/validate`. The Source
+validates/reserves the active Lease for the claim. The reporter takes the
+one-based attempt from that response, not from the caller or the number of
+Dispatch comments. Prior expired attempts remain history, not authorization.
 
-`output` must be an object and `rootIssueComment` must contain 1-16384 bytes of
-comment-ready Markdown. It is candidate content, not an instruction to mutate
-GitHub: the agent must not post it itself. After an evaluator accepts the
-Result, the WorkGraph Reaction publishes the candidate on the ordinary Root
-Issue with a hidden deterministic marker. Reconciliation scans for that exact
-marked body before writing, so restart replay does not duplicate the comment.
-The Source excludes the marker from Root Issue wait evidence.
-
-Before accepting any downstream lifecycle action, the reporter requires one
-immutable Assignment authored by the configured assigner. A parent task must
-also have an earlier Fork and Join, in that order, and its Assignment must
-reference that Join; a leaf must have neither. Every Dispatch must follow and
-reference that exact Assignment.
-
-An agent allocated to the pre-lease assignment position calls
-`get_task_snapshot` with only the task locator and task ID. The snapshot returns
-the canonical AssignmentRequest, effective assigner, candidate set, and
-instructions. `submit_task_assignment` accepts one listed executor and a
-bounded rationale, derives the decision-bound Assignment ID, and reconciles one
-immutable `WorkGraphTaskAssignment/v1`. It cannot create a task, acquire a
-lease, dispatch work, or choose an actor outside the request.
-
-The reporter requires every Dispatch attempt to be a unique, canonical,
-assignment-reporter-authored, never-edited `WorkGraphTaskDispatch/v1` comment,
-with the unified envelope and exact Dispatch references/data. All direct
-identities and all six context fields must match the task. It
-then selects the one exact `dispatchId` and `leaseId` supplied by the current
-Agent Task. The profile-local executor ID must also match that Dispatch.
-This lets an expired attempt remain as immutable history without authorizing it.
-It then calls:
-
-```http
-POST /github/workgraph-v1/lease/validate
-Authorization: Bearer <lease validation token>
-Content-Type: application/json
-```
-
-with exactly:
-
-```json
-{
-  "taskId": "urn:drasi:workgraph:id:v1:task:sha256:...",
-  "leaseId": "urn:drasi:workgraph:id:v1:lease:sha256:...",
-  "assignmentId": "urn:drasi:workgraph:id:v1:assignment:sha256:...",
-  "executorId": "issue-worker",
-  "slotId": "issue-worker-slot-1",
-  "claimId": "urn:drasi:workgraph:id:v1:lease-claim:sha256:..."
-}
-```
-
-The Source atomically reserves the active Lease for `claimId`; a competing claim
-fails closed. Its exact response repeats those six fields, adds the
-authoritative one-based `attempt` (bounded by Core to 64), and provides a valid,
-unexpired `acquiredAt`/`expiresAt` interval.
-
-The caller never supplies `resultId`, `rootIssueId`, `workflowRunId`, or
-`attempt`. The reporter derives the direct identities from the verified task
-and takes the attempt only from the validated active-Lease response. Dispatch
-comment count is not attempt evidence. `resultId` is
-derived from the length-framed UTF-8 values of `taskId`, `dispatchId`, and
-`leaseId`:
-
-```text
-urn:drasi:workgraph:id:v1:result:sha256:<64 lowercase hex>
-```
-
-It writes the canonical body:
-
-````text
-WorkGraphTaskResult/v1
-
-```json
-{
-  "apiVersion": "workgraph.drasi.io/v1",
-  "kind": "TaskResult",
-  "id": "urn:drasi:workgraph:id:v1:result:sha256:...",
-  "rootIssueId": "root-issue-id",
-  "workflowRunId": "workflow-run-id",
-  "taskId": "urn:drasi:workgraph:id:v1:task:sha256:...",
-  "workflowContext": {
-    "workflowDefinitionId": "issue-lifecycle",
-    "workflowDefinitionVersion": "v1",
-    "workflowDefinitionDigest": "sha256:...",
-    "taskDefinitionId": "urn:drasi:workgraph:id:v1:task-definition:sha256:...",
-    "taskKey": "a",
-    "operation": "intake-issue"
-  },
-  "references": {
-    "dispatch": {
-      "kind": "TaskDispatch",
-      "id": "urn:drasi:workgraph:id:v1:dispatch:sha256:..."
-    },
-    "lease": {
-      "kind": "TaskLease",
-      "id": "urn:drasi:workgraph:id:v1:lease:sha256:..."
-    }
-  },
-  "data": {
-    "attempt": 1,
-    "outcome": "succeeded",
-    "output": {}
-  }
-}
-```
-````
-
-An exact existing Result is returned as reconciled without another write.
-Malformed, foreign, duplicate, or conflicting Results fail closed. The
-output domain is bounded graph-safe JSON: strings, booleans, null, arrays,
-objects, and JavaScript-safe integers only. The
-reporter never closes tasks, evaluates Results, allocates Leases, or mutates the
-Root Issue.
-
-Evaluation `resultDigest` is SHA-256 over the recursively key-sorted compact
-JSON serialization of the canonical TaskResult envelope object—the exact object
-inside the fenced Result JSON. It therefore includes `apiVersion`, `kind`,
-envelope identity and context, references, and data, but excludes the Markdown
-marker, fence, indentation, and trailing newline bytes. Integer-like object keys
-are sorted by UTF-8 bytes rather than JavaScript enumeration order.
-
-Evaluation and Route IDs use
-`urn:drasi:workgraph:id:v1:evaluation:sha256:...` and
-`urn:drasi:workgraph:id:v1:route:sha256:...`. The reporter
-requires every submitted or persisted Evaluation ID to derive from
-`(taskId, resultId, resultDigest)` and every Route ID from
-`(taskId, evaluationId)`. Error-terminal routing is diagnosed by a
-`WorkGraphTaskError/v1` message. Worker failures remain `TaskResult` messages
-with `data.outcome` set to `failed`.
+The installed Route response describes rework using the same `taskId` and
+`assignmentId`, the next bounded attempt, and Evaluation feedback. It does not
+choose another worker or allocate a Lease; see the
+[runtime/rework notes](workgraph-v1-definition.md#runtime-message-envelope).
+Full message shapes, deterministic IDs, digest rules, and retry semantics
+belong in the canonical references rather than duplicate setup prose here.
 
 ## Configuration
 
-Worker profiles retain the existing Result configuration. Lifecycle profiles
-add:
+These are the installed reporter's **process environment names**, not a
+verified description of a running deployment or a portable repository-setup
+recipe. All six tools require:
 
-- `COPILOT_MCP_WORKGRAPH_TOKEN`
-- `COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID`
-- `COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID`
-- `COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID`
-- `COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID`
-- `COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID`
-- `COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID`
-- exactly one of `COPILOT_MCP_WORKGRAPH_EVALUATOR_ID` or
-  `COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_ID`
-
-`COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID` is required by every tool,
-because a worker reading a routed scope member must authenticate the
-predecessor's Route. The reporter never substitutes another lifecycle identity;
-the configured Route identity must be a positive integer.
-
-Every worker profile that exposes `get_root_issue` or `submit_task_result`
-declares it so separated identities work without a reporter change. In the
-current single-principal deployment, profiles populate the explicit Evaluation
-and Route process variables from
-`vars.COPILOT_MCP_WORKGRAPH_REPORTER_USER_ID`. This is deployment wiring, not a
-reporter fallback: every role-specific process variable remains mandatory.
-
-Run the offline contract tests with:
-
-```bash
-node --check .github/mcp/workgraph-reporter.mjs
-node --test tests/workgraph-reporter.test.mjs
+```text
+COPILOT_MCP_WORKGRAPH_TOKEN
+COPILOT_MCP_WORKGRAPH_TASK_ISSUE_TYPE_ID
+COPILOT_MCP_WORKGRAPH_LAUNCHER_USER_ID
+COPILOT_MCP_WORKGRAPH_ASSIGNMENT_REPORTER_USER_ID
+COPILOT_MCP_WORKGRAPH_RESULT_REPORTER_USER_ID
+COPILOT_MCP_WORKGRAPH_ROUTE_REPORTER_USER_ID
 ```
+
+`submit_task_result` additionally requires `COPILOT_MCP_WORKGRAPH_EXECUTOR_ID`,
+`COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_TOKEN`, and
+`COPILOT_MCP_WORKGRAPH_LEASE_VALIDATION_URL`.
+
+Lifecycle tools require **exactly one** of
+`COPILOT_MCP_WORKGRAPH_ASSIGNER_ID`, `COPILOT_MCP_WORKGRAPH_EVALUATOR_ID`, or
+`COPILOT_MCP_WORKGRAPH_ORCHESTRATOR_ID`. The configured role must match the
+submission tool. Evaluator and orchestrator roles also require
+`COPILOT_MCP_WORKGRAPH_EVALUATION_REPORTER_USER_ID`; the assigner role does
+not.
+
+The Route reporter identity is required even by readers, because routed
+ancestry may require authenticating a predecessor's Route. Required
+role-specific identities are not silently replaced by another identity.
+Refer to the installed source and its
+[contract tests](../tests/workgraph-reporter.test.mjs) for this snapshot's
+exact behavior; use the canonical setup/profile guides for a new sandbox.
+Do not copy private credentials, person bindings, or old deployment settings.
+
+[reporter]: https://github.com/drasi-project/drasi-workgraph/blob/workgraph-generic-recovery/repository-kit/docs/workgraph-result-reporter.md
+[protocol]: https://github.com/drasi-project/drasi-workgraph/blob/workgraph-generic-recovery/repository-kit/docs/workgraph-v1-definition.md
+[profiles]: https://github.com/drasi-project/drasi-workgraph/blob/workgraph-generic-recovery/repository-kit/docs/workgraph-agent-profiles.md
+[setup]: https://github.com/drasi-project/drasi-workgraph/blob/workgraph-generic-recovery/docs/setup/README.md
